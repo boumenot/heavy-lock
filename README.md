@@ -9,45 +9,44 @@ the optional native Dock monitor requires macOS 13+. No Flutter, FVM, Nix,
 server or repository-specific runtime configuration is required to run it;
 repository development uses the [Nix dev shell](#development-with-nix).
 
-## Install with `dart compile exe`
+## Build and install
 
 **Upgrading?** Read the [migration warning](#migration) before compiling or
 running heavy work with this version.
 
-Install a [Dart SDK](https://dart.dev/get-dart) compatible with
-[pubspec.yaml](pubspec.yaml) (Dart 3.13+). Build natively on each machine: compiled
-executables are OS/architecture-specific, not universal or cross-compiled.
-After compilation the CLI binaries do not need the Dart SDK or this checkout.
-With Nix, run the commands below inside `nix develop` instead of installing
-Dart yourself; the compiled binaries do not depend on the Nix store.
+On macOS, install [Nix](https://nixos.org/download/) with flakes enabled and
+build natively on each machine. The build script uses the pinned Nix dev
+shell and `dart compile exe`; the installed executable needs neither Dart,
+Nix nor this checkout at runtime.
 
 ```bash
 git clone https://github.com/boumenot/heavy-lock.git
 cd heavy-lock
-dart pub get
-mkdir -p build "$HOME/.local/bin"
 
-# Bootstrap from this checkout; it uses the current machine lock.
-dart lib/heavy_lock.dart -- bash -c \
-  'dart compile exe bin/heavy_lock.dart -o build/heavy-lock &&
-   dart compile exe bin/heavy_lock_status.dart -o build/heavy-lock-status'
-
-# Replace atomically, including when an older executable is currently running.
-install -m 755 build/heavy-lock "$HOME/.local/bin/heavy-lock.next"
-mv -f "$HOME/.local/bin/heavy-lock.next" "$HOME/.local/bin/heavy-lock"
-install -m 755 build/heavy-lock-status "$HOME/.local/bin/heavy-lock-status.next"
-mv -f "$HOME/.local/bin/heavy-lock-status.next" "$HOME/.local/bin/heavy-lock-status"
+# After all machine invokers have migrated, bootstrap the shared lock:
+nix develop -c dart lib/heavy_lock.dart -- bash tool/build.sh
+bash tool/install.sh
 ```
 
-Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` on macOS or
-`~/.bashrc` on Linux (or the startup file for your shell), then restart the
-shell and agent/app so they inherit it. Verify:
+If an installed `heavy-lock` is already available and all invokers use this
+version, use `heavy-lock -- bash tool/build.sh` instead. Until migration,
+run the build under the machine's existing shared runner; do not mix old and
+new runners in actual workloads. The build script does not acquire a lock
+itself. It writes `build/heavy-lock` only after a successful compile.
+
+The install script atomically replaces `~/.local/bin/heavy-lock`, creating
+the directory if needed. To install into another directory, pass it as the
+sole argument: `bash tool/install.sh /path/to/bin`. Use one installed binary
+across repositories, not separate copies in each checkout.
+
+Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` on macOS,
+`~/.bashrc` on Linux, or the startup file for your shell, then restart the
+shell and agent/app so they inherit it. Verify from each repository:
 
 ```bash
 command -v heavy-lock
 heavy-lock --help
 heavy-lock -- sh -c 'printf "admitted\n"'
-heavy-lock-status
 ```
 
 For a source-only run after `dart pub get`, use
@@ -55,12 +54,34 @@ For a source-only run after `dart pub get`, use
 `dart run bin/heavy_lock_status.dart [--json]`. The bootstrap
 `dart lib/heavy_lock.dart` also works without `pub get`.
 
-**Upgrade:** update your checkout with `git pull --ff-only`, run `dart pub get`,
-then repeat the locked compile and atomic installation above. An installed
-binary or a copied skill does not update itself. Symlinked skills reflect
-checkout updates, but the binary still needs recompilation. Never delete lock
-files to upgrade. To uninstall, remove only the installed executables and
-the skill you installed; leave the shared lock files alone.
+**Upgrade:** update your checkout with `git pull --ff-only`, then repeat the
+locked build and installation above. An installed binary or a copied skill
+does not update itself. Symlinked skills reflect checkout updates, but the
+binary still needs recompilation. Never delete lock files to upgrade. To
+uninstall, remove only the installed executables and the skill you installed;
+leave the shared lock files alone.
+
+The optional status CLI is separate. To build and install it on macOS or
+Linux, use a compatible [Dart SDK](https://dart.dev/get-dart) (Dart 3.13+)
+or `nix develop`, then run:
+
+```bash
+dart pub get
+heavy-lock -- dart compile exe bin/heavy_lock_status.dart -o build/heavy-lock-status
+install -m 755 build/heavy-lock-status "$HOME/.local/bin/heavy-lock-status.next"
+mv -f "$HOME/.local/bin/heavy-lock-status.next" "$HOME/.local/bin/heavy-lock-status"
+```
+
+For manual installation without the scripts on macOS or Linux, use a
+compatible Dart SDK or enter `nix develop`, then after migration run:
+
+```bash
+dart pub get
+mkdir -p build "$HOME/.local/bin"
+dart lib/heavy_lock.dart -- dart compile exe bin/heavy_lock.dart -o build/heavy-lock
+install -m 755 build/heavy-lock "$HOME/.local/bin/heavy-lock.next"
+mv -f "$HOME/.local/bin/heavy-lock.next" "$HOME/.local/bin/heavy-lock"
+```
 
 On Windows, after `dart pub get`, compile in PowerShell:
 
