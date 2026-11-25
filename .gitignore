@@ -1,0 +1,8 @@
+.dart_tool/
+build/
+tool/heavy_lock_monitor/.build/
+tool/heavy_lock_monitor/.swiftpm/
+.DS_Store
+.direnv/
+.envrc
+result
