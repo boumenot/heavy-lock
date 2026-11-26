@@ -59,7 +59,7 @@ other row is an explicit user decision.
 | Monitor event replay | Configurable bounded replay; initial limits are 24 hours and 100,000 events |
 | Transport | Both APIs share a configurable loopback TCP port, broker default 49783; runner takes an explicit port argument |
 | Access | No API authentication; no remote access |
-| Browser access | REST is available to browser clients; the origin policy remains open |
+| Browser access | REST permits any browser origin; the API remains unauthenticated and loopback-only |
 | Service | One independently supervised broker per OS user, protected by a port-independent OS singleton lock |
 | Admission | FIFO with bounded backfill *(delegated; supersedes strict FIFO)*: a later eligible connected job may pass a head blocked only by slot capacity, at most K times per head (configurable, default 1; K = 0 is strict FIFO); manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
 | No-wait | One registered-stream normal-admission decision; a definite refusal exits 75 without queueing, while an ambiguous result is an error, not 75 *(delegated)* |
@@ -1343,9 +1343,9 @@ The assistant recommended full query and control access for convenient
 `curl` automation. Read-only REST would have a narrower HTTP control surface
 but require gRPC for changes. Both APIs remain unauthenticated, and direct
 API calls do not receive the monitor's cancel or force-start confirmations.
-Full REST control adds exposure to unsafe HTTP/browser requests; origin and
-host checks can mitigate some browser risks but do not authenticate local
-clients.
+Full REST control adds exposure to unsafe HTTP/browser requests; the
+all-origins choice below does not restrict cross-origin access, and host
+checks do not authenticate local clients.
 
 **User decision: REST event delivery.** REST has no live event stream; REST
 clients poll the query endpoints instead. The monitor continues to receive
@@ -1395,18 +1395,19 @@ exposed job details and controls. **Loopback is not user isolation.**
 Per-user scheduling and user-only database permissions do not restrict
 access through the API. Supplied attribution cannot establish authority.
 
-**User decision: browser access.** Allow browser clients to use the REST
-API. The user intends a personal service listening only on localhost;
-this does not authorize binding a LAN or public address. A browser page can
-attempt to contact loopback from another origin, so the selected API remains
-accessible beyond native `curl` clients. The exact allowed-origin and CORS
-policy remains open; it is not authentication.
+**User decision: browser access.** Allow REST access from **any browser
+origin**, without per-origin configuration. The user intends a personal
+service listening only on localhost; this does not authorize binding a LAN
+or public address. Browser access requires CORS handling for the supported
+REST methods and headers, including preflight and error responses. Native
+clients without an `Origin` header remain supported.
 
-The assistant recommended rejecting unexpected browser origins to reduce
-browser-based risk. The user chose to allow browser access for the local
-service. This enables web clients but expands the unauthenticated HTTP
-surface; depending on browser restrictions and origin policy, a visited
-page may be able to read job details or invoke controls.
+The assistant recommended explicitly configured origins to reduce exposure.
+Allowing any origin avoids that configuration and enables arbitrary web
+clients, but a page the user visits may be able to contact localhost and,
+if the browser permits, read command history or invoke controls including
+cancel, force-start and deletion. Browser network restrictions vary and are
+not authentication. Any local process able to connect can still call the API.
 
 **Historical alternatives, not selected.** Unix sockets or named pipes
 can use OS access controls, and `curl` supports Unix sockets, but TCP was
@@ -1423,11 +1424,14 @@ generation/runtime machinery. Plaintext gRPC on loopback requires
 HTTP/2 cleartext support and deliberate shared-listener routing.
 No gateway or multiplexer has been selected.
 
-Validate HTTP Host/authority against permitted loopback values. Select an
-origin and CORS policy that implements the chosen browser access. Browser
-rules are **not authentication** and do not stop direct local clients. An
-identity/version handshake can detect an unrelated service or stale broker
-at the configured port; it is not port discovery or a security boundary.
+Validate HTTP Host/authority against permitted loopback values. This does
+not block the explicitly permitted cross-origin requests. A wildcard
+`Access-Control-Allow-Origin` response is a proposed way to support
+unauthenticated browser clients; exact preflight behavior and browser
+network-permission requirements need verification. Browser rules are
+**not authentication**. An identity/version handshake can detect an
+unrelated service or stale broker at the configured port; it is not port
+discovery or a security boundary.
 
 **Open.** Section 11 proposes complete gRPC and REST contracts:
 - versioned `/v1` paths and a `heavylock.v2` package
@@ -1438,8 +1442,8 @@ Apart from the selected REST query/control scope and polling,
 REST-to-gRPC mapping, and gRPC streams for runner and monitor, these
 contract details remain unapproved proposals. CLI control equivalents,
 port-argument spelling, IPv4/IPv6 binding behavior, Swift gRPC
-dependency/version choices, browser-origin policy and service identity
-verification also remain open.
+dependency/version choices, browser CORS/preflight interoperability and
+service identity verification also remain open.
 
 ## 7. Resource history and attribution
 
@@ -1695,7 +1699,7 @@ Event replay limits are user-selected initial defaults (section 6). The
 | `ClientInfo` | Name, version, OS and architecture; explicitly reported only |
 | Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected while the job is retained. After history deletion a key-only tombstone rejects every reuse *(delegated)*; see [section 11.3](#113-sqlite-schema). |
 | Outcome | Native `int64` exit code, optional POSIX signal number and name, and `outcome_kind` |
-| API parity | Every REST endpoint maps to a `ControlService` RPC; all unary `ControlService` queries and controls also have REST endpoints. REST clients poll rather than stream |
+| API parity | Every functional REST endpoint maps to a `ControlService` RPC; all unary `ControlService` queries and controls also have REST endpoints. REST clients poll rather than stream; CORS preflights are transport handling |
 | Runner updates | `WatchJob` push stream with a current-state snapshot on reconnect |
 | Monitor updates | gRPC controls and resumable live event streaming |
 | SQLite journal | WAL with `synchronous = FULL` on all platforms and `fullfsync` on macOS; measure commit latency |
@@ -2038,7 +2042,8 @@ service RunnerService {
 }
 
 // ControlService carries broker operations shared by runners, the monitor
-// and other clients. Every REST endpoint maps to exactly one RPC here.
+// and other clients. Every functional REST endpoint maps to exactly one RPC
+// here; transport-level CORS preflights do not map to RPCs.
 // All unary ControlService queries and controls also have REST endpoints.
 // WatchEvents is gRPC-only; REST clients poll the query endpoints.
 service ControlService {
@@ -2625,12 +2630,13 @@ message BrokerSnapshot {
 
 ### 11.2 REST API for curl and other HTTP clients
 
-The REST API is JSON on the same loopback port. Each endpoint maps to
-exactly one `ControlService` RPC and calls the same broker domain logic,
+The REST API is JSON on the same loopback port. Each functional endpoint maps
+to exactly one `ControlService` RPC and calls the same broker domain logic,
 and all unary `ControlService` queries and controls have REST endpoints, as
-the user chose. Runner lifecycle RPCs have no REST endpoints. The exact
-paths, JSON encoding and error mapping below remain proposals. REST clients
-poll; live event streaming is available through gRPC only.
+the user chose. CORS preflight is transport handling, not a separate RPC.
+Runner lifecycle RPCs have no REST endpoints. The exact paths, JSON encoding
+and error mapping below remain proposals. REST clients poll; live event
+streaming is available through gRPC only.
 
 Request and response bodies are the RPC messages encoded with
 [protojson](https://protobuf.dev/programming-guides/json/):
@@ -3580,10 +3586,11 @@ current results from historical runs and list bounds and unchecked cases.
 6. Singleton-lock path, OS primitives and filesystem support; descendant and
    reparented-process discovery; precision and boot identity for process IDs;
    database-failure detection, explicit error mapping and repair workflows.
-7. Identity/version checks, browser-origin policy, shared-listener
-   routing/multiplexer, gRPC-Swift/runtime and code-generation versions, and
-   gRPC-Gateway versus hand-written REST handlers. The broker port default
-   and REST polling rather than event streaming are decided (section 6).
+7. Identity/version checks, browser CORS/preflight interoperability,
+   shared-listener routing/multiplexer, gRPC-Swift/runtime and code-generation
+   versions, and gRPC-Gateway versus hand-written REST handlers. The broker
+   port default and REST polling rather than event streaming are decided
+   (section 6).
 8. Reliable monotonic root-runtime measurement across delayed reports and
    restarts, CPU-time accounting, sampler choice, measurement completeness,
    platform parity and overhead (section 7). The elapsed interval, CPU

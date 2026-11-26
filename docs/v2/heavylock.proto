@@ -155,7 +155,8 @@ service RunnerService {
 }
 
 // ControlService carries broker operations shared by runners, the monitor
-// and other clients. Every REST endpoint maps to exactly one RPC here.
+// and other clients. Every functional REST endpoint maps to exactly one RPC
+// here; transport-level CORS preflights do not map to RPCs.
 // All unary ControlService queries and controls also have REST endpoints.
 // WatchEvents is gRPC-only; REST clients poll the query endpoints.
 service ControlService {
