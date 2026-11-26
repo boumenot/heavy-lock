@@ -22,6 +22,8 @@ CASES = {
     "CompletionSafety": None,
     "KnownChildRace": None,
     "RecoverySchedulingSafety": None,
+    "RecoveryAdmissionSafety": None,
+    "BackfillScenarioSafety": None,
     "RunnerDeathCleanup": None,
     "CrashBeforeLaunch": "NeverCrashBeforeLaunchUnknown",
     "PreventedClaim": "NeverReleasePreventedClaim",
@@ -41,6 +43,8 @@ CASES = {
     "HeadBlocked": "NeverHeadBlocked",
     "Backfill": "NeverBackfill",
     "ReadyWithUncertain": "NeverReadyWithUnreconciled",
+    "RecoveryAdmission": "NeverAdmissionBesideUncertain",
+    "BackfillDisconnected": "NeverBackfillPastDisconnected",
 }
 
 

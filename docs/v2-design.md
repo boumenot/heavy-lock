@@ -57,7 +57,7 @@ other row is an explicit user decision.
 | Transport | Both APIs share a fixed, configurable loopback TCP port; runner takes an explicit port argument |
 | Access | No API authentication; no remote access |
 | Service | One independently supervised broker per OS user, protected by a port-independent OS singleton lock |
-| Admission | FIFO with bounded backfill *(delegated; supersedes strict FIFO)*: a later fitting job may pass a head blocked only by slot capacity, at most K times per head (configurable, default 1; K = 0 is strict FIFO); manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
+| Admission | FIFO with bounded backfill *(delegated; supersedes strict FIFO)*: a later eligible connected job may pass a head blocked only by slot capacity, at most K times per head (configurable, default 1; K = 0 is strict FIFO); manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
 | Pause | Pause normal admissions only; running jobs continue and confirmed force-start remains allowed |
 | Force-start | Bypass resource checks, including while paused; count toward occupied capacity, with monitor confirmation |
 | New submission while service unavailable | Fail immediately and clearly; do not auto-start, retry until restart, or run unscheduled |
@@ -134,17 +134,23 @@ by the delegated decision below.
 
 **Delegated decision: bounded backfill.** When the queue head is blocked
 **only by insufficient slots**, admit the earliest later waiting job whose
-weight fits the free slots and that passes the same live sharing checks as
-any normal admission. Each such admission increments the head's durable
-bypass count. Once the count reaches the configurable limit K, that head
-blocks later jobs as under strict FIFO until it is admitted. The delegated
-starting default is **K = 1**; K = 0 restores strict FIFO exactly.
+runner is alive and connected, whose weight fits the free slots, and that
+passes the same live sharing checks as any normal admission. Each such
+admission increments the head's durable bypass count. Once the count reaches
+the configurable limit K, that head blocks later jobs as under strict FIFO
+until it is admitted. The delegated starting default is **K = 1**; K = 0
+restores strict FIFO exactly.
 
 - Backfill applies only to a capacity-blocked head. It never applies while
   normal admissions are paused, while the broker is not ready, while the head
   fails a live sharing check (those checks are not weight-specific, so a
   later job would face the same machine state), or while the head's runner is
   disconnected (grace handling governs that head).
+- An earlier fitting follower with a disconnected or unavailable runner is
+  not eligible and does not prevent a later eligible follower from
+  backfilling. The skipped follower keeps its queue position and remains
+  subject to the existing reconnect and grace rules. This exception does not
+  apply to a disconnected head, which still blocks normal admission.
 - The bypass count belongs to the job and persists across broker restarts
   and manual reorder; moving a job does not reset or transfer it.
 - Force-start and manual reorder are explicit operator exceptions and do not
@@ -157,8 +163,9 @@ starting default is **K = 1**; K = 0 restores strict FIFO exactly.
 
 The bound is on the **number** of bypasses, not on time: each backfilled job
 may run for a long time, and a capacity-blocked head still waits for enough
-slots to free. With K = 1 the extra delay is at most one later job admitted
-per time the head is blocked by capacity, rather than unbounded overtaking.
+slots to free. With K = 1 at most one later job may be backfilled past that
+head during its entire wait, including after a reorder or restart, rather
+than unbounded overtaking.
 
 Alternatives considered:
 - **Strict FIFO (previous user decision).** Most predictable: queue position
@@ -602,6 +609,13 @@ relaunches work itself. The runner exits with the final attempt's result.
 An initially unavailable broker still fails immediately; retry does not
 retry submission.
 
+A retry retains its own attempt number and its predecessor's job ID even if
+that predecessor's history is explicitly deleted. A first-time retry requires
+the predecessor's eligible history to exist at submission; an idempotent
+duplicate instead returns an already-created retry even if the predecessor
+has since been deleted. Section 11.3 specifies the serialized retry/deletion
+transaction and its race outcomes.
+
 Tradeoffs: retry can absorb transient failures without an outer script, but
 a deterministic failure consumes capacity again, and an untracked
 descendant of the failed attempt may still be running beside the retry.
@@ -963,14 +977,15 @@ explicit deletion. Prediction from normalized job history might improve
 utilization but depends on inputs, incremental builds, metric completeness
 and confidence estimates; it was deferred in favor of weighted admission.
 
-**Risk and recommendation.** Arguments and cwd can contain secrets or
-sensitive paths. Store the database in user-only storage (proposed POSIX
-mode 0600), never upload it implicitly, and provide explicit history
-deletion without removing queued/active recovery state. Authentication-free
-local clients can still read whatever history endpoints expose and use
-exposed deletion controls. File permissions alone do not fix that risk.
-Deletion API semantics, WAL/backup handling, disk-growth management and
-whether any explicit redaction option is offered remain open.
+**Accepted risks and recommendation.** Arguments and cwd can contain secrets
+or sensitive paths. The selected full-command, indefinite-retention and
+unauthenticated-API policies expose that information and the controls to
+local clients; these choices are not awaiting approval. Store the database
+in user-only storage (proposed POSIX mode 0600), never upload it implicitly,
+and provide explicit history deletion without removing queued/active
+recovery state. File permissions alone do not restrict access through the
+API. WAL/backup handling and disk-growth management remain implementation
+questions; redaction or finite retention would require a new user decision.
 
 ## 8. Service telemetry versus job sampling
 
@@ -1051,13 +1066,15 @@ files are [`docs/v2/heavylock.proto`](v2/heavylock.proto) and
 [`docs/v2/schema.sql`](v2/schema.sql), embedded verbatim below. An earlier
 proto draft compiled with `protoc` 31.1; the updated draft still needs a
 locked compilation after machine-wide runner migration. On 2026-11-25,
-SQLite 3.54.0 loaded the updated schema in WAL mode and focused constraint
-checks passed for grace reset, unknown outcomes, claim/fence evidence and
-finish-first storage. `FULL` and an explicitly set `fullfsync` pragma were
-read back; this is not a hardware-durability test. Row-level checks alone
-allowed an unsafe cross-table release, confirming the broker must enforce
-the release conditions transactionally. If the embedded copies and files
-ever differ, the files are authoritative.
+an earlier SQLite schema passed focused constraint checks for grace reset,
+unknown outcomes, claim/fence evidence and finish-first storage. The current
+schema has also passed focused retry-lineage and deletion-race examples
+using Python's SQLite, not the selected Go driver. Earlier `FULL` and an
+explicitly set `fullfsync` pragma were read back; this is not a
+hardware-durability test. Row-level checks alone allowed an unsafe
+cross-table release, confirming the broker must enforce the release
+conditions transactionally. If the embedded copies and files ever differ,
+the files are authoritative.
 
 This is a design specification, not authorization to implement. The tables
 and decisions elsewhere in this document distinguish the user's choices
@@ -1084,7 +1101,7 @@ remain proposed defaults.
 | Queue order | Explicit `queue_entries.queue_seq`, never timestamp order |
 | Metadata | Dedicated columns for known fields plus a validated `metadata_json` object for extras; replaces the earlier `job_tags` table |
 | `ClientInfo` | Name, version, OS and architecture; explicitly reported only |
-| Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected |
+| Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected while the key is retained. Key retention after history deletion remains open. |
 | Outcome | Native `int64` exit code, optional POSIX signal number and name, and `outcome_kind` |
 | API parity | One-way REST-to-gRPC parity: every REST endpoint maps to a `ControlService` RPC |
 | Runner updates | `WatchJob` push stream with a current-state snapshot on reconnect |
@@ -1192,7 +1209,7 @@ user-approved wire formats:
 | Surface uncertainty while held | The proposed `UNKNOWN` outcome may accompany a reserved/running job; its exit and signal fields remain absent. A later valid report may replace it. Release and terminal history require the agreed evidence, not merely that outcome. |
 | Recover without new admissions | Valid rejoin, seal and lifecycle reports for existing jobs are processed during recovery. The draft rejects `ClaimLaunch` during recovery, including retries; rejoin is not a launch authorization. A previously committed claim may still be acted on by its original runner. `BrokerStatus.unreconciled_reservations` reports held reservations still being reconciled after readiness. |
 | Bounded backfill | `Job.admitted_by_backfill` and `Job.backfill_bypass_count`, stored in `jobs`; `BrokerStatus.backfill_limit`. |
-| Opt-in retry | `SubmitJobRequest.retry_of_job_id`; `Job.retry_of_job_id` and `Job.attempt`, stored in `jobs` with one retry per attempt; `RETRY_NOT_ELIGIBLE` when eligibility or the attempt limit fails. |
+| Opt-in retry | `SubmitJobRequest.retry_of_job_id`; immutable logical `Job.retry_of_job_id` and `Job.attempt`, with `jobs.retry_submitted` recording that an attempt has been retried even if the retry history is later deleted. One retry per attempt; `RETRY_NOT_ELIGIBLE` when eligibility or the attempt limit fails. |
 | Fail closed on storage error | Return an explicit storage error and report not ready; acknowledge mutation only after its commit. Resume through recovery after storage becomes usable. Exact status/error representation is proposed below. |
 
 The per-process UUIDv4 and PID/start time identify a cooperative
@@ -1220,9 +1237,11 @@ recovery reports a replacement can relay remain open.
   exception in section 5.
 - A timeout or disconnected stream triggers investigation, not release or
   automatic rerun. Record unknown rather than inventing an outcome.
-- Submission and report calls are idempotent. A retried `SubmitJob` with
-  the same key and an equivalent payload returns the existing job with
-  `created = false`.
+- Submission and report calls are idempotent. Once ready, a retried
+  `SubmitJob` with the same key and an equivalent payload returns the
+  retained job with `created = false`. For a retained retry, check the key
+  before looking up its predecessor or testing retry eligibility. Key
+  retention after explicit job-history deletion remains open.
 - None of this authorizes automatic retry of an initial submission when
   the service is unreachable; that still fails immediately.
 
@@ -1280,14 +1299,21 @@ service RunnerService {
   // same key with a different payload fails with ALREADY_EXISTS /
   // IDEMPOTENCY_KEY_REUSED. Fails with UNAVAILABLE while recovery runs or
   // durable storage is unavailable.
+  // Once ready, check the key and payload before retry eligibility. A
+  // matching existing retry is returned even if its predecessor's history
+  // has been deleted or its predecessor has already recorded a retry.
   // An opt-in retry is a new submission with a new idempotency key and
-  // retry_of_job_id set. It is accepted only when the previous attempt is
-  // FINISHED with OUTCOME_KIND_EXITED and a non-zero exit code, its
-  // reservation was released by the approved checks, it has no other retry,
-  // and the attempt limit is not exceeded; otherwise FAILED_PRECONDITION /
-  // RETRY_NOT_ELIGIBLE. The retry joins the back of the queue and never
-  // reuses the earlier grant or claim. Only the runner retries; the broker
-  // never resubmits or relaunches work.
+  // retry_of_job_id set. It is accepted only when the predecessor still
+  // exists, is FINISHED with OUTCOME_KIND_EXITED and a non-zero exit code,
+  // was not force-started and has no cancellation request, its reservation
+  // was released by the approved checks, no retry was previously committed
+  // for it, and the attempt limit is not exceeded;
+  // otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
+  // retry was submitted and inserting/enqueueing it are one transaction.
+  // The retry joins the back of the queue and never reuses the earlier grant
+  // or claim. Only the runner retries; the broker never resubmits or
+  // relaunches work. Returning a job after its own explicit deletion is not
+  // promised; idempotency-key retention after deletion remains open.
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
 
   // Server-streaming job channel (push, not polling). Every call, including
@@ -1399,11 +1425,14 @@ service ControlService {
   rpc ResumeQueue(ResumeQueueRequest) returns (BrokerStatus);
 
   // Delete one terminal job's history. FAILED_PRECONDITION / JOB_NOT_TERMINAL
-  // or PROCESSES_UNRECONCILED when deletion is unsafe.
+  // or PROCESSES_UNRECONCILED when deletion is unsafe. Deleting a predecessor
+  // never deletes or updates its retry; the retry retains the predecessor ID.
+  // Deletion and first-time retry submission serialize as described above.
   rpc DeleteJob(DeleteJobRequest) returns (DeleteJobResponse);
 
   // Delete terminal job history finished before a cutoff. Non-terminal and
-  // unreconciled jobs are skipped and counted, never deleted.
+  // unreconciled jobs are skipped and counted, never deleted. Retained
+  // retries keep their predecessor IDs and are never changed by this deletion.
   rpc DeleteHistory(DeleteHistoryRequest) returns (DeleteHistoryResponse);
 
   // Server-streaming broker event feed for monitors. Resumable by sequence.
@@ -1604,7 +1633,8 @@ message Job {
   // Times later jobs were backfilled past this job while it was the
   // capacity-blocked head; bounded by the configured backfill limit.
   uint32 backfill_bypass_count = 26;
-  // Opt-in retry linkage; attempt is 1 for an original submission.
+  // Immutable logical predecessor ID, even if its history was deleted.
+  // Attempt is 1 for an original submission and at most 4 after 3 retries.
   optional string retry_of_job_id = 27;
   uint32 attempt = 28;
 }
@@ -1612,14 +1642,15 @@ message Job {
 // ---------------------------------------------------------------- runner
 
 message SubmitJobRequest {
-  string idempotency_key = 1;      // UUIDv4, stable across retries
+  string idempotency_key = 1;      // UUIDv4, stable across submission retransmissions
   string command = 2;              // full command line, recorded verbatim
   optional string cwd = 3;
   uint32 weight = 4;               // 1..capacity
   ClientInfo client = 5;
   Attribution attribution = 6;
   RunnerIncarnation runner = 7;
-  // Set only for an opt-in retry of a failed, released earlier attempt.
+  // Set only for an opt-in retry of a still-retained, failed, released
+  // earlier attempt. The predecessor may be deleted after this job commits.
   optional string retry_of_job_id = 8;
 }
 
@@ -2005,11 +2036,11 @@ CREATE TABLE jobs (
                       -- broker-generated UUIDv4, e.g. '6f1c2a9e-3b7d-4c8e-9a41-2d5f0b7e8c13'
   idempotency_key     TEXT    NOT NULL UNIQUE
                       CHECK (length(idempotency_key) = 36),
-                      -- client UUIDv4, stable across retries,
+                      -- client UUIDv4, stable across submission retransmissions,
                       -- e.g. 'b0e4d7a2-91c3-4f5e-8d26-7a1c3e9f0b54'
   request_sha256      BLOB    NOT NULL CHECK (length(request_sha256) = 32),
-                      -- SHA-256 of the canonical submit payload; detects key reuse
-                      -- with a different payload
+                      -- SHA-256 of the canonical submit payload, including
+                      -- retry_of_job_id; detects key reuse with another payload
 
   -- What runs -----------------------------------------------------------
   command             TEXT    NOT NULL CHECK (length(command) > 0),
@@ -2048,10 +2079,15 @@ CREATE TABLE jobs (
   backfill_bypass_count INTEGER NOT NULL DEFAULT 0 CHECK (backfill_bypass_count >= 0),
                       -- later jobs backfilled past this job while it was the
                       -- capacity-blocked head; kept across manual reorder, e.g. 1
-  retry_of_job_id     TEXT UNIQUE REFERENCES jobs (id),
-                      -- earlier failed attempt; at most one retry per attempt
-  attempt             INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
-                      -- 1 for an original submission, e.g. 2 for the first retry
+  retry_of_job_id     TEXT UNIQUE CHECK (retry_of_job_id IS NULL
+                                        OR length(retry_of_job_id) = 36),
+                      -- immutable logical predecessor ID; its history may
+                      -- be deleted without changing this job
+  attempt             INTEGER NOT NULL DEFAULT 1 CHECK (attempt BETWEEN 1 AND 4),
+                      -- 1 original attempt plus at most 3 retries
+  retry_submitted     INTEGER NOT NULL DEFAULT 0 CHECK (retry_submitted IN (0, 1)),
+                      -- set atomically with the retry insertion; remains
+                      -- set if the retry's own history is later deleted
 
   -- Who submitted it (unauthenticated client claims) ------------------------
   client_name         TEXT,     -- e.g. 'heavy-lock'
@@ -2114,6 +2150,27 @@ CREATE TABLE jobs (
          OR (exit_code IS NULL AND signal_number IS NULL AND signal_name IS NULL)),
   CHECK (signal_name IS NULL OR signal_number IS NOT NULL)
 ) STRICT;
+
+-- A surviving retry must not be reattached to a new job that happens to
+-- reuse the ID of its deleted predecessor.
+CREATE TRIGGER jobs_no_retained_predecessor_id
+BEFORE INSERT ON jobs
+WHEN EXISTS (SELECT 1 FROM jobs WHERE retry_of_job_id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'job id is a retained retry predecessor');
+END;
+
+-- Retry ancestry and attempt count are immutable; a committed retry cannot
+-- be forgotten merely because its own history was subsequently deleted.
+CREATE TRIGGER jobs_retry_lineage_stable
+BEFORE UPDATE OF id, retry_of_job_id, attempt, retry_submitted ON jobs
+WHEN NEW.id IS NOT OLD.id
+  OR NEW.retry_of_job_id IS NOT OLD.retry_of_job_id
+  OR NEW.attempt IS NOT OLD.attempt
+  OR (OLD.retry_submitted = 1 AND NEW.retry_submitted = 0)
+BEGIN
+  SELECT RAISE(ABORT, 'job identity and retry lineage are immutable');
+END;
 
 CREATE INDEX jobs_state_queued ON jobs (state, queued_at_ns DESC, id);
 CREATE INDEX jobs_queued ON jobs (queued_at_ns DESC, id);
@@ -2296,7 +2353,49 @@ All `Attribution` values are unauthenticated declarations.
   has recovery state therefore fails rather than silently dropping it.
   `job_resource_summaries` cascades. `events.job_id` deliberately has no
   foreign key, because a cascade would silently create a gap in the event
-  log.
+  log. `jobs.retry_of_job_id` is an immutable logical ID, not a foreign key:
+  deleting a predecessor neither deletes nor updates a surviving retry, and
+  the ID can still identify a predecessor whose history is unavailable.
+- **Retry submission and deletion races.** Both operations use the same
+  serialized writer. For `SubmitJob`, first look up the idempotency key and
+  compare the canonical payload, including `retry_of_job_id`: return an
+  equivalent retained job with `created = false`, or reject a different
+  payload with `IDEMPOTENCY_KEY_REUSED`. Only a new key proceeds to retry
+  eligibility. In the same transaction:
+  1. Require the predecessor row, an observed nonzero `exited` outcome,
+     a released reservation, no cancellation request, no force-start, an
+     unset `retry_submitted` marker and `attempt < 4`.
+  2. Conditionally set its `retry_submitted` marker from 0 to 1 and insert
+     the retry with the predecessor's immutable ID, `attempt + 1`, a new key
+     and a new queue entry. Commit all of these together; a failed insert
+     rolls back the marker.
+
+  If retry submission commits first, later deletion may delete the
+  predecessor, but must not delete, update or dequeue the retry. A duplicate
+  submission for that retained retry still returns it before looking for the
+  deleted predecessor. If deletion commits first, a first-time retry is
+  rejected as `RETRY_NOT_ELIGIBLE`. Competing new keys cannot both create a
+  retry; competing identical keys return the same job. The marker stays set
+  if a retry's own history is later deleted, so that deletion cannot permit
+  a second retry of the same predecessor. If the predecessor is also
+  deleted, it cannot authorize a new retry. Surviving retries retain their
+  own attempt number, so deleting ancestors cannot reset the maximum of
+  three retries. IDs and lineage are immutable. The schema also rejects
+  assigning a new job an ID still retained as a retry's predecessor; the
+  broker generates another UUID on collision. It does not retain a registry
+  of IDs after all references are deleted, so uniqueness across completely
+  deleted history still relies on UUIDv4 collision resistance.
+
+  `retry_of_job_id` uniqueness, the attempt range and the identity/lineage
+  triggers are guards, not a substitute for the broker enforcing
+  predecessor eligibility, the marker, and the cross-row attempt increment
+  in the transaction. Once the retry's own history is explicitly deleted,
+  there is no existing job to return; idempotency-key retention and reuse
+  beyond that deletion remain open. A deleted job must not be reconstructed
+  from unrelated surviving history. The focused
+  [`test_schema.py`](v2/test_schema.py) exercises these proposed SQLite
+  transactions; it is not an implementation of the broker. Run it with
+  `nix develop -c python3 docs/v2/test_schema.py`.
 - **Wall-clock timestamps.** The system clock can move backwards, so the
   schema checks only that timestamps are present for a state, never their
   order. Monotonic durations, `queue_seq` and event sequences provide
@@ -2350,6 +2449,9 @@ All `Attribution` values are unauthenticated declarations.
   4. Append a `job_deleted` event.
 
   Ineligible jobs are retained (`DeleteHistory` counts them as skipped).
+  Each job is checked independently: deleting a predecessor never alters a
+  queued, running or otherwise retained retry. Deleting a retry does not
+  clear its retained predecessor's `retry_submitted` marker.
   Freed pages are reclaimed later with `incremental_vacuum`. Deletion does
   not scrub WAL contents or backups that already hold the data.
 - **Limits.** The database records intent and observations. On its own it
@@ -2480,14 +2582,17 @@ the permitted in-flight claim exception.
 
 The delegated decisions are modeled as follows. `BackfillLimit` bounds
 backfill past a capacity-blocked head through a durable per-head bypass
-count (the `Backfill` witness shows a backfill; `HeadBlocked` shows the head
-still blocking once the limit is used). `RecoveryDone` no longer waits for
-reconciliation; `ReadyWithUncertain` shows readiness beside a held,
-unreconciled reservation, and `RecoverySchedulingSafety` checks that this
-never exceeds normal capacity. `BrokerForceStop` stops a known root and child
-only after OS-verified runner death; `RunnerDeathCleanup` checks the claim
-safety invariants with it. Opt-in retry is not modeled separately: it is a
-fresh submission, which the model represents as another job. It assumes a single broker;
+count. The small `BackfillDisconnected` witness admits a connected later
+follower past an earlier disconnected one, while
+`BackfillScenarioSafety` checks that a connected fitting follower is not
+skipped in that scenario. `RecoveryDone` no longer waits for reconciliation:
+the `RecoveryAdmission` witness starts a new normal reservation after a
+crash while a pre-crash unreconciled reservation stays held and counted;
+`RecoveryAdmissionSafety` checks the scenario's capacity invariants. The
+broader `RecoverySchedulingSafety` profile now has capacity two but remains
+unrun at that bound. `BrokerForceStop` stops a known root and child only
+after OS-verified runner death. Opt-in retry is not modeled separately: it
+is a fresh submission, which the model represents as another job. It assumes a single broker;
 the correctness of the OS singleton lock itself is not model-checked.
 
 `RecoverySpawn` and `StorageFailureSpawn` preserve the traces that defeated
@@ -2508,15 +2613,7 @@ current results from historical runs and list bounds and unchecked cases.
 
 ## Open decisions before implementation
 
-1. **Needs the user:** command lines are stored verbatim and kept
-   indefinitely, and any local process can read them through the
-   unauthenticated API. The review recommended limiting retention or
-   offering redaction; both would reverse explicit user choices, so they
-   were not adopted by delegation.
-2. **User may wish to confirm delegated defaults:** backfill limit K = 1,
-   the retry eligibility rule (observed non-zero exit only) and the 3-retry
-   maximum.
-3. Confirmation and audit semantics for other controls; concurrent control
+1. Confirmation and audit semantics for other controls; concurrent control
    races. Running-job cancellation is runner-first with verified-identity
    broker fallback after acknowledgment/completion deadline expiry or verified
    runner death. Starting defaults are 5 s acknowledgment and 30 s completion
@@ -2529,41 +2626,41 @@ current results from historical runs and list bounds and unchecked cases.
    runner and takes over only after its exact incarnation is verified dead,
    otherwise waiting; detection of blocking coordination, kill/escalation
    mechanisms and cleanup of stopped descendants remain open.
-4. Concrete defaults still proposed or unset:
+2. Concrete defaults still proposed or unset:
    - event retention (proposed 24 hours or 100,000 events)
    - page size (proposed 50, maximum 500)
    - SQLite cache and mmap sizes (proposed 16 MiB and 256 MiB)
-5. Platform mechanisms for proving runner termination, serialized sealing,
+3. Platform mechanisms for proving runner termination, serialized sealing,
    root exit and absence of known descendants; how to present and investigate
    an unverifiable reservation and obtain valid evidence without an unsafe
    override.
-6. Definition of successful queued rejoin, identity checks and checkpoint
+4. Definition of successful queued rejoin, identity checks and checkpoint
    precision across repeated broker restarts; expiry/reconnect serialization
    and grace reset are decided.
-7. How to detect actual runner death; a disconnect or either expired
+5. How to detect actual runner death; a disconnect or either expired
    cancellation deadline alone is not death. The delegated runner-death
    cleanup and recovery fencing both depend on this mechanism.
-8. Singleton-lock path, OS primitives and filesystem support; descendant and
+6. Singleton-lock path, OS primitives and filesystem support; descendant and
    reparented-process discovery; precision and boot identity for process IDs;
    database-failure detection, explicit error mapping and repair workflows.
-9. Default broker port, identity/version checks, shared-listener
+7. Default broker port, identity/version checks, shared-listener
    routing/multiplexer, gRPC-Swift/runtime and code-generation versions, and
    gRPC-Gateway versus hand-written REST handlers. REST event delivery by
    SSE is a separate, unapproved proposal.
-10. Exact job metric definitions, sampler choice, platform parity and
+8. Exact job metric definitions, sampler choice, platform parity and
    overhead.
-11. Command rendering, the payload-equivalence rule and retention for
-   idempotency keys, and any optional redaction.
-12. Select and pin the initial `modernc.org/sqlite` version; validate SQLite
+9. Command rendering, the payload-equivalence rule and retention for
+   idempotency keys after their job histories are explicitly deleted.
+10. Select and pin the initial `modernc.org/sqlite` version; validate SQLite
     features and actual platform sync behavior, and measure `FULL`/macOS
     `fullfsync` commit latency. The driver and settings are decided, but
     their validation is pending.
-13. Go/protobuf tooling, distribution, supervision, supported platforms,
+11. Go/protobuf tooling, distribution, supervision, supported platforms,
     and monotonic launch-timeout reconstruction across broker restarts.
-14. Admission option compatibility, oversized weights (including their
+12. Admission option compatibility, oversized weights (including their
     interaction with backfill), capacity changes, no-wait behavior and
     v1/nesting rollout; retry delay and CLI option spelling.
-15. The [formal review gaps](v2/model/README.md#outcomes-and-actionable-gaps):
+13. The [formal review gaps](v2/model/README.md#outcomes-and-actionable-gaps):
     verification under realistic OS/process assumptions, discovery of a
     formerly untracked child after release, and safety versus progress when
     the root identity or outcome cannot be recovered.

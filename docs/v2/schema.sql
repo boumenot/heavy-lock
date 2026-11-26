@@ -64,11 +64,11 @@ CREATE TABLE jobs (
                       -- broker-generated UUIDv4, e.g. '6f1c2a9e-3b7d-4c8e-9a41-2d5f0b7e8c13'
   idempotency_key     TEXT    NOT NULL UNIQUE
                       CHECK (length(idempotency_key) = 36),
-                      -- client UUIDv4, stable across retries,
+                      -- client UUIDv4, stable across submission retransmissions,
                       -- e.g. 'b0e4d7a2-91c3-4f5e-8d26-7a1c3e9f0b54'
   request_sha256      BLOB    NOT NULL CHECK (length(request_sha256) = 32),
-                      -- SHA-256 of the canonical submit payload; detects key reuse
-                      -- with a different payload
+                      -- SHA-256 of the canonical submit payload, including
+                      -- retry_of_job_id; detects key reuse with another payload
 
   -- What runs -----------------------------------------------------------
   command             TEXT    NOT NULL CHECK (length(command) > 0),
@@ -107,10 +107,15 @@ CREATE TABLE jobs (
   backfill_bypass_count INTEGER NOT NULL DEFAULT 0 CHECK (backfill_bypass_count >= 0),
                       -- later jobs backfilled past this job while it was the
                       -- capacity-blocked head; kept across manual reorder, e.g. 1
-  retry_of_job_id     TEXT UNIQUE REFERENCES jobs (id),
-                      -- earlier failed attempt; at most one retry per attempt
-  attempt             INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
-                      -- 1 for an original submission, e.g. 2 for the first retry
+  retry_of_job_id     TEXT UNIQUE CHECK (retry_of_job_id IS NULL
+                                        OR length(retry_of_job_id) = 36),
+                      -- immutable logical predecessor ID; its history may
+                      -- be deleted without changing this job
+  attempt             INTEGER NOT NULL DEFAULT 1 CHECK (attempt BETWEEN 1 AND 4),
+                      -- 1 original attempt plus at most 3 retries
+  retry_submitted     INTEGER NOT NULL DEFAULT 0 CHECK (retry_submitted IN (0, 1)),
+                      -- set atomically with the retry insertion; remains
+                      -- set if the retry's own history is later deleted
 
   -- Who submitted it (unauthenticated client claims) ------------------------
   client_name         TEXT,     -- e.g. 'heavy-lock'
@@ -173,6 +178,27 @@ CREATE TABLE jobs (
          OR (exit_code IS NULL AND signal_number IS NULL AND signal_name IS NULL)),
   CHECK (signal_name IS NULL OR signal_number IS NOT NULL)
 ) STRICT;
+
+-- A surviving retry must not be reattached to a new job that happens to
+-- reuse the ID of its deleted predecessor.
+CREATE TRIGGER jobs_no_retained_predecessor_id
+BEFORE INSERT ON jobs
+WHEN EXISTS (SELECT 1 FROM jobs WHERE retry_of_job_id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'job id is a retained retry predecessor');
+END;
+
+-- Retry ancestry and attempt count are immutable; a committed retry cannot
+-- be forgotten merely because its own history was subsequently deleted.
+CREATE TRIGGER jobs_retry_lineage_stable
+BEFORE UPDATE OF id, retry_of_job_id, attempt, retry_submitted ON jobs
+WHEN NEW.id IS NOT OLD.id
+  OR NEW.retry_of_job_id IS NOT OLD.retry_of_job_id
+  OR NEW.attempt IS NOT OLD.attempt
+  OR (OLD.retry_submitted = 1 AND NEW.retry_submitted = 0)
+BEGIN
+  SELECT RAISE(ABORT, 'job identity and retry lineage are immutable');
+END;
 
 CREATE INDEX jobs_state_queued ON jobs (state, queued_at_ns DESC, id);
 CREATE INDEX jobs_queued ON jobs (queued_at_ns DESC, id);

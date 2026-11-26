@@ -91,18 +91,21 @@ Submit(j) ==
                  runnerCrashes, disconnects, grace, normalOK, recoveryOK>>
 
 Fits(k) == Occupied + Weight[k] <= Capacity
+EligibleFollower(k) == runner[k].up /\ runner[k].connected /\ Fits(k)
 
 \* Bounded backfill: only when the connected head is blocked solely by slot
-\* capacity, admit the earliest later job that fits; each head may be
-\* bypassed at most BackfillLimit times (0 is strict FIFO).
+\* capacity, admit the earliest connected, live later runner whose job fits.
+\* A disconnected follower retains its place but cannot block an eligible
+\* later follower. Each head may be bypassed at most BackfillLimit times.
 Backfill(j) ==
   /\ Len(queue) > 1 /\ Head(queue) # j
   /\ LET h == Head(queue)
      IN /\ runner[h].up /\ runner[h].connected
         /\ ~Fits(h) /\ db[h].bypass < BackfillLimit
+  /\ EligibleFollower(j)
   /\ \E i \in 2..Len(queue) :
        /\ queue[i] = j
-       /\ \A p \in 2..(i - 1) : ~Fits(queue[p])
+       /\ \A p \in 2..(i - 1) : ~EligibleFollower(queue[p])
 
 NormalAdmit(j, resourcePass) ==
   /\ ~paused /\ (Head(queue) = j \/ Backfill(j))
@@ -692,6 +695,34 @@ StorageSchedulingNext == SchedulingNext \/ StorageFailure \/ StorageRestored
                          \/ RecoveryDone
 StorageSchedulingSpec == Init /\ [][StorageSchedulingNext]_vars
 
+\* Tiny scenarios exercise specific ordering decisions without exploring the
+\* full scheduler. The selected jobs have distinct roles and never change.
+RecoveryFirst == CHOOSE j \in Jobs : TRUE
+RecoverySecond == CHOOSE j \in Jobs \ {RecoveryFirst} : TRUE
+RecoveryAdmissionNext ==
+  \/ Submit(RecoveryFirst)
+  \/ /\ brokerCrashes = 0 /\ Reserve(RecoveryFirst, FALSE, TRUE)
+  \/ /\ db[RecoveryFirst].held /\ Submit(RecoverySecond)
+  \/ /\ db[RecoverySecond].phase = "queued" /\ BrokerCrash
+  \/ BrokerRestart \/ RecoveryDone \/ Reconnect(RecoverySecond)
+  \/ /\ brokerCrashes > 0 /\ Reserve(RecoverySecond, FALSE, TRUE)
+RecoveryAdmissionSpec == Init /\ [][RecoveryAdmissionNext]_vars
+
+BackfillHead == CHOOSE j \in Jobs : Weight[j] = 2
+BackfillSlot == CHOOSE j \in Jobs \ {BackfillHead} : TRUE
+BackfillEarlier == CHOOSE j \in Jobs \ {BackfillHead, BackfillSlot} : TRUE
+BackfillLater == CHOOSE j \in Jobs \ {BackfillHead, BackfillSlot, BackfillEarlier} : TRUE
+BackfillScenarioNext ==
+  \/ Submit(BackfillSlot)
+  \/ Reserve(BackfillSlot, FALSE, TRUE)
+  \/ /\ db[BackfillSlot].held /\ Submit(BackfillHead)
+  \/ /\ db[BackfillHead].phase = "queued" /\ Submit(BackfillEarlier)
+  \/ /\ db[BackfillEarlier].phase = "queued" /\ Disconnect(BackfillEarlier)
+  \/ /\ db[BackfillEarlier].phase = "queued" /\ Submit(BackfillLater)
+  \/ /\ queue = <<BackfillHead, BackfillEarlier, BackfillLater>>
+     /\ Reserve(BackfillLater, FALSE, TRUE)
+BackfillScenarioSpec == Init /\ [][BackfillScenarioNext]_vars
+
 TypeOK ==
   /\ db \in [Jobs -> [phase : Phases, held : BOOLEAN, issued : BOOLEAN,
                        forced : BOOLEAN, forcedWhilePaused : BOOLEAN,
@@ -785,6 +816,18 @@ NeverBackfill == \A j \in Jobs : db[j].bypass = 0
 NeverReadyWithUnreconciled ==
   ~(broker = "ready" /\ brokerCrashes > 0
     /\ \E j \in Jobs : db[j].held /\ j \notin reconciled)
+PreexistingUncertainHeld ==
+  brokerCrashes = 0 \/ (db[RecoveryFirst].held /\ RecoveryFirst \notin reconciled)
+NeverAdmissionBesideUncertain ==
+  ~(broker = "ready" /\ brokerCrashes > 0
+    /\ db[RecoveryFirst].held /\ RecoveryFirst \notin reconciled
+    /\ db[RecoverySecond].held /\ ~db[RecoverySecond].forced
+    /\ Occupied = Weight[RecoveryFirst] + Weight[RecoverySecond])
+NoSkippedConnectedFollower ==
+  ~(db[BackfillLater].held /\ runner[BackfillEarlier].connected)
+NeverBackfillPastDisconnected ==
+  ~(db[BackfillLater].held /\ ~runner[BackfillEarlier].connected
+    /\ db[BackfillHead].bypass > 0)
 RecoveryAcceptsPendingIdentity ==
   \A j \in Jobs :
     (broker = "recovering" /\ db[j].phase = "reserved"

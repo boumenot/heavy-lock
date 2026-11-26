@@ -32,14 +32,21 @@ service RunnerService {
   // same key with a different payload fails with ALREADY_EXISTS /
   // IDEMPOTENCY_KEY_REUSED. Fails with UNAVAILABLE while recovery runs or
   // durable storage is unavailable.
+  // Once ready, check the key and payload before retry eligibility. A
+  // matching existing retry is returned even if its predecessor's history
+  // has been deleted or its predecessor has already recorded a retry.
   // An opt-in retry is a new submission with a new idempotency key and
-  // retry_of_job_id set. It is accepted only when the previous attempt is
-  // FINISHED with OUTCOME_KIND_EXITED and a non-zero exit code, its
-  // reservation was released by the approved checks, it has no other retry,
-  // and the attempt limit is not exceeded; otherwise FAILED_PRECONDITION /
-  // RETRY_NOT_ELIGIBLE. The retry joins the back of the queue and never
-  // reuses the earlier grant or claim. Only the runner retries; the broker
-  // never resubmits or relaunches work.
+  // retry_of_job_id set. It is accepted only when the predecessor still
+  // exists, is FINISHED with OUTCOME_KIND_EXITED and a non-zero exit code,
+  // was not force-started and has no cancellation request, its reservation
+  // was released by the approved checks, no retry was previously committed
+  // for it, and the attempt limit is not exceeded;
+  // otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
+  // retry was submitted and inserting/enqueueing it are one transaction.
+  // The retry joins the back of the queue and never reuses the earlier grant
+  // or claim. Only the runner retries; the broker never resubmits or
+  // relaunches work. Returning a job after its own explicit deletion is not
+  // promised; idempotency-key retention after deletion remains open.
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
 
   // Server-streaming job channel (push, not polling). Every call, including
@@ -151,11 +158,14 @@ service ControlService {
   rpc ResumeQueue(ResumeQueueRequest) returns (BrokerStatus);
 
   // Delete one terminal job's history. FAILED_PRECONDITION / JOB_NOT_TERMINAL
-  // or PROCESSES_UNRECONCILED when deletion is unsafe.
+  // or PROCESSES_UNRECONCILED when deletion is unsafe. Deleting a predecessor
+  // never deletes or updates its retry; the retry retains the predecessor ID.
+  // Deletion and first-time retry submission serialize as described above.
   rpc DeleteJob(DeleteJobRequest) returns (DeleteJobResponse);
 
   // Delete terminal job history finished before a cutoff. Non-terminal and
-  // unreconciled jobs are skipped and counted, never deleted.
+  // unreconciled jobs are skipped and counted, never deleted. Retained
+  // retries keep their predecessor IDs and are never changed by this deletion.
   rpc DeleteHistory(DeleteHistoryRequest) returns (DeleteHistoryResponse);
 
   // Server-streaming broker event feed for monitors. Resumable by sequence.
@@ -356,7 +366,8 @@ message Job {
   // Times later jobs were backfilled past this job while it was the
   // capacity-blocked head; bounded by the configured backfill limit.
   uint32 backfill_bypass_count = 26;
-  // Opt-in retry linkage; attempt is 1 for an original submission.
+  // Immutable logical predecessor ID, even if its history was deleted.
+  // Attempt is 1 for an original submission and at most 4 after 3 retries.
   optional string retry_of_job_id = 27;
   uint32 attempt = 28;
 }
@@ -364,14 +375,15 @@ message Job {
 // ---------------------------------------------------------------- runner
 
 message SubmitJobRequest {
-  string idempotency_key = 1;      // UUIDv4, stable across retries
+  string idempotency_key = 1;      // UUIDv4, stable across submission retransmissions
   string command = 2;              // full command line, recorded verbatim
   optional string cwd = 3;
   uint32 weight = 4;               // 1..capacity
   ClientInfo client = 5;
   Attribution attribution = 6;
   RunnerIncarnation runner = 7;
-  // Set only for an opt-in retry of a failed, released earlier attempt.
+  // Set only for an opt-in retry of a still-retained, failed, released
+  // earlier attempt. The predecessor may be deleted after this job commits.
   optional string retry_of_job_id = 8;
 }
 

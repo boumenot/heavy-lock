@@ -17,53 +17,32 @@ nix develop -c tlc -help
 nix develop -c bash -c 'cd docs/v2/model && tlasany BrokerRunner.tla'
 ```
 
-These focused checks each bound their own actions; they are not a proof of
-the combined system:
+These deliberately tiny focused scenarios each explore at most ten distinct
+states at the bounds below; they are not a proof of the combined system.
+They run directly because they are short, non-heavy checks:
 
 ```bash
 nix develop -c bash -c \
-  'export JAVA_TOOL_OPTIONS=-Xmx512m
+  'export JAVA_TOOL_OPTIONS=-Xmx256m
    python3 docs/v2/model/check.py \
-     Scheduling StorageSchedulingSafety GraceSafety ClaimSafety TimeoutSafety RecoveryClaimSafety \
-     StorageRecoverySafety CompletionSafety KnownChildRace \
-     RecoverySchedulingSafety RunnerDeathCleanup \
-     --logs /tmp/heavy-lock-tlc-focused'
-```
-
-The following deliberately violated predicates expose unsafe alternatives,
-accepted risks or reachable decision points. Their successful wrapper exit
-means the named counterexample was found, **not** that the variant is safe:
-
-```bash
-nix develop -c bash -c \
-  'export JAVA_TOOL_OPTIONS=-Xmx512m
-   python3 docs/v2/model/check.py \
-     VolatileFence UnfencedAbsence IncompleteTracking RecoveryBlocked \
-     ForcedOverload HeadBlocked CrashBeforeLaunch PreventedClaim SealNoSpawn \
-     FinishFirst RecoveryReports RecoverySpawn StorageFailureSpawn \
-     ForcePaused GraceReset Backfill ReadyWithUncertain \
+     BackfillScenarioSafety RecoveryAdmissionSafety \
+     BackfillDisconnected RecoveryAdmission \
      --logs /tmp/heavy-lock-tlc-witnesses'
 ```
 
 Each committed `.cfg` describes its bounds. `check.py` uses one worker and a
 temporary state directory, records the complete TLC log, and rejects parse
 errors, incomplete runs, wrong exit codes or unexpected invariants. Positive
-cases require TLC exit 0 and a completed search; negative witnesses require
-exit 12 and the named invariant. For a direct investigation, use a fresh
-`-metadir` and run, for example:
+cases require TLC exit 0 and a completed search. Negative witnesses require
+exit 12 and the named deliberately violated invariant: a successful wrapper
+exit means that the intended trace was found, **not** that the invariant is
+true.
 
-```bash
-nix develop -c bash -c \
-  'cd docs/v2/model
-   JAVA_TOOL_OPTIONS=-Xmx512m tlc -workers 1 -fpmem 0.05 \
-     -noGenerateSpecTE -metadir /tmp/heavy-lock-tlc-manual \
-     -config IncompleteTracking.cfg BrokerRunner.tla'
-```
-
-The wider `Safety`, `Recovery` and `Stress` profiles explore the full
-transition relation and can be resource-intensive. Run them under the
-machine-wide shared heavy-work lock only after completing the runner
-migration; do not mix old and new runners or override the shared gate:
+Run CPU- or memory-heavy checks, full suites, and any command that may load
+the machine for more than a minute through the shared heavy-work gate.
+Larger focused checks, batches, and the wider `Safety`, `Recovery` and
+`Stress` profiles can be costly; do not assume that a previous quick run
+will remain quick after a model change. For example:
 
 ```bash
 heavy-lock -- nix develop -c bash -c \
@@ -74,11 +53,11 @@ heavy-lock -- nix develop -c bash -c \
 
 Run `Stress` separately through the same gate when deliberately checking its
 larger bound. If a compatible installed runner is unavailable, the repository
-documents a same-checkout bootstrap *after* migration; otherwise report the
-checks as unrun. Do not execute another checkout's runner or bypass contention.
-`RecoveryReportSafety` (about 70 seconds on the host for this revision) and
-`RunnerDeathCleanup` can also be costly; run them separately through the
-shared gate when they may exceed a minute on the host.
+documents a same-checkout bootstrap *after all invokers have migrated*;
+otherwise report heavy checks as unrun. Do not execute another checkout's
+runner, bypass contention, or run heavy checks unlocked. In particular,
+`RecoveryReportSafety` and `RunnerDeathCleanup` have previously taken more
+than a minute in this session and require the gate.
 
 ## Modeled boundaries and choices
 
@@ -126,7 +105,10 @@ free the reservation. There is no unsafe override for an unknown root.
 Normal admission requires a ready broker, an unpaused queue, capacity and
 the abstract live resource check, and either the connected head or bounded
 backfill. Backfill applies only when the connected head is blocked solely by
-capacity; it admits the earliest later job that fits and increments the
+capacity; it admits the earliest later job whose runner is up and connected
+and whose weight fits. An earlier disconnected or unavailable follower
+retains its position but does not block a later eligible follower. A
+disconnected head still blocks all normal admission. Backfill increments the
 head's durable bypass count, which `BackfillLimit` bounds (0 is strict
 FIFO; the delegated default is 1). Manual reorder and
 force are explicit exceptions; a forced job counts toward occupied capacity
@@ -216,17 +198,48 @@ crashes and controls. `RunnerDeathSpec` adds roots, children, start reports
 and broker force-stop to the claim subset with one runner crash, but omits
 finish reports and broker crashes. `RecoverySchedulingSpec` covers broker
 crash/restart, readiness, claims and admission of two jobs, but omits
-release, cancellation and runner crashes. `GraceSpec` omits admission; `SchedulingSpec` and
+release, cancellation and runner crashes. The smaller
+`RecoveryAdmissionSpec` reserves one unit job, queues another, crashes,
+recovers, and permits the second reservation only after the crash; it omits
+claims, releases and reconciliation. `BackfillScenarioSpec` fixes the roles
+of one occupied slot, a blocked heavy head, an earlier fitting follower and
+a later fitting follower; it omits reconnect, grace expiry, reorder, force
+and crashes. `GraceSpec` omits admission; `SchedulingSpec` and
 `StorageSchedulingSpec` omit launch and release, and the latter does not
 reconcile held work. Their combined results are not a compositional proof.
 The full `Spec` includes the omitted interactions.
 
 ## Outcomes and actionable gaps
 
+The following checks used TLC 2.18, one worker and `-Xmx256m` on macOS on
+2026-11-25. Each completed in under a second of reported TLC time.
+
+| Current focused case | Bounds and scope | Generated / distinct states | Result |
+|---|---|---:|---|
+| `BackfillScenarioSafety` | 4 jobs, capacity 2, limit 1; disconnected follower may be skipped, connected fitting follower may not | 24 / 9 | complete |
+| `RecoveryAdmissionSafety` | 2 unit jobs, capacity 2, one crash; held pre-crash reservation and later normal admission | 17 / 10 | complete |
+
+| Current witness | Deliberately violated invariant | Meaning |
+|---|---|---|
+| `BackfillDisconnected` | `NeverBackfillPastDisconnected` | After a fitting earlier follower disconnects, a later connected fitting follower is backfilled and the head's count increments. |
+| `RecoveryAdmission` | `NeverAdmissionBesideUncertain` | After a crash and readiness, a second job is normally admitted while the first pre-crash reservation remains unreconciled and held; both weights count toward capacity. |
+
+The positive recovery scenario checks `PreexistingUncertainHeld`,
+`NormalCapacity`, `NeverForcedOverload` and `NoReservationWhenNotReady`
+throughout its bounded search. Its witness starts with one pre-crash
+reservation and forbids the second reservation until after the crash; the
+last state has both unit reservations held at capacity two. The backfill
+scenario checks `NoSkippedConnectedFollower` and the same relevant capacity
+and readiness invariants. These constrained scenarios exclude many other
+interleavings.
+
+### Historical checks
+
 The following runs used TLC 2.18, one worker and `-Xmx512m` on macOS on
-2026-11-25, against the revision adding bounded backfill, scoped recovery and
-broker force-stop after verified runner death. Positive searches finished with no queued states. Witness
-counts stop at the first deliberately violated invariant.
+2026-11-25, against the earlier revision adding bounded backfill, scoped
+recovery and runner-death cleanup. They have not been rerun against the
+current backfill logic. Positive searches finished with no queued states;
+witness counts stop at the first deliberately violated invariant.
 
 | Focused case | Bounds and scope | Generated / distinct states | Result |
 |---|---|---:|---|
@@ -239,7 +252,7 @@ counts stop at the first deliberately violated invariant.
 | `StorageRecoverySafety` | 1 job; 1 broker and 1 runner crash; storage failure/restore and claim/fence actions | 3,209,665 / 393,163 | complete |
 | `CompletionSafety` | 1 job; reordered/lost/conflicting start and finish | 7,589 / 778 | complete |
 | `RecoveryReportSafety` | 1 job; 1 broker crash; report ordering, cancellation, seal and release | 13,846,466 / 994,324 | complete |
-| `RecoverySchedulingSafety` | 2 unit jobs, capacity 1; 1 broker crash; readiness beside an unreconciled reservation | 1,533 / 362 | complete |
+| `RecoverySchedulingSafety` | Historical configuration: 2 unit jobs, capacity 1; 1 broker crash; readiness beside an unreconciled reservation | 1,533 / 362 | complete at old bound |
 | `RunnerDeathCleanup` | 1 job; 1 runner crash; child, start report and broker force-stop after verified death | 2,141,613 / 234,684 | complete |
 | `KnownChildRace` | 1 job; discovery between scan and release | 523 / 93 | complete |
 
@@ -280,11 +293,18 @@ Retries are not modeled: a retry is a fresh submission, so the model's
 finite job set would represent it as another job. The bypass count's
 interaction with crashes is not checked beyond its durable storage in `db`.
 
-The earlier `Safety` and `Recovery` results belonged to the prior model
-revision. Their current configurations, and `Stress`, have **not** completed
-for this revision. The old `Stress` run was itself incomplete. Until the
-shared runner migration is complete, these wider checks remain unrun; the
-focused passes above must not be presented as substitutes for them.
+The current `RecoverySchedulingSafety` configuration increases capacity to
+two and adds capacity invariants; that broader profile has **not** been run
+at the new bound. The earlier `Safety` and `Recovery` results belonged to a
+prior model revision. Their current configurations, and `Stress`, have
+**not** completed for this revision. The old `Stress` run was itself
+incomplete. Until the shared runner migration is complete, these wider checks
+remain unrun; the tiny focused passes above are not substitutes.
+
+Previously, `RecoveryReportSafety` and an earlier, larger
+`RunnerDeathCleanup` variant ran for over a minute without the required
+shared gate. They are not compliant gated validation and must not be repeated
+unlocked.
 
 ## Limitations
 
