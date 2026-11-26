@@ -126,6 +126,11 @@ func (s *Scheduler) SnapshotEvent(ctx context.Context) (*pb.BrokerEvent, error) 
 		if snapshot.ActiveJobs, err = r.ActiveJobs(); err != nil {
 			return err
 		}
+		for _, job := range snapshot.ActiveJobs {
+			if err := s.projectJob(r, job); err != nil {
+				return err
+			}
+		}
 		if err := s.projectStatus(r, snapshot.Status, s.ready); err != nil {
 			return err
 		}

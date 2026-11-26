@@ -271,3 +271,42 @@ func TestClaimRefusedUntilReady(t *testing.T) {
 		t.Fatalf("claim after recovery: already=%v err=%v", already, err)
 	}
 }
+
+func TestSnapshotsProjectLaunchTimeout(t *testing.T) {
+	h := newHarness(t, 2, nil)
+	req := request(t, 2)
+	_, submitted, _, err := h.s.TrySubmitAndWatch(h.ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, watched, _, err := h.s.Watch(h.ctx, submitted.JobId, req.Runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := h.snapshot()
+	if len(snapshot.ActiveJobs) != 1 {
+		t.Fatalf("active jobs = %d, want 1", len(snapshot.ActiveJobs))
+	}
+	for name, job := range map[string]*pb.Job{
+		"no-wait snapshot": submitted,
+		"watch snapshot":   watched,
+		"broker snapshot":  snapshot.ActiveJobs[0],
+	} {
+		t.Run(name, func(t *testing.T) {
+			if job.Grant == nil || job.Grant.LaunchTimeoutMs != 30000 {
+				t.Fatalf("grant = %v, want the 30-second launch investigation timeout", job.Grant)
+			}
+		})
+	}
+}
+
+func TestSubmitProjectsDisconnectedGrace(t *testing.T) {
+	h := newHarness(t, 2, nil)
+	result, _, err := h.s.Submit(h.ctx, request(t, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Job.GraceRemainingMs == nil || *result.Job.GraceRemainingMs != 30000 {
+		t.Fatalf("submitted job grace = %v, want 30 seconds", result.Job.GraceRemainingMs)
+	}
+}

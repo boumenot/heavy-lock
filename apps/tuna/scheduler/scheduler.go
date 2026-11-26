@@ -269,7 +269,10 @@ func (s *Scheduler) Submit(ctx context.Context, req *pb.SubmitJobRequest) (stora
 		var err error
 		result, err = tx.Submit(req, storage.Submission{Mode: contract.AdmissionQueued,
 			ServiceVersion: s.version, ServiceRunID: s.run})
-		return err
+		if err != nil || result.Busy {
+			return err
+		}
+		return s.projectJob(&tx.Reader, result.Job)
 	})
 	if err != nil {
 		return storage.SubmissionResult{}, nil, err
@@ -348,14 +351,12 @@ func (s *Scheduler) TrySubmitAndWatch(ctx context.Context, req *pb.SubmitJobRequ
 		if result.Created {
 			// Conservative if the commit then fails: it only delays sharing.
 			s.lastAdmission = s.clock()
-			return nil
-		}
-		// Same-key recovery by the same incarnation; never another allowance.
-		if result.Job.State != pb.JobState_JOB_STATE_FINISHED &&
+		} else if result.Job.State != pb.JobState_JOB_STATE_FINISHED &&
 			(result.Job.Grant == nil || !sameRunner(result.Job.Grant.Runner, req.GetRunner())) {
+			// Same-key recovery never grants another incarnation an allowance.
 			return storage.ErrIdentity
 		}
-		return nil
+		return s.projectJob(&tx.Reader, result.Job)
 	})
 	if err != nil {
 		return nil, nil, nil, err
@@ -439,7 +440,10 @@ func (s *Scheduler) Watch(ctx context.Context, id string, runner *pb.RunnerIncar
 			}
 		}
 		job, err = tx.Job(id)
-		return err
+		if err != nil {
+			return err
+		}
+		return s.projectJob(&tx.Reader, job)
 	})
 	if err != nil {
 		restore()
