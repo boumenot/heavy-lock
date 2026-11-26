@@ -1,5 +1,6 @@
 import Foundation
 import HeavyLockV2
+import Synchronization
 import Testing
 
 @testable import TunaMonitorCore
@@ -114,8 +115,19 @@ import Testing
         #expect(ControlAction.forceStart(queued).confirmation != nil)
         #expect(ControlAction.cancel(queued).confirmation?.message.contains("queue position") == true)
         #expect(ControlAction.cancel(running).confirmation?.message.contains("cannot be undone") == true)
-        #expect(ControlAction.jobActions(for: job("f", .finished)).isEmpty)
-        #expect(ControlAction.jobActions(for: job("r", .running)) == [.cancel(running)])
+        #expect(ControlAction.jobActions(for: job("f", .finished), in: []).isEmpty)
+        #expect(ControlAction.jobActions(for: job("r", .running), in: []) == [.cancel(running)])
+    }
+
+    @Test func movesThatWouldNotReorderAreOmitted() {
+        let queue = [job("a", .queued), job("b", .queued), job("c", .queued)]
+        let (a, b, c) = (JobReference(queue[0]), JobReference(queue[1]), JobReference(queue[2]))
+        #expect(ControlAction.jobActions(for: queue[0], in: queue) == [.moveToBack(a), .forceStart(a), .cancel(a)])
+        #expect(
+            ControlAction.jobActions(for: queue[1], in: queue)
+                == [.moveToFront(b), .moveToBack(b), .forceStart(b), .cancel(b)])
+        #expect(ControlAction.jobActions(for: queue[2], in: queue) == [.moveToFront(c), .forceStart(c), .cancel(c)])
+        #expect(ControlAction.jobActions(for: queue[0], in: [queue[0]]) == [.forceStart(a), .cancel(a)])
     }
 }
 
@@ -283,5 +295,134 @@ import Testing
         session.request(.moveToBack(JobReference(job("q", .queued))))
         #expect(await eventually { session.state.controlError == "Move to Back failed: JOB_NOT_QUEUED: not queued" })
         #expect(session.inFlight.isEmpty)
+    }
+}
+
+private func attributed(
+    _ id: String, _ state: Heavylock_V2_JobState, worklog: String? = nil, repository: String? = nil,
+    cwd: String? = nil
+) -> Heavylock_V2_Job {
+    var value = job(id, state)
+    if let worklog { value.attribution.worklog = worklog }
+    if let repository { value.attribution.repository = repository }
+    if let cwd { value.cwd = cwd }
+    return value
+}
+
+@Suite struct DockAndLinkTests {
+    let now = Date(timeIntervalSince1970: 1_000)
+
+    @Test func dockTileShowsLongestRunningWorklogOthersAndQueuedBadge() {
+        var state = MonitorState()
+        state.connection = .live
+        #expect(Presentation.dockTile(state) == .init(style: .idle, label: "—", otherRunning: 0, badge: nil, light: .unknown))
+
+        state.active = [
+            attributed("a", .running, worklog: "18"), attributed("b", .running), attributed("c", .reserved),
+        ]
+        state.queue = [job("q1", .queued), job("q2", .queued)]
+        #expect(Presentation.dockTile(state) == .init(style: .running, label: "#18", otherRunning: 1, badge: "2", light: .unknown))
+
+        state.active = [attributed("b", .running), attributed("a", .running, worklog: "owner/repo#7")]
+        #expect(Presentation.dockTile(state).label == "#?")
+        state.active.reverse()
+        #expect(Presentation.dockTile(state).label == "#7")
+
+        state.connection = .unavailable("refused")
+        #expect(
+            Presentation.dockTile(state)
+                == .init(style: .notLive, label: "#7", otherRunning: 1, badge: nil, light: .unknown))
+        state.active = []
+        #expect(Presentation.dockTile(state).label == "!")
+    }
+
+    @Test func stopLightShowsPausedStalledAndAdmitting() {
+        var state = MonitorState()
+        state.connection = .live
+        state.status = Heavylock_V2_BrokerStatus()
+        #expect(Presentation.dockTile(state).light == .go)
+        state.headBlockedReason = .runnerDisconnected
+        #expect(Presentation.dockTile(state).light == .go)
+        state.status?.recovering = true
+        #expect(Presentation.dockTile(state).light == .stalled)
+        state.status?.paused = true
+        #expect(Presentation.dockTile(state).light == .stopped)
+        state.status = Heavylock_V2_BrokerStatus()
+        state.status?.storageUnavailable = true
+        #expect(Presentation.dockTile(state).light == .stalled)
+        state.status?.storageUnavailable = false
+        var health = Heavylock_V2_Health()
+        health.ready = false
+        state.health = health
+        #expect(Presentation.dockTile(state).light == .stalled)
+        state.connection = .unavailable("refused")
+        state.status?.paused = true
+        #expect(Presentation.dockTile(state).light == .unknown)
+    }
+
+    @Test func pathsUnderHomeUseTilde() {
+        #expect(Presentation.homeRelative("/Users/me/src/x", home: "/Users/me") == "~/src/x")
+        #expect(Presentation.homeRelative("/Users/me", home: "/Users/me/") == "~")
+        #expect(Presentation.homeRelative("/Users/meow/x", home: "/Users/me") == "/Users/meow/x")
+        let row = Presentation.row(
+            attributed("a", .running, worklog: "18", cwd: "/Users/me/w"), capacity: 2, now: self.now, home: "/Users/me")
+        #expect(row.cwd == "/Users/me/w")
+        #expect(row.cwdDisplay == "~/w")
+        #expect(row.worklog == WorklogReference(repository: nil, number: 18))
+        #expect(!row.details.contains { $0.contains("/Users/me") || $0.contains("worklog") })
+    }
+
+    @Test func worklogReferencesAreExplicitOnly() {
+        #expect(WorklogReference(attributed("a", .running, worklog: "18"))?.repository == nil)
+        #expect(
+            WorklogReference(attributed("a", .running, worklog: "o/r#3"))
+                == WorklogReference(repository: "o/r", number: 3))
+        #expect(
+            WorklogReference(attributed("a", .running, worklog: "5", repository: "o/r"))
+                == WorklogReference(repository: "o/r", number: 5))
+        #expect(WorklogReference(attributed("a", .running, worklog: "release")) == nil)
+        #expect(WorklogReference(attributed("a", .running)) == nil)
+        let row = Presentation.row(attributed("a", .running, worklog: "release"), capacity: 2, now: self.now)
+        #expect(row.worklog == nil)
+        #expect(row.details == ["worklog release"])
+    }
+
+    @Test func checkoutOutputIsParsed() {
+        #expect(Checkout.parse("/w\nmain") == Checkout(directory: "/w", branch: "main"))
+        #expect(Checkout.parse("/w\nHEAD")?.branch == "Detached HEAD")
+        #expect(Checkout.parse(nil) == nil)
+        #expect(Checkout.parse("fatal") == nil)
+    }
+
+    @MainActor
+    @Test func metadataUsesGhInTheJobDirectoryOrExplicitRepositoryAndCaches() async {
+        let calls = Mutex<[[String]]>([])
+        let metadata = JobMetadata { executable, arguments, cwd in
+            calls.withLock { $0.append([executable, cwd ?? "-"] + arguments) }
+            switch executable {
+            case "gh" where arguments.contains("18"):
+                return #"{"title":"Monitor","url":"https://github.com/o/r/issues/18"}"#
+            case "git": return "/w\nmain"
+            default: return nil
+            }
+        }
+        let local = WorklogReference(repository: nil, number: 18)
+        #expect(metadata.issue(local, cwd: "/w/sub") == .loading)
+        #expect(metadata.issue(local, cwd: nil) == .unavailable)
+        _ = metadata.issue(WorklogReference(repository: "o/r", number: 9), cwd: "/w")
+        _ = metadata.checkout("/w/sub")
+        #expect(await eventually { calls.withLock { $0.count } == 3 && metadata.checkout("/w/sub") != .loading })
+        #expect(await eventually { metadata.issue(local, cwd: "/w/sub") != .loading })
+
+        #expect(
+            metadata.issue(local, cwd: "/w/sub")
+                == .resolved(IssueMetadata(title: "Monitor", url: URL(string: "https://github.com/o/r/issues/18"))))
+        #expect(metadata.issue(WorklogReference(repository: "o/r", number: 9), cwd: "/w") == .unavailable)
+        #expect(metadata.checkout("/w/sub") == .resolved(Checkout(directory: "/w", branch: "main")))
+        let recorded = calls.withLock { $0 }
+        #expect(recorded.count == 3)
+        #expect(recorded.contains(["gh", "/w/sub", "issue", "view", "18", "--json", "title,url"]))
+        #expect(recorded.contains(["gh", "-", "issue", "view", "9", "--json", "title,url", "--repo", "o/r"]))
+        #expect(recorded.contains(["git", "-", "-C", "/w/sub", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"]))
     }
 }

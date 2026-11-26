@@ -604,17 +604,32 @@ live it keeps the last known state dimmed and labelled with its age, never
 as live, and disables controls.
 
 It shows capacity, occupancy, running/queued counts, pause state and the
-head's blocked reason; active jobs; the queue in order; and up to 20
+head's blocked reason; running jobs; queued jobs in order; and up to 20
 recently finished jobs from `ListJobs`, refreshed on each snapshot.
 Running and queued counts and occupancy come from the job events, because
 the broker does not publish `status_changed` for every start or finish.
-Rows show the command, state, weight, worklog, cwd, outcome and warnings,
-including a persistent warning for a queued job heavier than capacity.
-Force-started jobs are marked `FORCED`, including in history. Pause,
-resume and move to front/back are sent immediately; every cancel and
-force-start asks for confirmation, and the request is refused if the broker
-stopped being live meanwhile. There is no history deletion UI. The Dock
-badge shows the queued count while live.
+Rows show the command, state, weight, outcome and warnings, including a
+persistent warning for a queued job heavier than capacity. A numeric
+worklog links to its issue title and URL from `gh issue view` run in the
+job's cwd (an `owner/repo#N` worklog or repository attribution is passed as
+`--repo`); the repository is never guessed. The cwd links to its git
+checkout's top-level directory and branch in Finder, or to the cwd itself
+outside git, with home shown as `~`. Each row's actions are in an
+`ellipsis.circle` menu. Force-started jobs are marked `FORCED`, including
+in history. Pause, resume and move to front/back are sent immediately,
+in the order requested; a move is not offered to the job already at that
+end of the queue, where it would change nothing. Every cancel and force-start asks for confirmation, and the request is
+refused if the broker stopped being live meanwhile. There is no history
+deletion UI. Like v1, the Dock tile shows the longest-running job's
+worklog (`#?` when unattributed, `—` idle, `+N` for other running jobs) in
+a green, grey or dashed red (not live) ring, with the queued count as a
+badge while live. The bordered tile also has a stop light for normal
+admission: red when the queue is paused, amber when the broker holds all
+admissions (not ready, recovering or durable state unavailable), green
+otherwise, and all dark when the broker is not live. A blocked queue head
+alone does not turn it amber, since other jobs may still be admitted; its
+reason shows on the job's row. Jobs carry no Copilot app Project reference, so the
+monitor has no Project link.
 
 The API is unauthenticated loopback gRPC: any local process or user can see
 full commands, arguments, working directories and history, and can control

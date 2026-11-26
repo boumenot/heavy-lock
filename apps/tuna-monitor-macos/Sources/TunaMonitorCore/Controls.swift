@@ -95,12 +95,18 @@ public enum ControlAction: Equatable, Hashable, Sendable {
         }
     }
 
-    /// Job controls offered for a job in its current state.
-    public static func jobActions(for job: Heavylock_V2_Job) -> [ControlAction] {
+    /// Job controls offered for a job in its current state. A move is
+    /// omitted when it would leave `queue`, in broker order, unchanged: the
+    /// broker only reorders, so moving the head to the front or the tail to
+    /// the back has no effect.
+    public static func jobActions(for job: Heavylock_V2_Job, in queue: [Heavylock_V2_Job]) -> [ControlAction] {
         let reference = JobReference(job)
         switch job.state {
         case .queued:
-            return [.moveToFront(reference), .moveToBack(reference), .forceStart(reference), .cancel(reference)]
+            var actions: [ControlAction] = []
+            if queue.first?.jobID != job.jobID { actions.append(.moveToFront(reference)) }
+            if queue.last?.jobID != job.jobID { actions.append(.moveToBack(reference)) }
+            return actions + [.forceStart(reference), .cancel(reference)]
         case .reserved, .running, .finishing:
             return [.cancel(reference)]
         default:

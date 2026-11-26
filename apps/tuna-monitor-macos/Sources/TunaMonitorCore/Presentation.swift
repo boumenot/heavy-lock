@@ -22,8 +22,52 @@ public enum Presentation {
         public var summary: String
         /// Shown when the job was force-started, including in history.
         public var forced: Bool
+        /// The attributed worklog, shown as a link once resolved.
+        public var worklog: WorklogReference?
+        /// The job's working directory, and the same path abbreviated with `~`.
+        public var cwd: String?
+        public var cwdDisplay: String?
         public var details: [String]
         public var warnings: [String]
+    }
+
+    public enum TileStyle: Equatable, Sendable {
+        case idle
+        case running
+        case notLive
+    }
+
+    /// The Dock tile's stop light for normal admission.
+    public enum QueueLight: Equatable, Sendable {
+        /// Admission is enabled.
+        case go
+        /// The broker holds every admission: not ready, recovering or
+        /// without durable storage. A blocked queue head alone is not a
+        /// stall, since followers may still be admitted beside it.
+        case stalled
+        /// The queue is paused.
+        case stopped
+        /// The broker is not live, so its queue state is unknown.
+        case unknown
+    }
+
+    /// What the Dock tile shows: the worklog of the longest-running job, how
+    /// many other jobs run beside it, the queue's stop light and the queued
+    /// count as a badge.
+    public struct DockTile: Equatable, Sendable {
+        public var style: TileStyle
+        public var label: String
+        public var otherRunning: Int
+        public var badge: String?
+        public var light: QueueLight
+
+        public init(style: TileStyle, label: String, otherRunning: Int, badge: String?, light: QueueLight) {
+            self.style = style
+            self.label = label
+            self.otherRunning = otherRunning
+            self.badge = badge
+            self.light = light
+        }
     }
 
     // MARK: Service
@@ -86,7 +130,39 @@ public enum Presentation {
 
     // MARK: Jobs
 
-    public static func row(_ job: Heavylock_V2_Job, capacity: UInt32?, now: Date) -> JobRow {
+    public static func dockTile(_ state: MonitorState) -> DockTile {
+        let running = state.active.filter { $0.state == .running }
+        let label = running.first.map { WorklogReference($0)?.label ?? "#?" }
+        let badge = state.isLive && !state.queue.isEmpty ? String(state.queue.count) : nil
+        guard state.isLive else {
+            return DockTile(
+                style: .notLive, label: label ?? "!", otherRunning: max(0, running.count - 1), badge: nil,
+                light: .unknown)
+        }
+        let light = Self.queueLight(state)
+        guard let label else { return DockTile(style: .idle, label: "—", otherRunning: 0, badge: badge, light: light) }
+        return DockTile(style: .running, label: label, otherRunning: running.count - 1, badge: badge, light: light)
+    }
+
+    static func queueLight(_ state: MonitorState) -> QueueLight {
+        guard state.isLive, let status = state.status else { return .unknown }
+        if status.paused { return .stopped }
+        if state.health?.ready == false || status.recovering || status.storageUnavailable { return .stalled }
+        return .go
+    }
+
+    /// `path` with the home directory replaced by `~`.
+    public static func homeRelative(_ path: String, home: String = NSHomeDirectory()) -> String {
+        let home = home.hasSuffix("/") ? String(home.dropLast()) : home
+        guard !home.isEmpty else { return path }
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+        return path
+    }
+
+    public static func row(
+        _ job: Heavylock_V2_Job, capacity: UInt32?, now: Date, home: String = NSHomeDirectory()
+    ) -> JobRow {
         var summary = [Self.stateName(job.state)]
         if job.state == .queued, job.hasQueuePosition { summary[0] += " #\(job.queuePosition + 1)" }
         summary.append("weight \(job.weight)")
@@ -96,14 +172,15 @@ public enum Presentation {
         }
         if job.state == .finished, job.hasOutcome { summary.append(Self.outcomeText(job.outcome)) }
 
+        let worklog = WorklogReference(job)
         var details: [String] = []
         let attribution = [
             job.attribution.hasRepository ? job.attribution.repository : nil,
             job.attribution.hasBranch ? job.attribution.branch : nil,
-            job.attribution.hasWorklog ? "worklog \(job.attribution.worklog)" : nil,
+            // A worklog that is not an issue reference cannot be linked.
+            job.attribution.hasWorklog && worklog == nil ? "worklog \(job.attribution.worklog)" : nil,
         ].compactMap { $0 }
         if !attribution.isEmpty { details.append(attribution.joined(separator: " · ")) }
-        if job.hasCwd { details.append(job.cwd) }
         if job.state == .finished, job.hasResources, job.resources.hasElapsedMs {
             details.append("Ran \(Self.duration(milliseconds: job.resources.elapsedMs))")
         }
@@ -129,7 +206,9 @@ public enum Presentation {
 
         return JobRow(
             id: job.jobID, command: job.command, summary: summary.joined(separator: " · "),
-            forced: job.forced, details: details, warnings: warnings
+            forced: job.forced, worklog: worklog, cwd: job.hasCwd ? job.cwd : nil,
+            cwdDisplay: job.hasCwd ? Self.homeRelative(job.cwd, home: home) : nil,
+            details: details, warnings: warnings
         )
     }
 

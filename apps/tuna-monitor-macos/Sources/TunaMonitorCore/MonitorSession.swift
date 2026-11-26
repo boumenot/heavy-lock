@@ -19,6 +19,9 @@ public final class MonitorSession {
     @ObservationIgnored private let reconnectDelay: Duration
     @ObservationIgnored private let minimumHeartbeatTimeout: Duration
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// The most recently sent control; each control waits for the previous
+    /// one so the broker receives them in the order they were requested.
+    @ObservationIgnored private var lastControl: Task<Void, Never>?
     @ObservationIgnored private var lastMessage = ContinuousClock.now
     @ObservationIgnored private var heartbeatInterval: Duration = .zero
     @ObservationIgnored private var timedOut: Duration?
@@ -76,7 +79,9 @@ public final class MonitorSession {
     private func send(_ action: ControlAction) {
         self.state.controlError = nil
         self.inFlight.insert(action)
-        Task { [client] in
+        let previous = self.lastControl
+        self.lastControl = Task { [client] in
+            await previous?.value
             do {
                 try await client.perform(action)
                 self.inFlight.remove(action)

@@ -5,6 +5,8 @@ import TunaMonitorCore
 struct MonitorView: View {
     let session: MonitorSession
     let port: Int
+    @State private var metadata = JobMetadata()
+    @State private var dockTile = DockTileView(frame: NSRect(x: 0, y: 0, width: 128, height: 128))
 
     var body: some View {
         let state = self.session.state
@@ -15,8 +17,8 @@ struct MonitorView: View {
             Divider()
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 List {
-                    self.section("Active", jobs: state.active, state: state, now: context.date, empty: "No active jobs")
-                    self.section("Queue", jobs: state.queue, state: state, now: context.date, empty: "Queue is empty")
+                    self.section("Running", jobs: state.active, state: state, now: context.date, empty: "No running jobs")
+                    self.section("Queued", jobs: state.queue, state: state, now: context.date, empty: "Queue is empty")
                     self.section(
                         "Recently finished", jobs: state.recent, state: state, now: context.date,
                         empty: "No retained finished jobs"
@@ -45,11 +47,8 @@ struct MonitorView: View {
         } message: { confirmation in
             Text(confirmation.message)
         }
-        .onChange(of: state.queue.count, initial: true) { _, _ in
-            NSApp.dockTile.badgeLabel = state.isLive && !state.queue.isEmpty ? String(state.queue.count) : nil
-        }
-        .onChange(of: state.isLive) { _, live in
-            NSApp.dockTile.badgeLabel = live && !state.queue.isEmpty ? String(state.queue.count) : nil
+        .onChange(of: Presentation.dockTile(state), initial: true) { _, tile in
+            self.dockTile.show(tile)
         }
     }
 
@@ -111,6 +110,12 @@ struct MonitorView: View {
                     Text(row.command).font(.body.monospaced()).lineLimit(2).truncationMode(.middle)
                 }
                 Text(row.summary).font(.caption)
+                if let worklog = row.worklog {
+                    self.worklogLink(worklog, cwd: row.cwd)
+                }
+                if let cwd = row.cwd {
+                    self.checkoutLink(cwd, display: row.cwdDisplay ?? cwd)
+                }
                 ForEach(row.details, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
                 ForEach(row.warnings, id: \.self) { warning in
                     Label(warning, systemImage: "exclamationmark.triangle.fill")
@@ -120,19 +125,63 @@ struct MonitorView: View {
             }
             .textSelection(.enabled)
             Spacer()
-            let actions = ControlAction.jobActions(for: job)
+            let actions = ControlAction.jobActions(for: job, in: self.session.state.queue)
             if !actions.isEmpty {
-                Menu("Actions") {
+                Menu {
                     ForEach(actions, id: \.self) { action in
                         Button(action.title) { self.session.request(action) }
                             .disabled(self.session.inFlight.contains(action))
                     }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .imageScale(.large)
                 }
+                .menuStyle(.button)
+                .buttonStyle(.borderless)
+                .menuIndicator(.hidden)
                 .fixedSize()
+                .help("Actions")
+                .accessibilityLabel("Actions")
                 .disabled(!state.isLive)
             }
         }
         .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func worklogLink(_ worklog: WorklogReference, cwd: String?) -> some View {
+        switch self.metadata.issue(worklog, cwd: cwd) {
+        case .resolved(let issue):
+            if let url = issue.url {
+                Link("\(worklog.label) \(issue.title)", destination: url).font(.caption)
+            } else {
+                Text("\(worklog.label) \(issue.title)").font(.caption)
+            }
+        case .loading:
+            Text("\(worklog.label) Loading title…").font(.caption).foregroundStyle(.secondary)
+        case .unavailable:
+            Text("\(worklog.label) Title unavailable").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func checkoutLink(_ cwd: String, display: String) -> some View {
+        if case .resolved(let checkout) = self.metadata.checkout(cwd), let directory = checkout.directory {
+            let branch = checkout.branch.map { " · \($0)" } ?? ""
+            Link(
+                Presentation.homeRelative(directory) + branch,
+                destination: URL(fileURLWithPath: directory, isDirectory: true)
+            )
+            .font(.caption)
+            .help("Open the checkout in Finder")
+            if directory != cwd {
+                Text("in \(display)").font(.caption).foregroundStyle(.secondary)
+            }
+        } else {
+            Link(display, destination: URL(fileURLWithPath: cwd, isDirectory: true))
+                .font(.caption)
+                .help("Open the working directory in Finder")
+        }
     }
 
     private static func symbol(_ tone: Presentation.Tone, live: Bool) -> String {

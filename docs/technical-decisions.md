@@ -322,6 +322,25 @@ reservations or starts); capacity, pause and resource figures come from the
 last status. A queued job heavier than capacity gets a persistent warning
 from either its blocked reason or weight versus capacity.
 
+After the user's UI review, the Dock tile matches v1: the longest-running
+job's worklog (`#N`, `#?` unattributed, `—` idle) and `+N` other running
+jobs in a state-coloured ring, with the queued count as a badge while live.
+A bordered tile adds a queue stop light: red from the independent `paused`
+flag (even with an empty queue), amber only for broker-wide holds (health
+not ready, `recovering`, `storage_unavailable`), green otherwise, and dark
+when not live, so stale state never looks like running. `head_blocked_reason`
+describes only the effective head and followers may backfill past it, so a
+blocked head is not shown as a stall.
+Sections are Running, Queued and Recently finished; row actions are an
+icon menu; paths under home display as `~`. A worklog links to the issue
+from v1's lookup, `gh issue view` in the job's cwd (or `--repo` from an
+explicit `owner/repo#N` worklog or repository attribution), cached per
+key, using only the returned URL. The cwd links to its git top-level
+directory and branch (`git rev-parse`), or to the cwd outside git. A
+Project link was requested, but jobs carry no Project or agent-session
+reference (the runner sends only `worklog`) and no supported link target is
+known, so none is shown.
+
 **Alternatives.** Extending the v1 monitor would mix two protocols in one app
 before cutover and raise its macOS 13 floor. Polling REST would lose
 resumable events. Trusting `BrokerStatus` counts alone showed stale counts in

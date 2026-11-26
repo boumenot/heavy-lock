@@ -50,7 +50,7 @@ struct BrokerIntegrationTests {
         #expect(await waitFor { session.state.queue.count == 2 })
         let queued = try #require(session.state.queue.first { $0.command.contains("sleep") })
         let forced = try #require(session.state.queue.first { $0.command.contains("true") })
-        #expect(ControlAction.jobActions(for: forced).count == 4)
+        #expect(ControlAction.jobActions(for: forced, in: session.state.queue).count == 3)
 
         session.request(.moveToBack(JobReference(queued)))
         #expect(await waitFor { session.state.queue.last?.jobID == queued.jobID })
