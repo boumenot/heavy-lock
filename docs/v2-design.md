@@ -86,7 +86,7 @@ other row is an explicit user decision.
 | Initial registration | A submission is queued unregistered with grace running until its first `WatchJob` registers; never reserved before registration *(delegated)* |
 | Oversized weights | Reject a weight above capacity at submission; a queued job oversized after a capacity decrease is skipped, never blocks and is never bypass-counted, and receives a visible warning *(delegated)* |
 | Deleted history and keys | The permanent tombstone retains only the idempotency key; reusing it fails with `IDEMPOTENCY_KEY_DELETED` and never creates a job. A deletion event or surviving retry can separately retain the job ID *(delegated)* |
-| Job history | Sample every five seconds; retain elapsed time, observed CPU time, sampled peak CPU and combined RSS summaries indefinitely until explicitly deleted |
+| Job history | Sample every five seconds; retain root-command runtime, observed CPU time, sampled peak CPU and combined RSS summaries indefinitely until explicitly deleted |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
 | Other recorded fields | Client name/version, service version, free memory at admission, termination signal when available, measurement completeness, queue/admission timestamps, explicitly supplied commit/target/configuration |
 | Attribution | Only explicit client-supplied values; missing stays unknown |
@@ -1394,9 +1394,9 @@ proven whole-job total.
 
 The assistant recommended this CPU-and-memory summary. Recording only
 elapsed time and peak memory would avoid CPU-accounting complexity but lose
-useful information about CPU consumption. The elapsed interval, remaining
-CPU-accounting details, sampler and platform parity remain open. The
-estimates have limitations:
+useful information about CPU consumption. The remaining CPU-accounting
+details, sampler and platform parity remain open. The estimates have
+limitations:
 
 - Five-second snapshots can miss short-lived children and transient peaks.
 - Summed RSS can double-count shared pages and differs from macOS footprint
@@ -1435,6 +1435,21 @@ than once and miss transient peaks or unobserved processes. Summed macOS
 physical footprint was an alternative that uses a different OS accounting
 measure, but it is platform-specific and its access and accuracy still need
 verification. Neither metric proves a complete process-tree total.
+
+**User decision: elapsed-time interval.** Measure root-command runtime from
+the root process starting until it exits. Exclude queue wait, pre-launch
+delay and any descendant cleanup after the root exits. A job that never
+launched has no command runtime. If the necessary start or exit timing
+cannot be recovered, leave the value unknown rather than inventing it.
+
+The assistant recommended command runtime because it describes the command
+itself. Reservation-to-release time would instead show how long capacity was
+occupied, including pre-launch and cleanup delays; submission-to-terminal
+time would also include queue wait. Those are different measurements.
+`finished_at_ns` records the terminal transition, not necessarily root exit.
+How the broker obtains reliable monotonic start and exit timing, including
+delayed reports, restarts and reboot, remains to be designed and verified.
+Do not derive the duration by subtracting wall-clock timestamps.
 
 **Recommendations.** Define measurement completeness and failure reasons
 alongside values, bound sampler overhead on large trees, and verify
@@ -2186,6 +2201,7 @@ message Outcome {
 }
 
 message ResourceSummary {
+  // Root-command runtime from process start to exit; unknown if unrecoverable.
   optional int64 elapsed_ms = 1;
   optional int64 cpu_time_ms = 2;
   // Peak interval CPU: 100% per logical CPU; may exceed 100%.
@@ -2998,6 +3014,7 @@ CREATE INDEX job_processes_live ON job_processes (pid, start_time_ns)
 -- One summary per job; updated in place from five-second samples.
 CREATE TABLE job_resource_summaries (
   job_id                   TEXT    PRIMARY KEY REFERENCES jobs (id) ON DELETE CASCADE,
+  -- Root-command runtime from process start to exit; NULL if unrecoverable.
   elapsed_ms               INTEGER CHECK (elapsed_ms >= 0),
   cpu_time_ms              INTEGER CHECK (cpu_time_ms >= 0),
   -- Peak interval CPU: 100% per logical CPU; may exceed 100%.
@@ -3472,8 +3489,9 @@ current results from historical runs and list bounds and unchecked cases.
    routing/multiplexer, gRPC-Swift/runtime and code-generation versions, and
    gRPC-Gateway versus hand-written REST handlers. REST polling rather than
    event streaming is decided (section 6).
-8. Elapsed interval, CPU-time accounting, sampler choice, measurement
-   completeness, platform parity and overhead (section 7). The CPU
+8. Reliable monotonic root-runtime measurement across delayed reports and
+   restarts, CPU-time accounting, sampler choice, measurement completeness,
+   platform parity and overhead (section 7). The elapsed interval, CPU
    percentage scale and combined RSS metric are decided.
 9. Command rendering and the payload-equivalence rule. Key-only
    tombstones after history deletion are a delegated decision

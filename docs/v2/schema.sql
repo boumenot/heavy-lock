@@ -400,6 +400,7 @@ CREATE INDEX job_processes_live ON job_processes (pid, start_time_ns)
 -- One summary per job; updated in place from five-second samples.
 CREATE TABLE job_resource_summaries (
   job_id                   TEXT    PRIMARY KEY REFERENCES jobs (id) ON DELETE CASCADE,
+  -- Root-command runtime from process start to exit; NULL if unrecoverable.
   elapsed_ms               INTEGER CHECK (elapsed_ms >= 0),
   cpu_time_ms              INTEGER CHECK (cpu_time_ms >= 0),
   -- Peak interval CPU: 100% per logical CPU; may exceed 100%.
