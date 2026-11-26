@@ -474,7 +474,7 @@ service Runner {
   rpc ReportStarted(ReportStartedRequest) returns (Job);
   // Report the outcome. Does not by itself release capacity.
   rpc ReportFinished(ReportFinishedRequest) returns (Job);
-  // Cancel this runner's own waiting job.
+  // Request cancellation of a waiting job; no ownership is verified.
   rpc CancelWaitingJob(CancelWaitingJobRequest) returns (Job);
 }
 
@@ -510,6 +510,10 @@ message ReportFinishedRequest {
 `Job`, `JobEvent` and `ClientInfo` are omitted; they would carry job state,
 queue position, grant and cancellation details, and are equally
 illustrative.
+
+The API is unauthenticated: any local client able to connect may request
+cancellation of a waiting job it can identify. The job ID does not prove
+ownership.
 
 Proposed invariants, still requiring agreement:
 
@@ -556,7 +560,8 @@ Notes:
 
 - Force-start confirmation is a monitor UI step. The API does not enforce
   it, so direct clients such as `curl` can force-start without a prompt.
-- History deletion must refuse queued, reserved or running jobs.
+- History deletion must refuse queued, reserved or running jobs and jobs
+  with live or unreconciled processes.
 - No endpoint authenticates. Any local process can read job details,
   including full command arguments that may contain secrets, and use any
   exposed control. Loopback is not user isolation.
@@ -619,7 +624,7 @@ CREATE TABLE queue_entries (
   position              INTEGER NOT NULL UNIQUE,
   disconnected          INTEGER NOT NULL DEFAULT 0,
   grace_elapsed_ms      INTEGER NOT NULL DEFAULT 0,
-  grace_started_at      TEXT    -- NULL while connected or service down
+  grace_started_at      TEXT    -- NULL when connected; may be stale after a crash
 );
 
 -- Durable capacity reservation and start grant.
@@ -680,13 +685,20 @@ Design notes:
   ambiguous launch gap and needs an agreed rule.
 - **Grace and downtime.** Persist accumulated grace in
   `grace_elapsed_ms`, and set `grace_started_at` only while the service
-  is accepting reconnections. On shutdown or crash, the elapsed time is
-  preserved (as of the last persisted update) and downtime does not count.
-  How often to persist, and reconnect/expiry races, remain open.
-- **History deletion.** Deleting completed history removes `jobs` rows
-  in terminal states and cascades to tags and summaries. It must not
-  affect queued, reserved or running jobs, and it does not by itself
-  scrub WAL files, backups or freed pages.
+  is accepting reconnections. A crash may leave `grace_started_at` non-NULL.
+  On recovery, treat it as stale and do not charge wall-clock time since it:
+  that interval may include service downtime. One conservative proposal is
+  to resume from the last persisted `grace_elapsed_ms` and establish a new
+  start time only when the service can accept reconnections. This may extend
+  grace by time not checkpointed before the crash. Checkpoint precision and
+  frequency, the exact recovery policy, and reconnect/expiry races remain open.
+- **History deletion.** In a serialized transaction, check that the job is
+  terminal, has no queue entry or active reservation, and has no live or
+  unreconciled process. Process liveness requires verification; a database
+  row alone is insufficient. Remove eligible released reservations and
+  process references first, then delete the `jobs` row and cascade to tags
+  and summaries. If safety cannot be established, retain the job and its
+  recovery state. This does not scrub WAL files, backups or freed pages.
 - **Unknown versus zero.** Missing exit codes, metrics or attribution
   stay `NULL`; completeness is recorded explicitly.
 - **Limits.** The database records intent and observations; it does not
