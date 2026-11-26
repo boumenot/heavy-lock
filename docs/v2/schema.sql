@@ -100,6 +100,19 @@ CREATE TABLE jobs (
                       -- NULL unless cancellation was requested,
                       -- e.g. 1764121500000000000 (2025-11-26T01:45:00.000000000Z)
   cancel_reason       TEXT,     -- e.g. 'cancelled from monitor'
+  cancel_acknowledged_at_ns INTEGER,
+                      -- assigned runner acknowledged the request; starts the
+                      -- completion deadline, e.g. 1764121500400000000
+  cancel_failure_detail TEXT,
+                      -- runner's explicit failed-termination report,
+                      -- e.g. 'kill: operation not permitted'
+  broker_termination_at_ns INTEGER,
+                      -- broker committed its own termination attempt; never
+                      -- release evidence, e.g. 1764121505000000000
+  broker_termination_reason TEXT CHECK (broker_termination_reason IN (
+                        'cancel_ack_deadline', 'cancel_completion_deadline',
+                        'cancel_runner_failed', 'runner_dead')),
+                      -- e.g. 'cancel_ack_deadline'
 
   -- Scheduling and opt-in retry ---------------------------------------------
   admitted_by_backfill INTEGER NOT NULL DEFAULT 0 CHECK (admitted_by_backfill IN (0, 1)),
@@ -176,8 +189,40 @@ CREATE TABLE jobs (
   CHECK (outcome_kind IS NOT 'signaled' OR signal_number IS NOT NULL),
   CHECK (outcome_kind IS NOT 'unknown'
          OR (exit_code IS NULL AND signal_number IS NULL AND signal_name IS NULL)),
-  CHECK (signal_name IS NULL OR signal_number IS NOT NULL)
+  CHECK (signal_name IS NULL OR signal_number IS NOT NULL),
+  CHECK (cancel_acknowledged_at_ns IS NULL OR cancel_requested_at_ns IS NOT NULL),
+  CHECK (cancel_failure_detail IS NULL OR cancel_acknowledged_at_ns IS NOT NULL),
+  CHECK ((broker_termination_at_ns IS NULL) = (broker_termination_reason IS NULL)),
+  CHECK (broker_termination_reason IS NULL OR admitted_at_ns IS NOT NULL),
+  CHECK (broker_termination_reason NOT LIKE 'cancel_%'
+         OR cancel_requested_at_ns IS NOT NULL),
+  CHECK (broker_termination_reason IS NOT 'cancel_completion_deadline'
+         OR cancel_acknowledged_at_ns IS NOT NULL),
+  CHECK (broker_termination_reason IS NOT 'cancel_runner_failed'
+         OR cancel_failure_detail IS NOT NULL)
 ) STRICT;
+
+-- Idempotency keys of explicitly deleted jobs, retained indefinitely so a
+-- delayed or repeated submission cannot create a new job after deletion.
+-- Stores only the random key: no command, payload digest or job ID.
+CREATE TABLE deleted_idempotency_keys (
+  idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) = 36)
+) STRICT, WITHOUT ROWID;
+
+CREATE TRIGGER jobs_record_deleted_idempotency_key
+AFTER DELETE ON jobs
+BEGIN
+  INSERT INTO deleted_idempotency_keys (idempotency_key)
+    VALUES (OLD.idempotency_key);
+END;
+
+CREATE TRIGGER jobs_no_deleted_idempotency_key
+BEFORE INSERT ON jobs
+WHEN EXISTS (SELECT 1 FROM deleted_idempotency_keys
+             WHERE idempotency_key = NEW.idempotency_key)
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency key belongs to deleted history');
+END;
 
 -- A surviving retry must not be reattached to a new job that happens to
 -- reuse the ID of its deleted predecessor.
@@ -215,9 +260,9 @@ CREATE INDEX jobs_finished ON jobs (finished_at_ns)
 CREATE TABLE queue_entries (
   job_id              TEXT    PRIMARY KEY REFERENCES jobs (id),
   queue_seq           INTEGER NOT NULL UNIQUE,  -- lower runs first; may be negative after move-front
-  runner_connected    INTEGER NOT NULL DEFAULT 1 CHECK (runner_connected IN (0, 1)),
-                      -- provisional; this default is not evidence that
-                      -- the initial WatchJob stream has registered
+  runner_connected    INTEGER NOT NULL DEFAULT 0 CHECK (runner_connected IN (0, 1)),
+                      -- 0 until the submitting incarnation's first WatchJob
+                      -- registers; SubmitJob starts grace at its commit
   runner_incarnation_id TEXT NOT NULL CHECK (length(runner_incarnation_id) = 36),
                       -- process-generated UUIDv4; unchanged on reconnect
   runner_pid          INTEGER NOT NULL CHECK (runner_pid > 0),

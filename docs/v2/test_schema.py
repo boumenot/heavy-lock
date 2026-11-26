@@ -22,6 +22,10 @@ class IdempotencyKeyReused(Exception):
     pass
 
 
+class IdempotencyKeyDeleted(Exception):
+    pass
+
+
 def new_id():
     return str(uuid.uuid4())
 
@@ -94,8 +98,8 @@ class RetryLineageTests(unittest.TestCase):
             """
             INSERT INTO queue_entries
               (job_id, queue_seq, runner_incarnation_id, runner_pid,
-               runner_start_time_ns)
-            VALUES (?, ?, ?, 1, 1)
+               runner_start_time_ns, grace_started_at_ns, grace_service_run_id)
+            VALUES (?, ?, ?, 1, 1, 1, 1)
             """,
             (job_id, sequence, new_id()),
         )
@@ -110,6 +114,11 @@ class RetryLineageTests(unittest.TestCase):
             if existing[1] != digest:
                 raise IdempotencyKeyReused
             return existing[0], False
+        if db.execute(
+            "SELECT 1 FROM deleted_idempotency_keys WHERE idempotency_key = ?",
+            (key,),
+        ).fetchone():
+            raise IdempotencyKeyDeleted
 
         predecessor = db.execute(
             """
@@ -442,7 +451,7 @@ class RetryLineageTests(unittest.TestCase):
 
         with self.assertRaises(RetryNotEligible):
             self.submit_retry(self.db, new_id(), new_id(), self.parent)
-        with self.assertRaises(RetryNotEligible):
+        with self.assertRaises(IdempotencyKeyDeleted):
             self.submit_retry(self.db, new_id(), key, self.parent)
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute(
@@ -474,6 +483,88 @@ class RetryLineageTests(unittest.TestCase):
                 self.db, new_id(), new_id(), state="queued",
                 parent=previous, attempt=5,
             )
+
+    def test_deleted_key_retransmission_cannot_create_a_job(self):
+        key = self.db.execute(
+            "SELECT idempotency_key FROM jobs WHERE id = ?", (self.parent,)
+        ).fetchone()[0]
+        self.delete(self.db, self.parent)
+
+        self.assertEqual([(key,)], self.db.execute(
+            "SELECT * FROM deleted_idempotency_keys"
+        ).fetchall())
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.insert_job(self.db, new_id(), key, state="queued")
+        self.assertEqual((0,), self.db.execute(
+            "SELECT count(*) FROM jobs"
+        ).fetchone())
+
+    def test_delete_before_retransmission_race_reports_deleted_key(self):
+        child, key = new_id(), new_id()
+        self.submit_retry(self.db, child, key, self.parent)
+        self.finish(self.db, child)
+        self.db.execute("BEGIN IMMEDIATE")
+        self.delete_in_transaction(self.db, child)
+        thread, results = self.start_competitor(
+            lambda db: self.submit_retry(db, new_id(), key, self.parent)
+        )
+        self.db.commit()
+        self.assertIsInstance(
+            self.finish_competitor(thread, results), IdempotencyKeyDeleted
+        )
+        self.assertEqual((0,), self.db.execute(
+            "SELECT count(*) FROM jobs WHERE retry_of_job_id = ?", (self.parent,)
+        ).fetchone())
+
+    def test_new_queue_entry_is_unregistered_until_watch_registers(self):
+        job = new_id()
+        self.insert_job(self.db, job, new_id(), state="queued")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "INSERT INTO queue_entries (job_id, queue_seq, "
+                "runner_incarnation_id, runner_pid, runner_start_time_ns) "
+                "VALUES (?, 1, ?, 1, 1)",
+                (job, new_id()),
+            )
+        self.enqueue(self.db, job)
+        self.assertEqual((0,), self.db.execute(
+            "SELECT runner_connected FROM queue_entries WHERE job_id = ?", (job,)
+        ).fetchone())
+        self.db.execute(
+            "UPDATE queue_entries SET runner_connected = 1, grace_elapsed_us = 0, "
+            "grace_started_at_ns = NULL, grace_service_run_id = NULL "
+            "WHERE job_id = ?",
+            (job,),
+        )
+
+    def test_broker_termination_requires_matching_cancel_phase(self):
+        job = new_id()
+        self.insert_job(self.db, job, new_id(), state="queued")
+        self.db.execute(
+            "UPDATE jobs SET state = 'running', admitted_at_ns = 2, "
+            "started_at_ns = 3 WHERE id = ?", (job,),
+        )
+        for columns in (
+            "broker_termination_at_ns = 5, "
+            "broker_termination_reason = 'cancel_ack_deadline'",
+            "cancel_requested_at_ns = 4, broker_termination_at_ns = 5, "
+            "broker_termination_reason = 'cancel_completion_deadline'",
+            "cancel_requested_at_ns = 4, cancel_acknowledged_at_ns = 5, "
+            "broker_termination_at_ns = 6, "
+            "broker_termination_reason = 'cancel_runner_failed'",
+            "broker_termination_at_ns = 5",
+        ):
+            with self.subTest(columns=columns), \
+                    self.assertRaises(sqlite3.IntegrityError):
+                self.db.execute(f"UPDATE jobs SET {columns} WHERE id = ?", (job,))
+        self.db.execute(
+            "UPDATE jobs SET cancel_requested_at_ns = 4, "
+            "cancel_acknowledged_at_ns = 5, "
+            "cancel_failure_detail = 'operation not permitted', "
+            "broker_termination_at_ns = 6, "
+            "broker_termination_reason = 'cancel_runner_failed' WHERE id = ?",
+            (job,),
+        )
 
     def test_failed_insert_rolls_back_predecessor_marker(self):
         with self.assertRaises(sqlite3.IntegrityError):

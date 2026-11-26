@@ -78,7 +78,11 @@ other row is an explicit user decision.
 | Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes and API parity; see [section 11](#11-interface-and-schema-design) |
 | Initial timers | Configurable: 30 s queued-disconnect grace, 5 s broker-to-runner heartbeat, 30 s launch investigation from reservation commit |
 | Cancellation timers | Configurable, unmeasured starting defaults: 5 s acknowledgment, 30 s completion after acknowledgment; no graceful-shutdown grace (immediate force) |
+| Cancellation clocks | Acknowledgment clock from the cancel commit, completion clock from the acknowledgment commit; monotonic, restarted in full once a restarted broker is ready; recorded, sticky takeover; explicit failure report allows immediate takeover *(delegated)* |
 | Queued-runner disconnect | Keep place during grace; successful reconnect resets it, and service downtime does not count |
+| Initial registration | A submission is queued unregistered with grace running until its first `WatchJob` registers; never reserved before registration *(delegated)* |
+| Oversized weights | Reject a weight above capacity at submission; a queued job oversized after a capacity decrease is skipped, never blocks and is never bypass-counted, and can be force-started or cancelled *(delegated)* |
+| Deleted history and keys | Deletion retains only the idempotency key; reusing it fails with `IDEMPOTENCY_KEY_DELETED` and never creates a job *(delegated)* |
 | Job history | Sample every five seconds, retain summaries rather than raw timestamped samples, keep indefinitely until explicitly deleted |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
 | Other recorded fields | Client name/version, service version, free memory at admission, termination signal when available, measurement completeness, queue/admission timestamps, explicitly supplied commit/target/configuration |
@@ -190,9 +194,9 @@ The current defaults are capacity
 `min(processors ~/ 3, totalMemoryGiB ~/ 4)`, clamped to 2-8, with 25% free
 memory, at most 50% CPU load, and 60 seconds since the previous admission
 for sharing. See the [current behavior](../README.md#capacity-resources-and-priority).
-Exact v2 option names, numeric-weight normalization and capacity
-reconfiguration semantics still need a contract; this document does not
-invent replacements for the current settings.
+Exact v2 option names and numeric-weight normalization still need a
+contract; this document does not invent replacements for the current
+settings. Capacity changes are covered by the delegated decision below.
 
 **Historical recommendation, later adopted by delegation.** The assistant
 initially recommended bounded backfill; the user chose strict FIFO. The
@@ -203,11 +207,46 @@ delegation adopted it as described above.
 slot accounting and manual exceptions consistently in all clients.
 Use a single serialized scheduling authority and transactional transitions.
 
+**Delegated decision: oversized weights and capacity changes.** Under the
+user's delegation:
+- **Capacity is fixed for a broker run.** It is read from configuration
+  when the broker starts; v2 has no live capacity change. A restart with a
+  lower capacity never preempts or releases running work: occupancy above
+  the new capacity simply blocks normal admission until it falls.
+- **Submission rejects oversized weights.** A weight above the current
+  capacity fails with `FAILED_PRECONDITION` / `WEIGHT_EXCEEDS_CAPACITY`
+  (the code is `FAILED_PRECONDITION`, not `INVALID_ARGUMENT`, because the
+  limit is server configuration). The broker never clamps the weight.
+- **A queued job that became oversized is skipped, not a blocker.** If a
+  restart lowers capacity below a waiting job's weight, the job stays queued
+  and visible with `BLOCKED_REASON_WEIGHT_EXCEEDS_CAPACITY`. Normal admission
+  and backfill ignore it: the effective head is the earliest waiting job
+  that fits the configured capacity, the oversized job receives no bypass
+  count, and it never prevents later jobs from being admitted. It keeps its
+  `queue_seq`, so it competes normally again if capacity is raised. An
+  operator can force-start it, which counts its full weight toward
+  occupancy, or cancel it. Its disconnect grace rules are unchanged.
+- **K is broker-wide.** One configurable limit applies to every head; it is
+  not set per queue or per job.
+
+Alternatives considered:
+- **Let an oversized job stay the head.** It could never be admitted
+  normally, so after K bypasses it would block the queue indefinitely.
+- **Clamp its weight to capacity.** Admits it, but silently changes the
+  requested machine share, which can overload the machine more than the
+  user asked for.
+- **Remove it automatically with a new outcome.** Frees the queue but
+  discards persisted queued work without a user action, contrary to queued
+  work surviving restarts.
+- **Per-job K.** Lets urgent jobs refuse bypasses, but any unauthenticated
+  local client could set it, and it adds a fairness knob with no
+  demonstrated need.
+
+The cost is that an oversized job waits silently until an operator acts;
+clients must show its blocked reason prominently.
+
 **Open.** Priorities or reservations, if ever added, and their interaction
-with queue order and backfill; oversized requests (a weight above current
-capacity, for example after capacity reconfiguration, must not wait forever
-while backfill exhausts its count); whether K should be configurable per
-queue or per job; capacity changes while jobs are active;
+with queue order and backfill; live capacity changes, if ever added;
 and precise semantics of a no-wait submission. These are not approved
 v2 features.
 
@@ -343,13 +382,80 @@ the 30-second post-acknowledgment completion deadline covers force delivery,
 process exit and the runner's verification, not an application cleanup
 window. Neither starting default has been measured for v2.
 
-Still open: the acknowledgment clock start, the precise timing/clock rules
-for completion after acknowledgment, recovery/clock handling,
-response/reset rules, handling an explicit failed termination result,
-coordination or fencing of a still-live runner, platform termination
-mechanisms, and how a fallback result is recorded.
-The acknowledgment wire message/RPC and any persistent deadline state
-remain contract-design gaps; this decision does not select those mechanisms.
+**Delegated decision: cancellation deadline clocks, recovery and failure
+reports.** Under the user's delegation to accept recommendations, the
+deadlines above work as follows. Like the launch-investigation timeout
+(section 11.1), each clock starts at a durable commit, so an undelivered
+message is covered:
+
+- **Which jobs use deadlines.** Cancelling a queued job removes it.
+  Cancelling a reserved job whose grant is still unclaimed closes the grant
+  in the same transaction as observing no claim; that is a confirmed
+  no-launch proof, and no runner deadline applies. Deadlines apply only once
+  a claim exists (claimed, sealed or running).
+- **Acknowledgment.** The 5-second acknowledgment clock starts when the
+  cancellation request commits. The assigned runner incarnation acknowledges
+  with the idempotent `RunnerService.AcknowledgeCancel` RPC. A server stream
+  cannot carry a client reply, so this is a separate unary call. Any of its
+  later cancellation responses (`SealLaunch`, `ReportLaunchFailed`,
+  `ReportFinished` or `ReportCancelFailed`) also counts as acknowledgment.
+  The broker persists the first acknowledgment's time, and only the assigned
+  incarnation is accepted. Acknowledgment means receipt, not termination.
+- **Completion.** The 30-second completion clock starts when the
+  acknowledgment commits. It is satisfied only by the reports that
+  establish the outcome (`ReportFinished`, or `ReportLaunchFailed` with
+  `cancelled` when nothing was spawned). Release still requires the approved
+  checks.
+- **Clock source.** Both deadlines use a monotonic clock within one broker
+  run. Wall-clock timestamps are stored for display and audit only.
+- **Broker restart.** Elapsed deadline time is not persisted. Once the
+  restarted broker is ready (section 5), it restarts the full deadline for
+  the current phase, which the durable acknowledgment time identifies.
+  Broker downtime never counts against the runner, consistent with grace
+(section 4).
+  During recovery or storage failure no takeover starts, because it could
+  not be recorded durably. Acknowledgments and lifecycle reports from the
+  assigned incarnation are still accepted during recovery, as for other
+  lifecycle reports.
+- **No resets.** A runner reconnect, repeated `CancelJob` (still a no-op
+  success) or `WatchJob` snapshot does not reset either deadline.
+- **Takeover is recorded and sticky.** When the broker starts its own
+  termination procedure, it commits the start time and a reason
+  (`cancel_ack_deadline`, `cancel_completion_deadline`,
+  `cancel_runner_failed` or, for section 4's cleanup, `runner_dead`) before
+  signalling. A restarted broker continues a recorded takeover without a new
+  deadline. A late acknowledgment or report from the runner is recorded and
+  validated as usual, and can supply the outcome and release evidence, but
+  does not cancel a takeover that has already started. Coordination with a
+  still-live runner remains governed by the blocked-takeover decision below.
+- **Explicit failure.** A new `ReportCancelFailed` lets the assigned runner
+  report that its termination attempt failed, with an error detail. It
+  implies acknowledgment and makes the broker immediately eligible for
+  takeover, without waiting for the completion deadline. It never releases
+  capacity, and processes are not assumed to have exited.
+
+Alternatives considered:
+- **Persist elapsed deadline time across restarts**, as grace does
+  (section 4). A takeover would then happen sooner after a restart, but this
+  adds per-job checkpoint state and checkpoint precision rules for a
+  5- or 30-second wait. The chosen restart costs at most one extra deadline
+  per broker restart.
+- **Use wall-clock deadlines.** Simple to persist, but clock steps can
+  trigger a premature takeover or postpone it indefinitely.
+- **Start the acknowledgment clock at delivery.** A request that was never
+  delivered would then never time out, and the broker would need a separate
+  undelivered-request timer.
+- **Treat a failed-termination report as terminal, or wait for the
+  completion deadline.** Treating it as terminal would leave a known-failed
+  termination with capacity held and no further attempt. Waiting only
+  delays the same takeover.
+
+The model abstracts deadlines as nondeterministic takeover eligibility: it
+never treats timing as release evidence (section 12). Still open:
+coordination or fencing of a still-live runner beyond the blocked-takeover
+decision, detection of blocking coordination, platform termination
+mechanisms, and how a takeover's partial observations combine with a late
+runner report into one recorded outcome.
 
 **User decision: immediately force-stop on explicit cancellation.** An
 explicit job cancellation force-stops the verified job processes (root and
@@ -474,8 +580,7 @@ verification (section 5).
 
 **Open.** Confirmation for other destructive actions (cancellation and
 force-start are decided), exit/status codes,
-concurrent cancel/reorder/admit races, precise cancellation clock starts and
-recovery/clock handling, detection of blocking coordination
+concurrent cancel/reorder/admit races, detection of blocking coordination
 and runner-kill mechanisms for takeover, audit persistence, and
 whether pause survives a broker restart.
 
@@ -541,12 +646,38 @@ The 30-second default is an unmeasured starting point: shorter values free
 an abandoned FIFO head sooner but drop more transiently disconnected work;
 longer values tolerate interruptions but prolong head-of-line blocking.
 
+**Delegated decision: initial `WatchJob` registration.** Under the user's
+delegation, a new submission is not assumed to have a live stream.
+`SubmitJob` commits the queue entry as **unregistered**, which is the same
+state as a disconnected queued runner, and starts its grace period at the
+submission commit. The submitting incarnation's first `WatchJob` is its
+registration: it is handled exactly like a successful queued reconnect,
+marking the entry connected and resetting grace. If no stream registers
+within the grace period (30 seconds by default), the job is removed as
+`REMOVED_DISCONNECTED`, as after any queued disconnect. Until registration
+the job is never reserved: an unregistered head blocks normal admission like
+a disconnected head (`BLOCKED_REASON_RUNNER_DISCONNECTED`), and backfill
+skips an unregistered follower. A retransmitted `SubmitJob` returns the
+existing job but does not reset grace; only a stream registers. Force-start
+rules are unchanged.
+
+Alternatives considered:
+- **Treat a new submission as provisionally connected** (the earlier schema
+  default). Saves one state, but a runner that crashes after submitting, or
+  whose response was lost, could be granted capacity it never claims. That
+  holds a reservation until the launch investigation and fencing complete.
+- **A separate registration timeout.** Allows a shorter first-stream
+  deadline, but adds a configuration value and a second removal rule
+  without a demonstrated need. The existing grace already bounds how long an
+  absent runner can hold the head.
+
+The cost is that a runner must open its stream promptly after submitting.
+A slow first registration can block the head for up to the grace period,
+just as a disconnect does.
+
 **Open.** Definition of reconnect-ready, persistence of
 partially elapsed grace, repeated restarts, reconnect credentials/identity,
-ordering when reconnect races cancellation or admission, and how to handle
-a submission whose first `WatchJob` stream never registers. The schema's
-provisional `runner_connected` default does not establish a live stream;
-initial registration and any resulting timeout require a separate rule.
+and ordering when reconnect races cancellation or admission.
 Running-runner disconnect handling must not treat disconnection as death.
 
 **User decision (superseded): runner death.** The broker left a running
@@ -1101,7 +1232,7 @@ remain proposed defaults.
 | Queue order | Explicit `queue_entries.queue_seq`, never timestamp order |
 | Metadata | Dedicated columns for known fields plus a validated `metadata_json` object for extras; replaces the earlier `job_tags` table |
 | `ClientInfo` | Name, version, OS and architecture; explicitly reported only |
-| Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected while the key is retained. Key retention after history deletion remains open. |
+| Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected while the job is retained. After history deletion a key-only tombstone rejects every reuse *(delegated)*; see [section 11.3](#113-sqlite-schema). |
 | Outcome | Native `int64` exit code, optional POSIX signal number and name, and `outcome_kind` |
 | API parity | One-way REST-to-gRPC parity: every REST endpoint maps to a `ControlService` RPC |
 | Runner updates | `WatchJob` push stream with a current-state snapshot on reconnect |
@@ -1133,7 +1264,8 @@ Duration fields keep their existing units and monotonic-clock semantics.
 The proto defines two services on the shared loopback port:
 - **`RunnerService`** carries the runner's job lifecycle: `SubmitJob`,
   `WatchJob`, `RejoinJob`, `ClaimLaunch`, `SealLaunch`, `ReportStarted`,
-  `ReportLaunchFailed` and `ReportFinished`.
+  `ReportLaunchFailed`, `AcknowledgeCancel`, `ReportCancelFailed` and
+  `ReportFinished`.
 - **`ControlService`** carries broker operations shared by runners, the
   monitor and other clients: health, status, queue, listing, detail,
   controls, history deletion and `WatchEvents`.
@@ -1149,7 +1281,8 @@ reconnection handling.
 
 **User decision: initial timers.** The broker-to-runner heartbeat interval
 defaults to a configurable 5 seconds. The queued-runner grace defaults to
-30 seconds from the broker's detection of disconnection. The configurable
+30 seconds from the broker's detection of disconnection, or for a new
+submission from its commit until registration (section 4). The configurable
 30-second launch-investigation timeout starts at the durable reservation
 commit, including when a grant is never delivered or claimed; delivery and
 claim do not restart it. Expiry triggers investigation, not release or a
@@ -1178,7 +1311,9 @@ server-streaming `WatchJob` call.
 
 Five-second resource sampling is a separate broker activity. An open
 `WatchJob` stream is the queued runner's connection signal: the broker starts
-grace when it detects the queued stream has disconnected. A broker-to-runner
+grace when it detects the queued stream has disconnected, and a new
+submission is unregistered with grace running until its first stream
+registers (section 4). A broker-to-runner
 heartbeat does not itself establish that the broker detected a lost runner.
 A lost stream or heartbeat never releases a reserved or running job's capacity.
 
@@ -1189,7 +1324,8 @@ The runner treats the snapshot as level-triggered:
 - A present `grant` is not permission to spawn: the assigned incarnation
   must first obtain the durable one-shot claim. A replacement must not act
   on a stale grant or claim response.
-- A present `cancel_requested_at_unix_ns` means cancel.
+- A present `cancel_requested_at_unix_ns` means cancel; a runner holding a
+  claim acknowledges it with `AcknowledgeCancel`.
 
 Missed transitions are recovered from current state rather than replayed.
 Pushed messages carry the broker-wide `event_seq`. Per-job values are not
@@ -1210,6 +1346,7 @@ user-approved wire formats:
 | Recover without new admissions | Valid rejoin, seal and lifecycle reports for existing jobs are processed during recovery. The draft rejects `ClaimLaunch` during recovery, including retries; rejoin is not a launch authorization. A previously committed claim may still be acted on by its original runner. `BrokerStatus.unreconciled_reservations` reports held reservations still being reconciled after readiness. |
 | Bounded backfill | `Job.admitted_by_backfill` and `Job.backfill_bypass_count`, stored in `jobs`; `BrokerStatus.backfill_limit`. |
 | Opt-in retry | `SubmitJobRequest.retry_of_job_id`; immutable logical `Job.retry_of_job_id` and `Job.attempt`, with `jobs.retry_submitted` recording that an attempt has been retried even if the retry history is later deleted. One retry per attempt; `RETRY_NOT_ELIGIBLE` when eligibility or the attempt limit fails. |
+| Delegated gap decisions | `AcknowledgeCancel` and `ReportCancelFailed`, stored as `jobs.cancel_acknowledged_at_ns` and `jobs.cancel_failure_detail`; a sticky takeover record in `jobs.broker_termination_at_ns`/`_reason` and `Job.broker_termination`. Unregistered queue entries (`runner_connected` defaults to 0). `deleted_idempotency_keys` and `IDEMPOTENCY_KEY_DELETED`. `BLOCKED_REASON_WEIGHT_EXCEEDS_CAPACITY` in `Job.blocked_reason`, and `WEIGHT_EXCEEDS_CAPACITY` as `FAILED_PRECONDITION`. |
 | Fail closed on storage error | Return an explicit storage error and report not ready; acknowledge mutation only after its commit. Resume through recovery after storage becomes usable. Exact status/error representation is proposed below. |
 
 The per-process UUIDv4 and PID/start time identify a cooperative
@@ -1240,8 +1377,9 @@ recovery reports a replacement can relay remain open.
 - Submission and report calls are idempotent. Once ready, a retried
   `SubmitJob` with the same key and an equivalent payload returns the
   retained job with `created = false`. For a retained retry, check the key
-  before looking up its predecessor or testing retry eligibility. Key
-  retention after explicit job-history deletion remains open.
+  before looking up its predecessor or testing retry eligibility. After
+  explicit job-history deletion, the retained key-only tombstone rejects the
+  key with `IDEMPOTENCY_KEY_DELETED` and no job is created.
 - None of this authorizes automatic retry of an initial submission when
   the service is unreachable; that still fails immediately.
 
@@ -1312,8 +1450,15 @@ service RunnerService {
   // retry was submitted and inserting/enqueueing it are one transaction.
   // The retry joins the back of the queue and never reuses the earlier grant
   // or claim. Only the runner retries; the broker never resubmits or
-  // relaunches work. Returning a job after its own explicit deletion is not
-  // promised; idempotency-key retention after deletion remains open.
+  // relaunches work. Deleting a job's history retains only its key: a later
+  // submission with that key, with any payload, fails with
+  // FAILED_PRECONDITION / IDEMPOTENCY_KEY_DELETED and never creates a job.
+  // The runner must not resubmit automatically under a new key.
+  // A weight above the configured capacity fails with FAILED_PRECONDITION /
+  // WEIGHT_EXCEEDS_CAPACITY; it is never clamped.
+  // The queue entry commits unregistered: grace starts at this commit and
+  // the job is never reserved until the submitting incarnation's WatchJob
+  // registers. A retransmitted SubmitJob does not reset grace.
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
 
   // Server-streaming job channel (push, not polling). Every call, including
@@ -1322,7 +1467,9 @@ service RunnerService {
   // changes: queue position, grant, cancellation and terminal state. The
   // runner treats the snapshot as level-triggered: a present grant calls for
   // a durable ClaimLaunch, not a spawn by itself. A present
-  // cancel_requested_at_unix_ns means cancel. An open stream is the
+  // cancel_requested_at_unix_ns means cancel; a claimed runner then calls
+  // AcknowledgeCancel. The first call by the submitting incarnation
+  // registers the queue entry, like a reconnect. An open stream is the
   // runner's connection signal for the queued-runner grace period, and the
   // broker sends a heartbeat at least every heartbeat_interval_ms so the
   // runner can detect a silent broker. Grace begins when the broker detects
@@ -1360,6 +1507,16 @@ service RunnerService {
   // verification conditions must first be established.
   rpc ReportLaunchFailed(ReportLaunchFailedRequest) returns (Job);
 
+  // Acknowledge receipt of a cancellation request for a claimed grant. Only
+  // the assigned incarnation is accepted; idempotent, and accepted during
+  // recovery. Starts the completion deadline; it is not completion.
+  rpc AcknowledgeCancel(AcknowledgeCancelRequest) returns (Job);
+
+  // Report that the runner's termination attempt failed. Implies
+  // acknowledgment and makes the broker immediately eligible to take over.
+  // Never releases capacity or implies that processes exited.
+  rpc ReportCancelFailed(ReportCancelFailedRequest) returns (Job);
+
   // Report the observed outcome together with runner and root identities. If
   // start is missing, validate against the claim and store start and outcome
   // atomically. Matching retries are idempotent; conflicting reports fail.
@@ -1386,19 +1543,22 @@ service ControlService {
   // 30 s completion after acknowledgment. Job termination immediately
   // force-stops verified job processes, with no graceful-shutdown phase;
   // a force attempt is not proof of exit and untracked descendants may
-  // survive. Exact clock starts, platform mechanisms and coordination
-  // remain open.
+  // survive. An unclaimed grant is closed atomically instead (no deadline).
+  // The acknowledgment clock starts when the cancellation commits; the
+  // completion clock when the acknowledgment commits. Both are monotonic
+  // within one broker run and restart in full once a restarted broker is
+  // ready; no takeover starts during recovery or storage failure.
+  // Reconnects and repeated CancelJob calls never reset them.
   // If either expires, or runner death is verified, the broker may fall back
   // on verified process identities, subject to safe coordination.
   // Expiry proves neither runner death nor process exit and never permits
   // release. If a still-live runner blocks safe coordination, the broker may
   // attempt to terminate that verified runner incarnation and takes over
   // only after its death is verified; otherwise it waits with the
-  // reservation held. Recovery/clock rules, explicit failed-result handling,
-  // coordination with a still-live runner and kill mechanisms are not yet
-  // specified.
-  // Acknowledgment RPC/message and persistent deadline state remain draft
-  // contract gaps. A granted command may already be
+  // reservation held. A takeover is durably recorded before signalling and
+  // is not revoked by a late runner report. ReportCancelFailed allows
+  // takeover immediately. Coordination with a still-live runner and kill
+  // mechanisms are not yet specified. A granted command may already be
   // running, so neither the request, a termination attempt nor a report
   // alone releases its reservation; the approved release checks still apply.
   // Disconnection never stops a job. After OS-verified death of the
@@ -1415,7 +1575,8 @@ service ControlService {
   rpc MoveJob(MoveJobRequest) returns (Queue);
 
   // Admit a waiting job immediately, bypassing queue order, backfill limits
-  // and resource checks. Its weight counts toward occupied capacity, so occupancy may
+  // and resource checks, including a weight above current capacity. Its
+  // weight counts toward occupied capacity, so occupancy may
   // exceed capacity. Confirmation is a client UI responsibility. It never
   // bypasses recovery, storage failure or launch-safety checks.
   // A confirmed force-start is allowed while normal admissions are paused.
@@ -1498,6 +1659,9 @@ enum BlockedReason {
   BLOCKED_REASON_RECOVERING = 4;
   BLOCKED_REASON_RUNNER_DISCONNECTED = 5;
   BLOCKED_REASON_STORAGE_UNAVAILABLE = 6;
+  // Per job, not head: weight exceeds the current capacity (lowered across a
+  // restart). Skipped by normal admission; force-start or cancel to resolve.
+  BLOCKED_REASON_WEIGHT_EXCEEDS_CAPACITY = 7;
 }
 
 enum ErrorReason {
@@ -1511,7 +1675,7 @@ enum ErrorReason {
   JOB_NOT_TERMINAL = 7;            // FAILED_PRECONDITION
   GRANT_MISMATCH = 8;              // FAILED_PRECONDITION
   PROCESSES_UNRECONCILED = 9;      // FAILED_PRECONDITION
-  WEIGHT_EXCEEDS_CAPACITY = 10;    // INVALID_ARGUMENT
+  WEIGHT_EXCEEDS_CAPACITY = 10;    // FAILED_PRECONDITION; depends on configuration
   RESERVED_METADATA_KEY = 11;      // INVALID_ARGUMENT
   METADATA_TOO_LARGE = 12;         // RESOURCE_EXHAUSTED
   EVENTS_EXPIRED = 13;             // OUT_OF_RANGE; resume with a fresh snapshot
@@ -1522,6 +1686,7 @@ enum ErrorReason {
   STORAGE_UNAVAILABLE = 18;        // UNAVAILABLE; durable state cannot be trusted
   STORAGE_CORRUPT = 19;            // DATA_LOSS; never auto-replace the database
   RETRY_NOT_ELIGIBLE = 20;         // FAILED_PRECONDITION
+  IDEMPOTENCY_KEY_DELETED = 21;    // FAILED_PRECONDITION; that job's history was deleted
 }
 
 // ---------------------------------------------------------------- shared
@@ -1637,6 +1802,25 @@ message Job {
   // Attempt is 1 for an original submission and at most 4 after 3 retries.
   optional string retry_of_job_id = 27;
   uint32 attempt = 28;
+
+  // Cancellation progress for a claimed grant; see ControlService.CancelJob.
+  optional int64 cancel_acknowledged_at_unix_ns = 29;
+  optional string cancel_failure_detail = 30;
+  optional BrokerTermination broker_termination = 31;
+  // Set while QUEUED and skipped by normal admission, e.g. oversized.
+  BlockedReason blocked_reason = 32;
+}
+
+message BrokerTermination {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    REASON_CANCEL_ACK_DEADLINE = 1;
+    REASON_CANCEL_COMPLETION_DEADLINE = 2;
+    REASON_CANCEL_RUNNER_FAILED = 3;
+    REASON_RUNNER_DEAD = 4;        // section 4 runner-death cleanup
+  }
+  int64 started_at_unix_ns = 1;    // committed before the first signal
+  Reason reason = 2;
 }
 
 // ---------------------------------------------------------------- runner
@@ -1645,7 +1829,7 @@ message SubmitJobRequest {
   string idempotency_key = 1;      // UUIDv4, stable across submission retransmissions
   string command = 2;              // full command line, recorded verbatim
   optional string cwd = 3;
-  uint32 weight = 4;               // 1..capacity
+  uint32 weight = 4;               // 1..capacity at submission
   ClientInfo client = 5;
   Attribution attribution = 6;
   RunnerIncarnation runner = 7;
@@ -1718,6 +1902,19 @@ message CancelRequested {
 
 message Heartbeat {
   int64 heartbeat_interval_ms = 1;
+}
+
+message AcknowledgeCancelRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  RunnerIncarnation runner = 3;
+}
+
+message ReportCancelFailedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  RunnerIncarnation runner = 3;
+  string error = 4;                // stored as cancel_failure_detail
 }
 
 message ReportStartedRequest {
@@ -2072,6 +2269,19 @@ CREATE TABLE jobs (
                       -- NULL unless cancellation was requested,
                       -- e.g. 1764121500000000000 (2025-11-26T01:45:00.000000000Z)
   cancel_reason       TEXT,     -- e.g. 'cancelled from monitor'
+  cancel_acknowledged_at_ns INTEGER,
+                      -- assigned runner acknowledged the request; starts the
+                      -- completion deadline, e.g. 1764121500400000000
+  cancel_failure_detail TEXT,
+                      -- runner's explicit failed-termination report,
+                      -- e.g. 'kill: operation not permitted'
+  broker_termination_at_ns INTEGER,
+                      -- broker committed its own termination attempt; never
+                      -- release evidence, e.g. 1764121505000000000
+  broker_termination_reason TEXT CHECK (broker_termination_reason IN (
+                        'cancel_ack_deadline', 'cancel_completion_deadline',
+                        'cancel_runner_failed', 'runner_dead')),
+                      -- e.g. 'cancel_ack_deadline'
 
   -- Scheduling and opt-in retry ---------------------------------------------
   admitted_by_backfill INTEGER NOT NULL DEFAULT 0 CHECK (admitted_by_backfill IN (0, 1)),
@@ -2148,8 +2358,40 @@ CREATE TABLE jobs (
   CHECK (outcome_kind IS NOT 'signaled' OR signal_number IS NOT NULL),
   CHECK (outcome_kind IS NOT 'unknown'
          OR (exit_code IS NULL AND signal_number IS NULL AND signal_name IS NULL)),
-  CHECK (signal_name IS NULL OR signal_number IS NOT NULL)
+  CHECK (signal_name IS NULL OR signal_number IS NOT NULL),
+  CHECK (cancel_acknowledged_at_ns IS NULL OR cancel_requested_at_ns IS NOT NULL),
+  CHECK (cancel_failure_detail IS NULL OR cancel_acknowledged_at_ns IS NOT NULL),
+  CHECK ((broker_termination_at_ns IS NULL) = (broker_termination_reason IS NULL)),
+  CHECK (broker_termination_reason IS NULL OR admitted_at_ns IS NOT NULL),
+  CHECK (broker_termination_reason NOT LIKE 'cancel_%'
+         OR cancel_requested_at_ns IS NOT NULL),
+  CHECK (broker_termination_reason IS NOT 'cancel_completion_deadline'
+         OR cancel_acknowledged_at_ns IS NOT NULL),
+  CHECK (broker_termination_reason IS NOT 'cancel_runner_failed'
+         OR cancel_failure_detail IS NOT NULL)
 ) STRICT;
+
+-- Idempotency keys of explicitly deleted jobs, retained indefinitely so a
+-- delayed or repeated submission cannot create a new job after deletion.
+-- Stores only the random key: no command, payload digest or job ID.
+CREATE TABLE deleted_idempotency_keys (
+  idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) = 36)
+) STRICT, WITHOUT ROWID;
+
+CREATE TRIGGER jobs_record_deleted_idempotency_key
+AFTER DELETE ON jobs
+BEGIN
+  INSERT INTO deleted_idempotency_keys (idempotency_key)
+    VALUES (OLD.idempotency_key);
+END;
+
+CREATE TRIGGER jobs_no_deleted_idempotency_key
+BEFORE INSERT ON jobs
+WHEN EXISTS (SELECT 1 FROM deleted_idempotency_keys
+             WHERE idempotency_key = NEW.idempotency_key)
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency key belongs to deleted history');
+END;
 
 -- A surviving retry must not be reattached to a new job that happens to
 -- reuse the ID of its deleted predecessor.
@@ -2187,9 +2429,9 @@ CREATE INDEX jobs_finished ON jobs (finished_at_ns)
 CREATE TABLE queue_entries (
   job_id              TEXT    PRIMARY KEY REFERENCES jobs (id),
   queue_seq           INTEGER NOT NULL UNIQUE,  -- lower runs first; may be negative after move-front
-  runner_connected    INTEGER NOT NULL DEFAULT 1 CHECK (runner_connected IN (0, 1)),
-                      -- provisional; this default is not evidence that
-                      -- the initial WatchJob stream has registered
+  runner_connected    INTEGER NOT NULL DEFAULT 0 CHECK (runner_connected IN (0, 1)),
+                      -- 0 until the submitting incarnation's first WatchJob
+                      -- registers; SubmitJob starts grace at its commit
   runner_incarnation_id TEXT NOT NULL CHECK (length(runner_incarnation_id) = 36),
                       -- process-generated UUIDv4; unchanged on reconnect
   runner_pid          INTEGER NOT NULL CHECK (runner_pid > 0),
@@ -2360,8 +2602,10 @@ All `Attribution` values are unauthenticated declarations.
   serialized writer. For `SubmitJob`, first look up the idempotency key and
   compare the canonical payload, including `retry_of_job_id`: return an
   equivalent retained job with `created = false`, or reject a different
-  payload with `IDEMPOTENCY_KEY_REUSED`. Only a new key proceeds to retry
-  eligibility. In the same transaction:
+  payload with `IDEMPOTENCY_KEY_REUSED`. Then reject a key recorded in
+  `deleted_idempotency_keys` with `IDEMPOTENCY_KEY_DELETED`, whatever the
+  payload. Only a new key proceeds to retry eligibility. In the same
+  transaction:
   1. Require the predecessor row, an observed nonzero `exited` outcome,
      a released reservation, no cancellation request, no force-start, an
      unset `retry_submitted` marker and `attempt < 4`.
@@ -2390,9 +2634,9 @@ All `Attribution` values are unauthenticated declarations.
   triggers are guards, not a substitute for the broker enforcing
   predecessor eligibility, the marker, and the cross-row attempt increment
   in the transaction. Once the retry's own history is explicitly deleted,
-  there is no existing job to return; idempotency-key retention and reuse
-  beyond that deletion remain open. A deleted job must not be reconstructed
-  from unrelated surviving history. The focused
+  there is no existing job to return, and its key is rejected as deleted
+  (below). A deleted job must not be reconstructed from unrelated surviving
+  history. The focused
   [`test_schema.py`](v2/test_schema.py) exercises these proposed SQLite
   transactions; it is not an implementation of the broker. Run it with
   `nix develop -c python3 docs/v2/test_schema.py`.
@@ -2430,6 +2674,17 @@ All `Attribution` values are unauthenticated declarations.
     confirmed-no-launch proof. Unknown root identity, a failed scan or a
     known live process retains the reservation. Untracked descendants can
     survive under the accepted best-effort policy.
+- **Initial registration.** `SubmitJob` inserts the queue entry with
+  `runner_connected = 0` and the current `grace_service_run_id` and
+  `grace_started_at_ns` (section 4); the first matching `WatchJob` performs
+  the reconnect transaction below.
+- **Cancellation progress.** `cancel_acknowledged_at_ns` records the first
+  acknowledgment from the assigned incarnation; `cancel_failure_detail`
+  records a `ReportCancelFailed`. `broker_termination_at_ns` and
+  `broker_termination_reason` commit before the broker's first signal and
+  make a takeover survive a restart. Deadlines are restarted in memory from
+  these columns once a restarted broker is ready (section 3); none of them
+  is release evidence.
 - **Grace and downtime.** `grace_elapsed_us` checkpoints monotonic grace
   consumed. `grace_service_run_id` records the broker run that last counted
   it. A different current run means `grace_started_at_ns` is stale and
@@ -2445,7 +2700,8 @@ All `Attribution` values are unauthenticated declarations.
      reservation, and no process lacking `exited_verified_at_ns`.
   2. Delete its released reservation and verified process rows. Delete its
      events, and raise the event floor to the highest deleted sequence.
-  3. Delete the `jobs` row; its summary cascades.
+  3. Delete the `jobs` row; its summary cascades. A trigger records its
+     idempotency key in `deleted_idempotency_keys` in the same transaction.
   4. Append a `job_deleted` event.
 
   Ineligible jobs are retained (`DeleteHistory` counts them as skipped).
@@ -2454,6 +2710,28 @@ All `Attribution` values are unauthenticated declarations.
   clear its retained predecessor's `retry_submitted` marker.
   Freed pages are reclaimed later with `incremental_vacuum`. Deletion does
   not scrub WAL contents or backups that already hold the data.
+- **Delegated decision: idempotency keys after deletion.** Deleting a job
+  keeps only its random idempotency key, indefinitely, in
+  `deleted_idempotency_keys`. A later `SubmitJob` with that key fails with
+  `FAILED_PRECONDITION` / `IDEMPOTENCY_KEY_DELETED`, whatever its payload,
+  and a trigger aborts any insert that would reuse it. A delayed or repeated
+  retransmission therefore cannot silently run a deleted job again or create
+  a second retry. The runner reports the error and must not resubmit
+  automatically under a new key; a user who wants to rerun submits afresh.
+  The tombstone holds no command, payload digest, job ID or timestamp, so it
+  reveals only that some deleted job used this random key. It stays small,
+  consistent with indefinite history retention; no pruning is offered.
+  Alternatives considered:
+  - **Allow reuse after deletion.** Simplest, but a delayed retransmission
+    or a runner retrying across a deletion creates a duplicate run.
+  - **Also keep the payload digest** to distinguish "same request" from
+    "different request". A better error message, but the retained hash lets
+    any local client confirm a guessed command after it was deleted.
+  - **Never delete keys or reject deletion of keyed jobs.** Conflicts with
+    the explicit history-deletion decision.
+  - **Expire tombstones after a period.** Bounds storage, but reopens the
+    duplicate-run window for late retransmissions; the rows are too small to
+    justify it.
 - **Limits.** The database records intent and observations. On its own it
   does not solve:
   - the launch gap between grant and report
@@ -2588,7 +2866,15 @@ follower past an earlier disconnected one, while
 skipped in that scenario. `RecoveryDone` no longer waits for reconciliation:
 the `RecoveryAdmission` witness starts a new normal reservation after a
 crash while a pre-crash unreconciled reservation stays held and counted;
-`RecoveryAdmissionSafety` checks the scenario's capacity invariants. The
+`RecoveryAdmissionSafety` checks the scenario's capacity invariants.
+Normal admission and backfill skip a queued job whose weight exceeds
+capacity: `OversizedSkipped` admits a fitting follower under strict FIFO
+while the oversized job stays queued, and `OversizedScenarioSafety` checks
+that the oversized job is never bypass-counted and is admitted only by
+force. Initial `WatchJob` registration is the modeled reconnect from a
+disconnected queued state, and cancellation deadlines are timing
+refinements of nondeterministic termination; neither is a separate
+action. The
 broader `RecoverySchedulingSafety` profile now has capacity two but remains
 unrun at that bound. `BrokerForceStop` stops a known root and child only
 after OS-verified runner death. Opt-in retry is not modeled separately: it
@@ -2619,9 +2905,11 @@ current results from historical runs and list bounds and unchecked cases.
    runner death. Starting defaults are 5 s acknowledgment and 30 s completion
    after acknowledgment; termination force-stops immediately. One shared
    broker termination procedure serves takeover and runner-death cleanup.
-   Precise clock starts and recovery/clock handling,
-   explicit failed-result handling, coordination/fencing of a still-live
-   runner and platform termination mechanisms remain open. When a live
+   Clock starts, restart handling, the sticky takeover record and
+   `ReportCancelFailed` are delegated decisions (section 3).
+   Coordination/fencing of a still-live runner, merging a takeover's
+   observations with a late runner report, and platform termination
+   mechanisms remain open. When a live
    runner blocks safe coordination, the broker tries to kill that verified
    runner and takes over only after its exact incarnation is verified dead,
    otherwise waiting; detection of blocking coordination, kill/escalation
@@ -2649,17 +2937,18 @@ current results from historical runs and list bounds and unchecked cases.
    SSE is a separate, unapproved proposal.
 8. Exact job metric definitions, sampler choice, platform parity and
    overhead.
-9. Command rendering, the payload-equivalence rule and retention for
-   idempotency keys after their job histories are explicitly deleted.
+9. Command rendering and the payload-equivalence rule. Key-only
+   tombstones after history deletion are a delegated decision
+   (section 11.3).
 10. Select and pin the initial `modernc.org/sqlite` version; validate SQLite
     features and actual platform sync behavior, and measure `FULL`/macOS
     `fullfsync` commit latency. The driver and settings are decided, but
     their validation is pending.
 11. Go/protobuf tooling, distribution, supervision, supported platforms,
     and monotonic launch-timeout reconstruction across broker restarts.
-12. Admission option compatibility, oversized weights (including their
-    interaction with backfill), capacity changes, no-wait behavior and
-    v1/nesting rollout; retry delay and CLI option spelling.
+12. Admission option compatibility, no-wait behavior and v1/nesting
+    rollout; retry delay and CLI option spelling. Oversized weights and
+    capacity fixed per broker run are delegated decisions (section 2).
 13. The [formal review gaps](v2/model/README.md#outcomes-and-actionable-gaps):
     verification under realistic OS/process assumptions, discovery of a
     formerly untracked child after release, and safety versus progress when

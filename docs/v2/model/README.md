@@ -26,7 +26,8 @@ nix develop -c bash -c \
   'export JAVA_TOOL_OPTIONS=-Xmx256m
    python3 docs/v2/model/check.py \
      BackfillScenarioSafety RecoveryAdmissionSafety \
-     BackfillDisconnected RecoveryAdmission \
+     OversizedScenarioSafety BackfillDisconnected RecoveryAdmission \
+     OversizedSkipped \
      --logs /tmp/heavy-lock-tlc-witnesses'
 ```
 
@@ -110,7 +111,13 @@ and whose weight fits. An earlier disconnected or unavailable follower
 retains its position but does not block a later eligible follower. A
 disconnected head still blocks all normal admission. Backfill increments the
 head's durable bypass count, which `BackfillLimit` bounds (0 is strict
-FIFO; the delegated default is 1). Manual reorder and
+FIFO; the delegated default is 1). A queued job whose weight exceeds
+`Capacity` (one that became oversized after a capacity decrease; submission
+rejects such weights) is skipped: the effective head and backfill followers
+come from `Waiting`, the queue without oversized jobs, so an oversized job
+never blocks, never gains a bypass count and is admitted only by force. With
+every existing configuration's weights within capacity, `Waiting` equals the
+queue. Manual reorder and
 force are explicit exceptions; a forced job counts toward occupied capacity
 and may be admitted while paused, but not during recovery. Cancellation
 removes queued work or records a request for granted work; it does not prove
@@ -121,12 +128,15 @@ does not mean completion, and neither deadline expiry is release evidence.
 Configurable, unmeasured starting defaults are 5 seconds for acknowledgment
 and 30 seconds for completion after acknowledgment. Explicit cancellation
 immediately force-stops verified job processes, with no graceful phase
-(superseding graceful-then-force); exact clock starts, platform handling and
+(superseding graceful-then-force). The delegated clock rules (acknowledgment
+from the cancel commit, completion from the acknowledgment commit, full
+restart once a restarted broker is ready, recorded sticky takeover and an
+explicit failure report) are timing refinements; platform handling and
 coordination remain open.
 The model abstracts who terminates: root and child
 exits are nondeterministic, so release safety is checked whichever party
-causes them. It does not model either deadline, acknowledgments, explicit
-failed-result handling, coordination of two termination attempts, signal
+causes them. It does not model either deadline, acknowledgments, the
+failure report, the takeover record, coordination of two termination attempts, signal
 delivery or escalation, and it never cancels on runner crash or disconnect.
 The user's blocked-takeover rule (on deadline expiry, the broker may kill a
 live runner that blocks safe coordination, taking over only after that exact
@@ -161,8 +171,12 @@ decision. `GraceSafety` uses 30 abstract eligible-time ticks to check the
 chosen grace threshold, but neither a tick nor a timeout probe models
 real elapsed time. The checks do not prove wall-clock behavior or the
 heartbeat and launch-timeout intervals.
-The model starts each runner connected and does not model a submission
-whose initial `WatchJob` stream never registers; its handling remains open.
+The model starts each runner connected. Under the delegated registration
+rule, a submission is queued unregistered with grace running until its first
+`WatchJob`, which is handled exactly like the modeled reconnect from a
+disconnected queued state. Starting connected therefore skips only that
+prefix; an unregistered submission behaves like a modeled disconnect and is
+never reserved before it registers.
 
 ## Invariants and profiles
 
@@ -204,7 +218,9 @@ recovers, and permits the second reservation only after the crash; it omits
 claims, releases and reconciliation. `BackfillScenarioSpec` fixes the roles
 of one occupied slot, a blocked heavy head, an earlier fitting follower and
 a later fitting follower; it omits reconnect, grace expiry, reorder, force
-and crashes. `GraceSpec` omits admission; `SchedulingSpec` and
+and crashes. `OversizedSpec` queues an oversized job (weight 2, capacity 1)
+ahead of a fitting job, admits the fitting job normally and then force-starts
+the oversized job; it omits disconnects, reorder and crashes. `GraceSpec` omits admission; `SchedulingSpec` and
 `StorageSchedulingSpec` omit launch and release, and the latter does not
 reconcile held work. Their combined results are not a compositional proof.
 The full `Spec` includes the omitted interactions.
@@ -218,10 +234,12 @@ The following checks used TLC 2.18, one worker and `-Xmx256m` on macOS on
 |---|---|---:|---|
 | `BackfillScenarioSafety` | 4 jobs, capacity 2, limit 1; disconnected follower may be skipped, connected fitting follower may not | 24 / 9 | complete |
 | `RecoveryAdmissionSafety` | 2 unit jobs, capacity 2, one crash; held pre-crash reservation and later normal admission | 17 / 10 | complete |
+| `OversizedScenarioSafety` | 2 jobs, capacity 1, limit 1; oversized head never bypass-counted or normally admitted | 13 / 5 | complete |
 
 | Current witness | Deliberately violated invariant | Meaning |
 |---|---|---|
 | `BackfillDisconnected` | `NeverBackfillPastDisconnected` | After a fitting earlier follower disconnects, a later connected fitting follower is backfilled and the head's count increments. |
+| `OversizedSkipped` | `NeverAdmitPastOversized` | With limit 0 (strict FIFO), the fitting follower is still admitted while the oversized job stays queued, because the oversized job is not the effective head. |
 | `RecoveryAdmission` | `NeverAdmissionBesideUncertain` | After a crash and readiness, a second job is normally admitted while the first pre-crash reservation remains unreconciled and held; both weights count toward capacity. |
 
 The positive recovery scenario checks `PreexistingUncertainHeld`,
@@ -230,7 +248,10 @@ throughout its bounded search. Its witness starts with one pre-crash
 reservation and forbids the second reservation until after the crash; the
 last state has both unit reservations held at capacity two. The backfill
 scenario checks `NoSkippedConnectedFollower` and the same relevant capacity
-and readiness invariants. These constrained scenarios exclude many other
+and readiness invariants. The oversized scenario checks
+`OversizedNeverBypassed` and `OversizedNeverNormal`; against the previous
+admission rule it fails `OversizedNeverBypassed`, and `OversizedSkipped`
+finds no admission, confirming both cases detect the change. These constrained scenarios exclude many other
 interleavings.
 
 ### Historical checks

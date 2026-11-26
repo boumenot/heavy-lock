@@ -24,6 +24,7 @@ CASES = {
     "RecoverySchedulingSafety": None,
     "RecoveryAdmissionSafety": None,
     "BackfillScenarioSafety": None,
+    "OversizedScenarioSafety": None,
     "RunnerDeathCleanup": None,
     "CrashBeforeLaunch": "NeverCrashBeforeLaunchUnknown",
     "PreventedClaim": "NeverReleasePreventedClaim",
@@ -45,6 +46,7 @@ CASES = {
     "ReadyWithUncertain": "NeverReadyWithUnreconciled",
     "RecoveryAdmission": "NeverAdmissionBesideUncertain",
     "BackfillDisconnected": "NeverBackfillPastDisconnected",
+    "OversizedSkipped": "NeverAdmitPastOversized",
 }
 
 

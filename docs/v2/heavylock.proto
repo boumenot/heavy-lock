@@ -45,8 +45,15 @@ service RunnerService {
   // retry was submitted and inserting/enqueueing it are one transaction.
   // The retry joins the back of the queue and never reuses the earlier grant
   // or claim. Only the runner retries; the broker never resubmits or
-  // relaunches work. Returning a job after its own explicit deletion is not
-  // promised; idempotency-key retention after deletion remains open.
+  // relaunches work. Deleting a job's history retains only its key: a later
+  // submission with that key, with any payload, fails with
+  // FAILED_PRECONDITION / IDEMPOTENCY_KEY_DELETED and never creates a job.
+  // The runner must not resubmit automatically under a new key.
+  // A weight above the configured capacity fails with FAILED_PRECONDITION /
+  // WEIGHT_EXCEEDS_CAPACITY; it is never clamped.
+  // The queue entry commits unregistered: grace starts at this commit and
+  // the job is never reserved until the submitting incarnation's WatchJob
+  // registers. A retransmitted SubmitJob does not reset grace.
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
 
   // Server-streaming job channel (push, not polling). Every call, including
@@ -55,7 +62,9 @@ service RunnerService {
   // changes: queue position, grant, cancellation and terminal state. The
   // runner treats the snapshot as level-triggered: a present grant calls for
   // a durable ClaimLaunch, not a spawn by itself. A present
-  // cancel_requested_at_unix_ns means cancel. An open stream is the
+  // cancel_requested_at_unix_ns means cancel; a claimed runner then calls
+  // AcknowledgeCancel. The first call by the submitting incarnation
+  // registers the queue entry, like a reconnect. An open stream is the
   // runner's connection signal for the queued-runner grace period, and the
   // broker sends a heartbeat at least every heartbeat_interval_ms so the
   // runner can detect a silent broker. Grace begins when the broker detects
@@ -93,6 +102,16 @@ service RunnerService {
   // verification conditions must first be established.
   rpc ReportLaunchFailed(ReportLaunchFailedRequest) returns (Job);
 
+  // Acknowledge receipt of a cancellation request for a claimed grant. Only
+  // the assigned incarnation is accepted; idempotent, and accepted during
+  // recovery. Starts the completion deadline; it is not completion.
+  rpc AcknowledgeCancel(AcknowledgeCancelRequest) returns (Job);
+
+  // Report that the runner's termination attempt failed. Implies
+  // acknowledgment and makes the broker immediately eligible to take over.
+  // Never releases capacity or implies that processes exited.
+  rpc ReportCancelFailed(ReportCancelFailedRequest) returns (Job);
+
   // Report the observed outcome together with runner and root identities. If
   // start is missing, validate against the claim and store start and outcome
   // atomically. Matching retries are idempotent; conflicting reports fail.
@@ -119,19 +138,22 @@ service ControlService {
   // 30 s completion after acknowledgment. Job termination immediately
   // force-stops verified job processes, with no graceful-shutdown phase;
   // a force attempt is not proof of exit and untracked descendants may
-  // survive. Exact clock starts, platform mechanisms and coordination
-  // remain open.
+  // survive. An unclaimed grant is closed atomically instead (no deadline).
+  // The acknowledgment clock starts when the cancellation commits; the
+  // completion clock when the acknowledgment commits. Both are monotonic
+  // within one broker run and restart in full once a restarted broker is
+  // ready; no takeover starts during recovery or storage failure.
+  // Reconnects and repeated CancelJob calls never reset them.
   // If either expires, or runner death is verified, the broker may fall back
   // on verified process identities, subject to safe coordination.
   // Expiry proves neither runner death nor process exit and never permits
   // release. If a still-live runner blocks safe coordination, the broker may
   // attempt to terminate that verified runner incarnation and takes over
   // only after its death is verified; otherwise it waits with the
-  // reservation held. Recovery/clock rules, explicit failed-result handling,
-  // coordination with a still-live runner and kill mechanisms are not yet
-  // specified.
-  // Acknowledgment RPC/message and persistent deadline state remain draft
-  // contract gaps. A granted command may already be
+  // reservation held. A takeover is durably recorded before signalling and
+  // is not revoked by a late runner report. ReportCancelFailed allows
+  // takeover immediately. Coordination with a still-live runner and kill
+  // mechanisms are not yet specified. A granted command may already be
   // running, so neither the request, a termination attempt nor a report
   // alone releases its reservation; the approved release checks still apply.
   // Disconnection never stops a job. After OS-verified death of the
@@ -148,7 +170,8 @@ service ControlService {
   rpc MoveJob(MoveJobRequest) returns (Queue);
 
   // Admit a waiting job immediately, bypassing queue order, backfill limits
-  // and resource checks. Its weight counts toward occupied capacity, so occupancy may
+  // and resource checks, including a weight above current capacity. Its
+  // weight counts toward occupied capacity, so occupancy may
   // exceed capacity. Confirmation is a client UI responsibility. It never
   // bypasses recovery, storage failure or launch-safety checks.
   // A confirmed force-start is allowed while normal admissions are paused.
@@ -231,6 +254,9 @@ enum BlockedReason {
   BLOCKED_REASON_RECOVERING = 4;
   BLOCKED_REASON_RUNNER_DISCONNECTED = 5;
   BLOCKED_REASON_STORAGE_UNAVAILABLE = 6;
+  // Per job, not head: weight exceeds the current capacity (lowered across a
+  // restart). Skipped by normal admission; force-start or cancel to resolve.
+  BLOCKED_REASON_WEIGHT_EXCEEDS_CAPACITY = 7;
 }
 
 enum ErrorReason {
@@ -244,7 +270,7 @@ enum ErrorReason {
   JOB_NOT_TERMINAL = 7;            // FAILED_PRECONDITION
   GRANT_MISMATCH = 8;              // FAILED_PRECONDITION
   PROCESSES_UNRECONCILED = 9;      // FAILED_PRECONDITION
-  WEIGHT_EXCEEDS_CAPACITY = 10;    // INVALID_ARGUMENT
+  WEIGHT_EXCEEDS_CAPACITY = 10;    // FAILED_PRECONDITION; depends on configuration
   RESERVED_METADATA_KEY = 11;      // INVALID_ARGUMENT
   METADATA_TOO_LARGE = 12;         // RESOURCE_EXHAUSTED
   EVENTS_EXPIRED = 13;             // OUT_OF_RANGE; resume with a fresh snapshot
@@ -255,6 +281,7 @@ enum ErrorReason {
   STORAGE_UNAVAILABLE = 18;        // UNAVAILABLE; durable state cannot be trusted
   STORAGE_CORRUPT = 19;            // DATA_LOSS; never auto-replace the database
   RETRY_NOT_ELIGIBLE = 20;         // FAILED_PRECONDITION
+  IDEMPOTENCY_KEY_DELETED = 21;    // FAILED_PRECONDITION; that job's history was deleted
 }
 
 // ---------------------------------------------------------------- shared
@@ -370,6 +397,25 @@ message Job {
   // Attempt is 1 for an original submission and at most 4 after 3 retries.
   optional string retry_of_job_id = 27;
   uint32 attempt = 28;
+
+  // Cancellation progress for a claimed grant; see ControlService.CancelJob.
+  optional int64 cancel_acknowledged_at_unix_ns = 29;
+  optional string cancel_failure_detail = 30;
+  optional BrokerTermination broker_termination = 31;
+  // Set while QUEUED and skipped by normal admission, e.g. oversized.
+  BlockedReason blocked_reason = 32;
+}
+
+message BrokerTermination {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    REASON_CANCEL_ACK_DEADLINE = 1;
+    REASON_CANCEL_COMPLETION_DEADLINE = 2;
+    REASON_CANCEL_RUNNER_FAILED = 3;
+    REASON_RUNNER_DEAD = 4;        // section 4 runner-death cleanup
+  }
+  int64 started_at_unix_ns = 1;    // committed before the first signal
+  Reason reason = 2;
 }
 
 // ---------------------------------------------------------------- runner
@@ -378,7 +424,7 @@ message SubmitJobRequest {
   string idempotency_key = 1;      // UUIDv4, stable across submission retransmissions
   string command = 2;              // full command line, recorded verbatim
   optional string cwd = 3;
-  uint32 weight = 4;               // 1..capacity
+  uint32 weight = 4;               // 1..capacity at submission
   ClientInfo client = 5;
   Attribution attribution = 6;
   RunnerIncarnation runner = 7;
@@ -451,6 +497,19 @@ message CancelRequested {
 
 message Heartbeat {
   int64 heartbeat_interval_ms = 1;
+}
+
+message AcknowledgeCancelRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  RunnerIncarnation runner = 3;
+}
+
+message ReportCancelFailedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  RunnerIncarnation runner = 3;
+  string error = 4;                // stored as cancel_failure_detail
 }
 
 message ReportStartedRequest {

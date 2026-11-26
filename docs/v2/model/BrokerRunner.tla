@@ -92,23 +92,28 @@ Submit(j) ==
 
 Fits(k) == Occupied + Weight[k] <= Capacity
 EligibleFollower(k) == runner[k].up /\ runner[k].connected /\ Fits(k)
+\* Submission rejects weights above capacity, so an oversized queued job
+\* models one that became oversized after a capacity decrease. Normal
+\* admission skips it: the effective head is the first job in Waiting.
+Oversized(k) == Weight[k] > Capacity
+Waiting == SelectSeq(queue, LAMBDA k : ~Oversized(k))
 
 \* Bounded backfill: only when the connected head is blocked solely by slot
 \* capacity, admit the earliest connected, live later runner whose job fits.
 \* A disconnected follower retains its place but cannot block an eligible
 \* later follower. Each head may be bypassed at most BackfillLimit times.
 Backfill(j) ==
-  /\ Len(queue) > 1 /\ Head(queue) # j
-  /\ LET h == Head(queue)
+  /\ Len(Waiting) > 1 /\ Head(Waiting) # j
+  /\ LET h == Head(Waiting)
      IN /\ runner[h].up /\ runner[h].connected
         /\ ~Fits(h) /\ db[h].bypass < BackfillLimit
   /\ EligibleFollower(j)
-  /\ \E i \in 2..Len(queue) :
-       /\ queue[i] = j
-       /\ \A p \in 2..(i - 1) : ~EligibleFollower(queue[p])
+  /\ \E i \in 2..Len(Waiting) :
+       /\ Waiting[i] = j
+       /\ \A p \in 2..(i - 1) : ~EligibleFollower(Waiting[p])
 
 NormalAdmit(j, resourcePass) ==
-  /\ ~paused /\ (Head(queue) = j \/ Backfill(j))
+  /\ ~paused /\ ~Oversized(j) /\ (Head(Waiting) = j \/ Backfill(j))
   /\ Fits(j) /\ (Occupied = 0 \/ resourcePass)
 
 Reserve(j, forced, resourcePass) ==
@@ -122,7 +127,7 @@ Reserve(j, forced, resourcePass) ==
                                     !.issued = TRUE, !.forced = forced,
                                     !.forcedWhilePaused = forced /\ paused,
                                     !.assigned = runner[j].incarnation]
-              ELSE IF ~forced /\ k = Head(queue)
+              ELSE IF ~forced /\ k = Head(Waiting)
                  THEN [db[k] EXCEPT !.bypass = @ + 1]
               ELSE db[k]]
   /\ queue' = Remove(queue, j)
@@ -723,6 +728,17 @@ BackfillScenarioNext ==
      /\ Reserve(BackfillLater, FALSE, TRUE)
 BackfillScenarioSpec == Init /\ [][BackfillScenarioNext]_vars
 
+\* An oversized head (weight above capacity) followed by a fitting job.
+OversizedJob == CHOOSE j \in Jobs : Weight[j] = 2
+OversizedOther == CHOOSE j \in Jobs \ {OversizedJob} : TRUE
+OversizedNext ==
+  \/ Submit(OversizedJob)
+  \/ /\ db[OversizedJob].phase = "queued" /\ Submit(OversizedOther)
+  \/ /\ queue = <<OversizedJob, OversizedOther>>
+     /\ Reserve(OversizedOther, FALSE, TRUE)
+  \/ /\ db[OversizedOther].held /\ Reserve(OversizedJob, TRUE, TRUE)
+OversizedSpec == Init /\ [][OversizedNext]_vars
+
 TypeOK ==
   /\ db \in [Jobs -> [phase : Phases, held : BOOLEAN, issued : BOOLEAN,
                        forced : BOOLEAN, forcedWhilePaused : BOOLEAN,
@@ -813,6 +829,10 @@ NeverHeadBlocked ==
     /\ Occupied + Weight[Head(queue)] > Capacity
     /\ \E i \in 2..Len(queue) : Occupied + Weight[queue[i]] <= Capacity)
 NeverBackfill == \A j \in Jobs : db[j].bypass = 0
+OversizedNeverBypassed == db[OversizedJob].bypass = 0
+OversizedNeverNormal == db[OversizedJob].held => db[OversizedJob].forced
+NeverAdmitPastOversized ==
+  ~(db[OversizedOther].held /\ db[OversizedJob].phase = "queued")
 NeverReadyWithUnreconciled ==
   ~(broker = "ready" /\ brokerCrashes > 0
     /\ \E j \in Jobs : db[j].held /\ j \notin reconciled)
