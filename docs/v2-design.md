@@ -53,7 +53,7 @@ other row is an explicit user decision.
 |---|---|
 | Language and packaging | Go runner and broker; one executable with a service mode |
 | Initial platforms | macOS first; Linux and Windows are later targets |
-| V1 migration | Coordinated cutover after draining v1 and updating all invokers; no mixed v1/v2 admission or nesting |
+| V1 switch | Stop using v1 and switch to v2; no mixed v1/v2 admission or nesting, migration plan, or legacy compatibility requirement |
 | APIs | gRPC for runner, Swift monitor and other clients; REST for `curl` |
 | Runner updates | Push over `WatchJob`, with a current-state snapshot on reconnect |
 | Transport | Both APIs share a fixed, configurable loopback TCP port; runner takes an explicit port argument |
@@ -100,9 +100,9 @@ silently settled by the table.
 
 **User decision.** Implement the v2 runner and broker in **Go** and ship
 them as **one executable**, with a service mode. The existing macOS
-monitor remains a separate Swift app, using gRPC. The v1 runner remains
-Dart until an explicitly planned migration. This choice does not replace
-the separately discussed build orchestrator.
+monitor remains a separate Swift app, using gRPC. The existing v1 runner
+remains Dart; the v2 implementation does not change it. This choice does
+not replace the separately discussed build orchestrator.
 
 **User decision: platform rollout.** The first stable v2 release targets
 macOS; Linux and Windows are later targets, not prerequisites for that
@@ -1441,28 +1441,38 @@ versions and not evidence that process-tree accounting has been solved.
 
 ## 9. Migration and compatibility
 
-**User decision: coordinated cutover.** Drain active v1 work and update all
-invokers, scripts, skills and nested runs before starting the v2 broker and
-workloads on a machine. Do not mix v1 and v2 admission or nesting on that
-machine, or silently fall back from the broker to independent v1 locks.
-Preserve nesting within v2, but do not treat a v1 nesting marker as proof of
-v2 admission. An upgrade must not delete shared lock files.
+**User decision: simple switch.** Stop using v1 and switch to v2; the user
+does not need a separate migration plan or a compatibility bridge. Finish or
+stop existing v1 work before scheduling v2 work on the same machine, and use
+v2 for subsequent heavy work. Do not mix v1 and v2 admission or nesting, or
+silently fall back from the broker to independent v1 locks. Preserve nesting
+within v2, but do not treat a v1 nesting marker as proof of v2 admission.
+An upgrade must not delete shared lock files.
 
-The assistant recommended this clean break: it avoids having two independent
-scheduling authorities and avoids promising cross-version nesting. Its cost
-is a coordinated migration and a pause while active v1 jobs drain and callers
-are updated. A verified v1/v2 compatibility bridge could permit gradual
-migration, but would add process-lifetime, shared-admission and nesting
-complexity; feasibility with unchanged v1 binaries is not established.
+The assistant recommended a clean break to avoid two independent scheduling
+authorities and cross-version nesting. A verified v1/v2 compatibility
+bridge could permit gradual migration, but would add process-lifetime,
+shared-admission and nesting complexity; feasibility with unchanged v1
+binaries is not established. The user considers the switch trivial and
+does not need a gradual rollout.
+
+**Delegated decision: legacy status consumers.** Following the user's
+direction to make related choices for the simple switch, v2 need not emit
+v1 status records or support the old monitor or `heavy-lock-status` as views
+of v2 jobs. Use the v2 monitor or v2 APIs instead. Old v1 views are not
+evidence of v2 activity and may be empty, stale or otherwise misleading.
+The existing monitor checks v1 OS locks as well as status records, so
+publishing old-format JSON alone would not establish compatibility.
+Requiring and verifying a legacy read-only view would ease a transition that
+the user does not need, at the cost of additional compatibility machinery.
+The form of any v2 status CLI is a separate question.
 
 The macOS-first v2 rollout leaves the existing v1 runner available on Linux
 and Windows until their v2 support is ready; it does not make mixed v1/v2
 admission on the same machine safe.
 
-**Open.** The concrete cutover procedure and checks, the v2
-environment/nesting marker contract, same-version draining upgrades, and
-v1 monitor compatibility and duration. Emitting version-1 status for old
-monitors was an idea, not an approved compatibility promise.
+**Open.** The v2 environment/nesting marker contract and same-version
+draining upgrades.
 
 The current [migration warning](../README.md#migration) remains applicable
 to the current runner. This design document does not authorize mixed
@@ -3426,10 +3436,10 @@ current results from historical runs and list bounds and unchecked cases.
 11. Go/protobuf tooling, distribution, supervision, supported macOS versions
     and architectures, later Linux/Windows release plans, and monotonic
     launch-timeout reconstruction across broker restarts.
-12. Admission option compatibility, concrete cutover checks and the v2
-    nesting marker; retry delay and CLI option spelling. Coordinated v1/v2
-    cutover is decided (section 9); no-wait, oversized weights and capacity
-    fixed per broker run are delegated decisions (section 2).
+12. The v2 nesting marker, retry delay and CLI option spelling. The simple
+    v1/v2 switch and lack of legacy status compatibility are decided
+    (section 9); no-wait, oversized weights and capacity fixed per broker
+    run are delegated decisions (section 2).
 13. The [formal review gaps](v2/model/README.md#outcomes-and-actionable-gaps):
     verification under realistic OS/process assumptions, discovery of a
     formerly untracked child after release, and safety versus progress when
