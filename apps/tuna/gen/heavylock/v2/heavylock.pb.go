@@ -435,29 +435,37 @@ func (BlockedReason) EnumDescriptor() ([]byte, []int) {
 type ErrorReason int32
 
 const (
-	ErrorReason_ERROR_REASON_UNSPECIFIED ErrorReason = 0
-	ErrorReason_RECOVERING               ErrorReason = 1  // UNAVAILABLE
-	ErrorReason_INVALID_ARGUMENT_FIELD   ErrorReason = 2  // INVALID_ARGUMENT; ErrorInfo.metadata["field"]
-	ErrorReason_IDEMPOTENCY_KEY_REUSED   ErrorReason = 3  // ALREADY_EXISTS
-	ErrorReason_JOB_NOT_FOUND            ErrorReason = 4  // NOT_FOUND
-	ErrorReason_JOB_NOT_WAITING          ErrorReason = 5  // FAILED_PRECONDITION
-	ErrorReason_JOB_TERMINAL             ErrorReason = 6  // FAILED_PRECONDITION
-	ErrorReason_JOB_NOT_TERMINAL         ErrorReason = 7  // FAILED_PRECONDITION
-	ErrorReason_GRANT_MISMATCH           ErrorReason = 8  // FAILED_PRECONDITION
-	ErrorReason_PROCESSES_UNRECONCILED   ErrorReason = 9  // FAILED_PRECONDITION
-	ErrorReason_WEIGHT_EXCEEDS_CAPACITY  ErrorReason = 10 // FAILED_PRECONDITION; depends on configuration
-	ErrorReason_RESERVED_METADATA_KEY    ErrorReason = 11 // INVALID_ARGUMENT
-	ErrorReason_METADATA_TOO_LARGE       ErrorReason = 12 // RESOURCE_EXHAUSTED
-	ErrorReason_EVENTS_EXPIRED           ErrorReason = 13 // OUT_OF_RANGE; resume with a fresh snapshot
-	ErrorReason_INVALID_PAGE_TOKEN       ErrorReason = 14 // INVALID_ARGUMENT
-	ErrorReason_CLAIM_MISMATCH           ErrorReason = 15 // FAILED_PRECONDITION; wrong incarnation
-	ErrorReason_GRANT_FENCED             ErrorReason = 16 // FAILED_PRECONDITION
-	ErrorReason_REPORT_CONFLICT          ErrorReason = 17 // FAILED_PRECONDITION
-	ErrorReason_STORAGE_UNAVAILABLE      ErrorReason = 18 // UNAVAILABLE; durable state cannot be trusted
-	ErrorReason_STORAGE_CORRUPT          ErrorReason = 19 // DATA_LOSS; never auto-replace the database
-	ErrorReason_RETRY_NOT_ELIGIBLE       ErrorReason = 20 // FAILED_PRECONDITION
-	ErrorReason_IDEMPOTENCY_KEY_DELETED  ErrorReason = 21 // FAILED_PRECONDITION; that job's history was deleted
-	ErrorReason_ADMISSION_BUSY           ErrorReason = 22 // FAILED_PRECONDITION; durable no-wait refusal
+	ErrorReason_ERROR_REASON_UNSPECIFIED    ErrorReason = 0
+	ErrorReason_RECOVERING                  ErrorReason = 1  // UNAVAILABLE
+	ErrorReason_INVALID_ARGUMENT_FIELD      ErrorReason = 2  // INVALID_ARGUMENT; ErrorInfo.metadata["field"]
+	ErrorReason_IDEMPOTENCY_KEY_REUSED      ErrorReason = 3  // ALREADY_EXISTS
+	ErrorReason_JOB_NOT_FOUND               ErrorReason = 4  // NOT_FOUND
+	ErrorReason_JOB_NOT_WAITING             ErrorReason = 5  // FAILED_PRECONDITION
+	ErrorReason_JOB_TERMINAL                ErrorReason = 6  // FAILED_PRECONDITION
+	ErrorReason_JOB_NOT_TERMINAL            ErrorReason = 7  // FAILED_PRECONDITION
+	ErrorReason_GRANT_MISMATCH              ErrorReason = 8  // FAILED_PRECONDITION
+	ErrorReason_PROCESSES_UNRECONCILED      ErrorReason = 9  // FAILED_PRECONDITION
+	ErrorReason_WEIGHT_EXCEEDS_CAPACITY     ErrorReason = 10 // FAILED_PRECONDITION; depends on configuration
+	ErrorReason_RESERVED_METADATA_KEY       ErrorReason = 11 // INVALID_ARGUMENT
+	ErrorReason_METADATA_TOO_LARGE          ErrorReason = 12 // RESOURCE_EXHAUSTED
+	ErrorReason_EVENTS_EXPIRED              ErrorReason = 13 // OUT_OF_RANGE; resume with a fresh snapshot
+	ErrorReason_INVALID_PAGE_TOKEN          ErrorReason = 14 // INVALID_ARGUMENT
+	ErrorReason_CLAIM_MISMATCH              ErrorReason = 15 // FAILED_PRECONDITION; wrong incarnation
+	ErrorReason_GRANT_FENCED                ErrorReason = 16 // FAILED_PRECONDITION
+	ErrorReason_REPORT_CONFLICT             ErrorReason = 17 // FAILED_PRECONDITION
+	ErrorReason_STORAGE_UNAVAILABLE         ErrorReason = 18 // UNAVAILABLE; durable state cannot be trusted
+	ErrorReason_STORAGE_CORRUPT             ErrorReason = 19 // DATA_LOSS; never auto-replace the database
+	ErrorReason_RETRY_NOT_ELIGIBLE          ErrorReason = 20 // FAILED_PRECONDITION
+	ErrorReason_IDEMPOTENCY_KEY_DELETED     ErrorReason = 21 // FAILED_PRECONDITION; that job's history was deleted
+	ErrorReason_ADMISSION_BUSY              ErrorReason = 22 // FAILED_PRECONDITION; durable no-wait refusal
+	ErrorReason_HTTP_ROUTE_NOT_FOUND        ErrorReason = 23 // NOT_FOUND; no REST route matches
+	ErrorReason_HTTP_METHOD_NOT_ALLOWED     ErrorReason = 24 // UNIMPLEMENTED; method is not supported on the REST route
+	ErrorReason_HTTP_UNSUPPORTED_MEDIA_TYPE ErrorReason = 25 // INVALID_ARGUMENT; REST body is not JSON
+	ErrorReason_HTTP_REQUEST_TOO_LARGE      ErrorReason = 26 // RESOURCE_EXHAUSTED; REST request body exceeds the limit
+	ErrorReason_OPERATION_NOT_IMPLEMENTED   ErrorReason = 27 // UNIMPLEMENTED
+	ErrorReason_INTERNAL_ERROR              ErrorReason = 28 // INTERNAL; non-contract broker error
+	ErrorReason_REQUEST_CANCELLED           ErrorReason = 29 // CANCELLED
+	ErrorReason_DEADLINE_EXCEEDED           ErrorReason = 30 // DEADLINE_EXCEEDED
 )
 
 // Enum value maps for ErrorReason.
@@ -486,31 +494,47 @@ var (
 		20: "RETRY_NOT_ELIGIBLE",
 		21: "IDEMPOTENCY_KEY_DELETED",
 		22: "ADMISSION_BUSY",
+		23: "HTTP_ROUTE_NOT_FOUND",
+		24: "HTTP_METHOD_NOT_ALLOWED",
+		25: "HTTP_UNSUPPORTED_MEDIA_TYPE",
+		26: "HTTP_REQUEST_TOO_LARGE",
+		27: "OPERATION_NOT_IMPLEMENTED",
+		28: "INTERNAL_ERROR",
+		29: "REQUEST_CANCELLED",
+		30: "DEADLINE_EXCEEDED",
 	}
 	ErrorReason_value = map[string]int32{
-		"ERROR_REASON_UNSPECIFIED": 0,
-		"RECOVERING":               1,
-		"INVALID_ARGUMENT_FIELD":   2,
-		"IDEMPOTENCY_KEY_REUSED":   3,
-		"JOB_NOT_FOUND":            4,
-		"JOB_NOT_WAITING":          5,
-		"JOB_TERMINAL":             6,
-		"JOB_NOT_TERMINAL":         7,
-		"GRANT_MISMATCH":           8,
-		"PROCESSES_UNRECONCILED":   9,
-		"WEIGHT_EXCEEDS_CAPACITY":  10,
-		"RESERVED_METADATA_KEY":    11,
-		"METADATA_TOO_LARGE":       12,
-		"EVENTS_EXPIRED":           13,
-		"INVALID_PAGE_TOKEN":       14,
-		"CLAIM_MISMATCH":           15,
-		"GRANT_FENCED":             16,
-		"REPORT_CONFLICT":          17,
-		"STORAGE_UNAVAILABLE":      18,
-		"STORAGE_CORRUPT":          19,
-		"RETRY_NOT_ELIGIBLE":       20,
-		"IDEMPOTENCY_KEY_DELETED":  21,
-		"ADMISSION_BUSY":           22,
+		"ERROR_REASON_UNSPECIFIED":    0,
+		"RECOVERING":                  1,
+		"INVALID_ARGUMENT_FIELD":      2,
+		"IDEMPOTENCY_KEY_REUSED":      3,
+		"JOB_NOT_FOUND":               4,
+		"JOB_NOT_WAITING":             5,
+		"JOB_TERMINAL":                6,
+		"JOB_NOT_TERMINAL":            7,
+		"GRANT_MISMATCH":              8,
+		"PROCESSES_UNRECONCILED":      9,
+		"WEIGHT_EXCEEDS_CAPACITY":     10,
+		"RESERVED_METADATA_KEY":       11,
+		"METADATA_TOO_LARGE":          12,
+		"EVENTS_EXPIRED":              13,
+		"INVALID_PAGE_TOKEN":          14,
+		"CLAIM_MISMATCH":              15,
+		"GRANT_FENCED":                16,
+		"REPORT_CONFLICT":             17,
+		"STORAGE_UNAVAILABLE":         18,
+		"STORAGE_CORRUPT":             19,
+		"RETRY_NOT_ELIGIBLE":          20,
+		"IDEMPOTENCY_KEY_DELETED":     21,
+		"ADMISSION_BUSY":              22,
+		"HTTP_ROUTE_NOT_FOUND":        23,
+		"HTTP_METHOD_NOT_ALLOWED":     24,
+		"HTTP_UNSUPPORTED_MEDIA_TYPE": 25,
+		"HTTP_REQUEST_TOO_LARGE":      26,
+		"OPERATION_NOT_IMPLEMENTED":   27,
+		"INTERNAL_ERROR":              28,
+		"REQUEST_CANCELLED":           29,
+		"DEADLINE_EXCEEDED":           30,
 	}
 )
 
@@ -2658,6 +2682,9 @@ type Health struct {
 	SchemaVersion   int64                  `protobuf:"varint,5,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
 	RecoveryDetail  *string                `protobuf:"bytes,6,opt,name=recovery_detail,json=recoveryDetail,proto3,oneof" json:"recovery_detail,omitempty"`
 	StorageDetail   *string                `protobuf:"bytes,7,opt,name=storage_detail,json=storageDetail,proto3,oneof" json:"storage_detail,omitempty"` // untrusted/unavailable durable state
+	ServiceIdentity string                 `protobuf:"bytes,8,opt,name=service_identity,json=serviceIdentity,proto3" json:"service_identity,omitempty"` // "heavylock.v2"; not authentication
+	ApiMajor        uint32                 `protobuf:"varint,9,opt,name=api_major,json=apiMajor,proto3" json:"api_major,omitempty"`                     // 2; incompatible changes require a new major
+	ApiMinor        uint32                 `protobuf:"varint,10,opt,name=api_minor,json=apiMinor,proto3" json:"api_minor,omitempty"`                    // additive, backwards-compatible changes
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2739,6 +2766,27 @@ func (x *Health) GetStorageDetail() string {
 		return *x.StorageDetail
 	}
 	return ""
+}
+
+func (x *Health) GetServiceIdentity() string {
+	if x != nil {
+		return x.ServiceIdentity
+	}
+	return ""
+}
+
+func (x *Health) GetApiMajor() uint32 {
+	if x != nil {
+		return x.ApiMajor
+	}
+	return 0
+}
+
+func (x *Health) GetApiMinor() uint32 {
+	if x != nil {
+		return x.ApiMinor
+	}
+	return 0
 }
 
 type GetStatusRequest struct {
@@ -4208,7 +4256,7 @@ const file_heavylock_proto_rawDesc = "" +
 	"\aoutcome\x18\x03 \x01(\v2\x15.heavylock.v2.OutcomeR\aoutcome\x127\n" +
 	"\x06runner\x18\x04 \x01(\v2\x1f.heavylock.v2.RunnerIncarnationR\x06runner\x127\n" +
 	"\aprocess\x18\x05 \x01(\v2\x1d.heavylock.v2.ProcessIdentityR\aprocess\"\x12\n" +
-	"\x10GetHealthRequest\"\xb0\x02\n" +
+	"\x10GetHealthRequest\"\x95\x03\n" +
 	"\x06Health\x12\x12\n" +
 	"\x04live\x18\x01 \x01(\bR\x04live\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\bR\x05ready\x12'\n" +
@@ -4216,7 +4264,11 @@ const file_heavylock_proto_rawDesc = "" +
 	"\x12started_at_unix_ns\x18\x04 \x01(\x03R\x0fstartedAtUnixNs\x12%\n" +
 	"\x0eschema_version\x18\x05 \x01(\x03R\rschemaVersion\x12,\n" +
 	"\x0frecovery_detail\x18\x06 \x01(\tH\x00R\x0erecoveryDetail\x88\x01\x01\x12*\n" +
-	"\x0estorage_detail\x18\a \x01(\tH\x01R\rstorageDetail\x88\x01\x01B\x12\n" +
+	"\x0estorage_detail\x18\a \x01(\tH\x01R\rstorageDetail\x88\x01\x01\x12)\n" +
+	"\x10service_identity\x18\b \x01(\tR\x0fserviceIdentity\x12\x1b\n" +
+	"\tapi_major\x18\t \x01(\rR\bapiMajor\x12\x1b\n" +
+	"\tapi_minor\x18\n" +
+	" \x01(\rR\bapiMinorB\x12\n" +
 	"\x10_recovery_detailB\x11\n" +
 	"\x0f_storage_detail\"\x12\n" +
 	"\x10GetStatusRequest\"\xf2\x04\n" +
@@ -4357,7 +4409,7 @@ const file_heavylock_proto_rawDesc = "" +
 	"\x19BLOCKED_REASON_RECOVERING\x10\x04\x12&\n" +
 	"\"BLOCKED_REASON_RUNNER_DISCONNECTED\x10\x05\x12&\n" +
 	"\"BLOCKED_REASON_STORAGE_UNAVAILABLE\x10\x06\x12*\n" +
-	"&BLOCKED_REASON_WEIGHT_EXCEEDS_CAPACITY\x10\a*\xa1\x04\n" +
+	"&BLOCKED_REASON_WEIGHT_EXCEEDS_CAPACITY\x10\a*\xf6\x05\n" +
 	"\vErrorReason\x12\x1c\n" +
 	"\x18ERROR_REASON_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -4383,7 +4435,15 @@ const file_heavylock_proto_rawDesc = "" +
 	"\x0fSTORAGE_CORRUPT\x10\x13\x12\x16\n" +
 	"\x12RETRY_NOT_ELIGIBLE\x10\x14\x12\x1b\n" +
 	"\x17IDEMPOTENCY_KEY_DELETED\x10\x15\x12\x12\n" +
-	"\x0eADMISSION_BUSY\x10\x162\xcd\x06\n" +
+	"\x0eADMISSION_BUSY\x10\x16\x12\x18\n" +
+	"\x14HTTP_ROUTE_NOT_FOUND\x10\x17\x12\x1b\n" +
+	"\x17HTTP_METHOD_NOT_ALLOWED\x10\x18\x12\x1f\n" +
+	"\x1bHTTP_UNSUPPORTED_MEDIA_TYPE\x10\x19\x12\x1a\n" +
+	"\x16HTTP_REQUEST_TOO_LARGE\x10\x1a\x12\x1d\n" +
+	"\x19OPERATION_NOT_IMPLEMENTED\x10\x1b\x12\x12\n" +
+	"\x0eINTERNAL_ERROR\x10\x1c\x12\x15\n" +
+	"\x11REQUEST_CANCELLED\x10\x1d\x12\x15\n" +
+	"\x11DEADLINE_EXCEEDED\x10\x1e2\xcd\x06\n" +
 	"\rRunnerService\x12L\n" +
 	"\tSubmitJob\x12\x1e.heavylock.v2.SubmitJobRequest\x1a\x1f.heavylock.v2.SubmitJobResponse\x12M\n" +
 	"\x11TrySubmitAndWatch\x12\x1e.heavylock.v2.SubmitJobRequest\x1a\x16.heavylock.v2.JobEvent0\x01\x12C\n" +

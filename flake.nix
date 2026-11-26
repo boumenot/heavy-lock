@@ -20,14 +20,86 @@
     url = "github:grpc/grpc-swift-protobuf/2.5.0";
     flake = false;
   };
+  inputs.grpc-swift-nio-transport = {
+    url = "github:grpc/grpc-swift-nio-transport/2.13.3";
+    flake = false;
+  };
   inputs.swift-protobuf = {
     url = "github:apple/swift-protobuf/1.41.0";
     flake = false;
   };
-  # Transitive dependency of grpc-swift-2; pinned so every resolved package
-  # is defined by the flake.
+  # Transitive SwiftPM dependencies are pinned so every resolved package is
+  # also defined by the flake.
+  inputs.swift-algorithms = {
+    url = "github:apple/swift-algorithms/1.2.1";
+    flake = false;
+  };
+  inputs.swift-asn1 = {
+    url = "github:apple/swift-asn1/1.7.5";
+    flake = false;
+  };
+  inputs.swift-async-algorithms = {
+    url = "github:apple/swift-async-algorithms/1.1.7";
+    flake = false;
+  };
+  inputs.swift-atomics = {
+    url = "github:apple/swift-atomics/1.3.1";
+    flake = false;
+  };
+  inputs.swift-certificates = {
+    url = "github:apple/swift-certificates/1.21.2";
+    flake = false;
+  };
   inputs.swift-collections = {
     url = "github:apple/swift-collections/1.7.6";
+    flake = false;
+  };
+  inputs.swift-crypto = {
+    url = "github:apple/swift-crypto/5.2.0";
+    flake = false;
+  };
+  inputs.swift-http-structured-headers = {
+    url = "github:apple/swift-http-structured-headers/1.7.0";
+    flake = false;
+  };
+  inputs.swift-http-types = {
+    url = "github:apple/swift-http-types/1.8.0";
+    flake = false;
+  };
+  inputs.swift-log = {
+    url = "github:apple/swift-log/1.17.2";
+    flake = false;
+  };
+  inputs.swift-nio = {
+    url = "github:apple/swift-nio/2.105.2";
+    flake = false;
+  };
+  inputs.swift-nio-extras = {
+    url = "github:apple/swift-nio-extras/1.35.3";
+    flake = false;
+  };
+  inputs.swift-nio-http2 = {
+    url = "github:apple/swift-nio-http2/1.46.1";
+    flake = false;
+  };
+  inputs.swift-nio-ssl = {
+    url = "github:apple/swift-nio-ssl/2.37.7";
+    flake = false;
+  };
+  inputs.swift-nio-transport-services = {
+    url = "github:apple/swift-nio-transport-services/1.28.0";
+    flake = false;
+  };
+  inputs.swift-numerics = {
+    url = "github:apple/swift-numerics/1.1.1";
+    flake = false;
+  };
+  inputs.swift-service-lifecycle = {
+    url = "github:swift-server/swift-service-lifecycle/2.13.0";
+    flake = false;
+  };
+  inputs.swift-system = {
+    url = "github:apple/swift-system/1.9.0";
     flake = false;
   };
 
@@ -55,15 +127,41 @@
           owner = "grpc";
           direct = true;
         };
+        grpc-swift-nio-transport = {
+          owner = "grpc";
+          direct = true;
+        };
         swift-protobuf = {
           owner = "apple";
           direct = true;
         };
-        swift-collections = {
-          owner = "apple";
+        swift-service-lifecycle = {
+          owner = "swift-server";
           direct = false;
         };
-      };
+      }
+      // lib.genAttrs [
+        "swift-algorithms"
+        "swift-asn1"
+        "swift-async-algorithms"
+        "swift-atomics"
+        "swift-certificates"
+        "swift-collections"
+        "swift-crypto"
+        "swift-http-structured-headers"
+        "swift-http-types"
+        "swift-log"
+        "swift-nio"
+        "swift-nio-extras"
+        "swift-nio-http2"
+        "swift-nio-ssl"
+        "swift-nio-transport-services"
+        "swift-numerics"
+        "swift-system"
+      ] (_: {
+        owner = "apple";
+        direct = false;
+      });
       lock = lib.importJSON ./flake.lock;
       swiftPins = lib.mapAttrs (
         name: dependency:
@@ -140,14 +238,14 @@
       });
 
       # Builds the v2 prototype from the Go manifests; vendorHash pins the
-      # module dependencies recorded in apps/tuna/go.sum. Update it whenever
-      # go.sum changes.
+      # module dependencies used by apps/tuna. Update it when the vendored
+      # package set changes, even if go.sum does not.
       packages = forAllSystems (pkgs: {
         tuna = pkgs.buildGoModule {
           pname = "tuna";
           version = "0.0.0";
           src = ./apps/tuna;
-          vendorHash = "sha256-VMKF82vS2W0aUR1Up3+3Su9IvkuUHO3Guj7jNamTbjA=";
+          vendorHash = "sha256-mRUkpyioEqY/CIEFXN/XIjRRZwFwi62W6rxhsEen+yM=";
           env.CGO_ENABLED = 0;
           # Tests run through `dart tool/dev.dart test tuna`.
           doCheck = false;

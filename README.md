@@ -378,6 +378,14 @@ using the v1 `heavy-lock` runner for all workloads. The v2 target is macOS
 26+ on Apple Silicon, exercised on macOS 26.7.3/arm64 with Xcode 27.2
 (Swift 6.4.2), Go 1.27.3 and `protoc` 36.2.
 
+The v2 transport package can serve a fake broker on one IPv4 loopback port
+using plaintext gRPC and REST, but `tuna service` does not start it yet.
+The runner requires an explicit `--port`. Service identity, REST/CORS and
+submission equivalence are specified in the
+[v2 design](docs/v2-design.md#6-apis-port-and-local-access-risks).
+Both APIs are unauthenticated; any local process, and potentially any web
+page permitted by the browser, can access exposed data and controls.
+
 Bindings for the canonical contract, [docs/v2/heavylock.proto](docs/v2/heavylock.proto),
 are generated and committed; do not edit them by hand:
 
@@ -386,9 +394,10 @@ are generated and committed; do not edit them by hand:
   `apps/tuna/go.mod`).
 - Swift: `packages/heavylock-v2-swift/Sources/HeavyLockV2/` (messages plus
   gRPC clients only), the library the future v2 monitor will use. Its
-  dependencies (grpc-swift-2 2.4.4, grpc-swift-protobuf 2.5.0, swift-protobuf
-  1.41.0 and transitive swift-collections 1.7.6) are pinned as non-flake
-  inputs in `flake.nix`, with their commits in `flake.lock`. SwiftPM still
+  direct dependencies include grpc-swift-2 2.4.4, grpc-swift-protobuf 2.5.0,
+  swift-protobuf 1.41.0 and the test-only grpc-swift-nio-transport 2.13.3.
+  All direct and transitive packages are pinned as non-flake inputs in
+  `flake.nix`, with their commits in `flake.lock`. SwiftPM still
   needs `Package.swift` (exact requirements) and the committed
   `Package.resolved`; evaluating the flake (`nix develop`, `nix flake check`)
   fails if either differs from the flake pins, and `tool/dev.dart` and the
@@ -406,9 +415,19 @@ heavy-lock -- nix develop -c tool/generate_v2.sh --check  # exit 1 if stale
 ```
 
 Both binding tests assert the same golden wire encoding, so a cross-language
-mismatch fails `dart tool/dev.dart check all`. `nix build .#tuna` builds the
-executable from the flake; its `vendorHash` pins the Go module dependencies
-and must be updated whenever `apps/tuna/go.sum` changes.
+mismatch fails `dart tool/dev.dart check all`. Run the additional Swift
+gRPC/REST interoperability probe through the shared gate:
+
+```bash
+heavy-lock -- nix develop -c env TUNA_TEST_SWIFT=1 \
+  go -C apps/tuna test ./transport -run '^TestSwiftGRPCCompatibility$' -count=1 -v
+```
+
+Real-browser CORS behavior was not verified because browser access approval
+was denied; native preflight tests pass. `heavy-lock -- nix build .#tuna`
+builds the executable from the flake; its `vendorHash` pins the Go module
+dependencies and must be updated when the vendored package set changes,
+even if `apps/tuna/go.sum` does not.
 
 The shell deliberately uses `mkShellNoCC` and does not provide Swift: on
 macOS the monitor builds with the system Xcode `swift` (`xcode-select

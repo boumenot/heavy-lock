@@ -254,8 +254,31 @@ the Swift inputs, contrary to the user's direction.
 **Limits.** SwiftPM, not Nix, still fetches and builds the Swift
 dependencies; the flake defines and enforces their versions but the Swift
 manifests must be updated alongside it. Xcode and its Swift toolchain
-remain a system prerequisite. New Swift dependencies (for example the #10
-transport) must be added as flake inputs too, or flake evaluation fails. The
-(grpc-swift-nio-transport), REST routing and service identity are left to
-#10. The `vendorHash` must be updated whenever `go.sum` changes. Only this
-Mac has been exercised.
+remain a system prerequisite. New Swift dependencies must be added as flake
+inputs too, or flake evaluation fails. The `vendorHash` must be updated
+when the vendored Go package set changes, even if `go.sum` does not. Only
+this Mac has been exercised.
+
+## v2 shared-port contract prototype
+
+**Decision.** A Go `net/http` listener binds `127.0.0.1` and accepts HTTP/1.1
+and cleartext HTTP/2. It routes gRPC to `grpc.Server.ServeHTTP` and REST to
+explicit handlers sharing one broker interface. The requested port must be
+1–65535 and an occupied port reports an error, not a replacement. Identity
+checks use `heavylock.v2`, API major/minor and liveness, not port discovery
+or authentication. The versioned SHA-256 submission encoding, POSIX-style
+argv display, REST mappings, errors and CORS are specified in
+[v2 design sections 6 and 11.2](v2-design.md#6-apis-port-and-local-access-risks).
+
+**Evidence.** Fake-broker probes exercised Go gRPC and HTTP/1.1/HTTP/2 REST
+on the same listener, runner/control streams, shared state and errors.
+Native Swift gRPC uses the test-only `grpc-swift-nio-transport` 2.13.3
+TransportServices product and was tested against that same broker. All
+Swift direct/transitive packages are pinned in the flake and SwiftPM.
+Native CORS/private-network preflights passed; a real browser check was
+not run because browser access approval was denied.
+
+**Limits.** `grpc.Server.ServeHTTP` is experimental; rerun compatibility
+probes after upgrades. Only this Mac was exercised. The prototype does not
+start a real service or execute a command. Loopback, Host checks and
+permissive CORS do not provide isolation or authentication.
