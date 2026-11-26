@@ -53,7 +53,7 @@ other row is an explicit user decision.
 | Area | Decision |
 |---|---|
 | Language and packaging | Go runner and broker; one executable with a service mode |
-| Initial platforms | Apple Silicon macOS 13+ first *(minimum version delegated)*; Intel macOS is not required initially; Linux and Windows are later targets |
+| Initial platforms | Apple Silicon macOS 13+ first *(architecture and minimum version delegated)*; Intel macOS is not required initially; Linux and Windows are later targets |
 | V1 switch | Stop using v1 and switch to v2; no mixed v1/v2 admission or nesting, migration plan, or legacy compatibility requirement |
 | Runner CLI | Retain the common v1 command separator, weight and worklog options *(delegated)*, plus the already-decided `--no-wait`; an explicit broker port is still required |
 | CLI queue controls | Built-in queue/job inspection and queue controls *(delegated)*; the monitor and REST API remain available |
@@ -130,11 +130,12 @@ The chosen macOS-first rollout narrows the initial verification effort and
 can ship sooner, while Linux and Windows remain on v1 longer and must still
 receive their own process-safety and durability validation before v2 support.
 
-**User decision: initial macOS architecture.** Target Apple Silicon
+**Delegated decision: initial macOS architecture.** Target Apple Silicon
 (`arm64`) only for the first release; Intel macOS (`x86_64`) is not an
-initial-release prerequisite. This follows the assistant's recommendation
-and narrows the initial process-safety and packaging verification matrix to
-the user's current architecture.
+initial-release prerequisite. The coordinator selected the assistant's
+recommendation under the user's delegation; it is not an individual user
+selection. It narrows the initial process-safety and packaging verification
+matrix to the user's current architecture.
 
 Supporting both architectures initially would preserve access for Intel
 Macs, but requires verifying the process identity, lifecycle and
@@ -3719,8 +3720,9 @@ current results from historical runs and list bounds and unchecked cases.
 11. Go/protobuf tooling, distribution, installation and upgrade behavior,
     validation of macOS 13+ on Apple Silicon, later Intel macOS/Linux/Windows
     release plans, and monotonic launch-timeout reconstruction across broker
-    restarts. The initial architecture and minimum macOS version are decided
-    (section 1); macOS login startup is delegated (section 4).
+    restarts. The initial architecture and minimum macOS version are
+    delegated decisions (section 1); macOS login startup is delegated
+    (section 4).
 12. The v2 nesting marker, retry delay, port-option spelling and other CLI
     configuration, including CLI control details. The simple v1/v2 switch
     and lack of legacy status compatibility are decided, and common runner
