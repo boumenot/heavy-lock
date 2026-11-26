@@ -7,7 +7,10 @@ Follow [docs/development-lifecycle.md](docs/development-lifecycle.md).
 - Shipped apps live in `apps/`: the runner in `apps/heavy-lock` (code in
   `lib/heavy_lock.dart`, status publication in `lib/src/heavy_lock_status.dart`,
   entrypoints in `bin/`, integration tests in `test/`) and the macOS monitor
-  in `apps/monitor-macos/`. `tool/dev.dart` (library and tests in `tool/`)
+  in `apps/monitor-macos/`. The v2 Go prototype `tuna` is in `apps/tuna`
+  and its generated Swift contract library in `packages/heavylock-v2-swift`;
+  regenerate bindings with `tool/generate_v2.sh`, never by hand.
+  `tool/dev.dart` (library and tests in `tool/`)
   builds, tests and installs them; the root `pubspec.yaml` is a pub workspace.
   Windows/Linux monitors are future targets: do not create empty projects.
 - Develop inside the Nix dev shell: `nix develop` (or `nix develop -c

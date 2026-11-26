@@ -25,6 +25,8 @@ class FakeShell implements Shell {
     if (this.failing.contains(key)) return 3;
     if (key == 'dart compile') {
       await File(arguments.last).writeAsString('binary ${arguments[4]}');
+    } else if (key == 'go build') {
+      await File(arguments[3]).writeAsString('tuna');
     } else if (key.startsWith('ditto')) {
       await _copyDirectory(Directory(arguments[0]), arguments[1]);
     }
@@ -180,7 +182,38 @@ void main() {
 
       shell.calls.clear();
       expect(await dev(['test', 'all']), 0);
-      expect(shell.steps, ['dart test', 'swift test']);
+      expect(shell.steps, ['dart test', 'swift test', 'go test', 'swift test']);
+      expect(shell.calls.last.last, '$root/packages/heavylock-v2-swift');
+    });
+
+    test('tuna builds atomically and is never installed', () async {
+      expect(await dev(['build', 'tuna']), 0, reason: '$err');
+      expect(shell.steps, ['go build']);
+      expect(await File('$root/build/tuna/tuna').readAsString(), 'tuna');
+      expect(await Directory('$root/build/tuna').list().length, 1);
+
+      shell.failing.add('go build');
+      await File('$root/build/tuna/tuna').writeAsString('previous');
+      expect(await dev(['build', 'tuna']), isNot(0));
+      expect(await File('$root/build/tuna/tuna').readAsString(), 'previous');
+      expect(await Directory('$root/build/tuna').list().length, 1);
+
+      shell.calls.clear();
+      expect(await dev(['install', 'tuna']), unavailableExitCode);
+      expect('$err', contains('tuna is not installable'));
+      expect(await dev(['install', 'heavylock-v2-swift']), unavailableExitCode);
+      expect(shell.calls, isEmpty);
+    });
+
+    test('install all skips applications that are not installable', () async {
+      await File(
+        '$root/build/monitor-macos/Heavy Lock Status.app/'
+        'Contents/MacOS/HeavyLockMonitor',
+      ).create(recursive: true);
+      expect(await dev(['install', 'all']), 0, reason: '$err');
+      expect('$out', isNot(contains('tuna')));
+      expect('$out', isNot(contains('heavylock-v2-swift')));
+      expect(shell.steps.first, 'bash $root/tool/install.sh');
     });
 
     test('unknown, future and unsupported targets fail clearly', () async {

@@ -2,7 +2,10 @@
 build/
 apps/monitor-macos/.build/
 apps/monitor-macos/.swiftpm/
+packages/heavylock-v2-swift/.build/
+packages/heavylock-v2-swift/.swiftpm/
 .DS_Store
 .direnv/
 .envrc
+!/.envrc
 result
