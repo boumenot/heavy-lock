@@ -466,6 +466,8 @@ service Runner {
   // Enqueue a job. Repeating the same idempotency_key returns the
   // existing job rather than creating a duplicate.
   rpc SubmitJob(SubmitJobRequest) returns (Job);
+  // List queued, running and completed jobs with optional filters.
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
   rpc GetJob(GetJobRequest) returns (Job);
   // Stream current state, queue position, admission grant and
   // cancellation. The runner re-opens it after a disconnect.
@@ -485,6 +487,18 @@ message SubmitJobRequest {
   uint32 weight = 4;
   ClientInfo client = 5;        // name, version
   map<string, string> metadata = 6; // explicit attribution only
+}
+
+message ListJobsRequest {
+  repeated string states = 1;       // empty means all states
+  optional string repository = 2;   // explicitly supplied metadata
+  optional uint32 page_size = 3;
+  optional string page_token = 4;
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+  optional string next_page_token = 2;
 }
 
 message ReportStartedRequest {
@@ -511,9 +525,18 @@ message ReportFinishedRequest {
 queue position, grant and cancellation details, and are equally
 illustrative.
 
-The API is unauthenticated: any local client able to connect may request
-cancellation of a waiting job it can identify. The job ID does not prove
-ownership.
+**Proposed list behavior.** With no state filter, `ListJobs` and
+`GET /v1/jobs` include queued, running and completed jobs. Candidate
+filters include state and explicitly supplied repository; other possibilities
+are client name and queue-entry time. Pagination could use a page size and
+opaque next-page token. Exact filters, status mapping, ordering, token
+lifetime and consistency across pages remain open. The separate
+`GET /v1/queue` would show current queue order, including manual reorders;
+the general job listing need not preserve that order.
+
+The API is unauthenticated: any local client able to connect may list jobs
+or request cancellation of any waiting job it can identify. A job ID does
+not prove ownership.
 
 Proposed invariants, still requiring agreement:
 
@@ -545,7 +568,7 @@ proposals.
 | `GET` | `/v1/health` | Liveness/readiness, service version, recovery status |
 | `GET` | `/v1/status` | Capacity, occupied slots, pause state, live resource readings |
 | `GET` | `/v1/queue` | Ordered waiting jobs with blocked-head reason |
-| `GET` | `/v1/jobs` | Running and completed jobs, filterable and paginated |
+| `GET` | `/v1/jobs` | Queued, running and completed jobs, filterable and paginated |
 | `GET` | `/v1/jobs/{id}` | Full job record, metadata, outcome and resource summary |
 | `POST` | `/v1/jobs/{id}/cancel` | Cancel a waiting or running job |
 | `POST` | `/v1/jobs/{id}/move-front` | Move a waiting job to the front |
