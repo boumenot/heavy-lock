@@ -45,16 +45,41 @@ service RunnerService {
   // retry was submitted and inserting/enqueueing it are one transaction.
   // The retry joins the back of the queue and never reuses the earlier grant
   // or claim. Only the runner retries; the broker never resubmits or
-  // relaunches work. Deleting a job's history retains only its key: a later
-  // submission with that key, with any payload, fails with
+  // relaunches work. Deleting a job's history retains a permanent key-only
+  // tombstone: a later submission with that key, with any payload, fails with
   // FAILED_PRECONDITION / IDEMPOTENCY_KEY_DELETED and never creates a job.
+  // A deletion event and surviving retry lineage may separately retain its ID.
   // The runner must not resubmit automatically under a new key.
   // A weight above the configured capacity fails with FAILED_PRECONDITION /
   // WEIGHT_EXCEEDS_CAPACITY; it is never clamped.
+  // A key previously rejected by TrySubmitAndWatch returns
+  // FAILED_PRECONDITION / ADMISSION_BUSY, regardless of payload.
   // The queue entry commits unregistered: grace starts at this commit and
   // the job is never reserved until the submitting incarnation's WatchJob
   // registers. A retransmitted SubmitJob does not reset grace.
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+
+  // --no-wait: register this stream and make exactly one immediate normal
+  // admission decision, as if appended to the current queue. A successful
+  // decision atomically commits the job, reservation and any backfill count,
+  // without a durable queue entry, before the first snapshot and grant.
+  // A connected earlier eligible job has priority; all normal pause,
+  // readiness, capacity, resource and bounded-backfill checks apply.
+  // A definite busy decision atomically retains only the idempotency key and
+  // fails with FAILED_PRECONDITION / ADMISSION_BUSY; the CLI exits 75. A
+  // duplicate of that key returns ADMISSION_BUSY once the broker is ready,
+  // even through SubmitJob and regardless of the remaining payload. A new
+  // attempt needs a new key. A matching duplicate of a committed job returns
+  // its existing snapshot; admission mode is part of payload equivalence.
+  // A busy retry does not consume its predecessor. Invalid fresh requests,
+  // recovery, storage failures and ambiguous stream loss are not
+  // ADMISSION_BUSY. An ambiguous response may follow a committed reservation;
+  // never infer rejection or automatically use a new key.
+  // A stream known disconnected or superseded before the decision aborts
+  // without creating a reservation or busy marker. Observing a live stream
+  // cannot rule out a concurrent undetected disconnect; normal reservation,
+  // one-shot claim and recovery rules still apply.
+  rpc TrySubmitAndWatch(SubmitJobRequest) returns (stream JobEvent);
 
   // Server-streaming job channel (push, not polling). Every call, including
   // a reconnect, starts with a snapshot of the job's current durable state;
@@ -64,7 +89,9 @@ service RunnerService {
   // a durable ClaimLaunch, not a spawn by itself. A present
   // cancel_requested_at_unix_ns means cancel; a claimed runner then calls
   // AcknowledgeCancel. The first call by the submitting incarnation
-  // registers the queue entry, like a reconnect. An open stream is the
+  // registers the queue entry, like a reconnect. Newer registrations
+  // supersede older ones; an older stream's disconnect cannot unregister
+  // the newer one. An open current stream is the
   // runner's connection signal for the queued-runner grace period, and the
   // broker sends a heartbeat at least every heartbeat_interval_ms so the
   // runner can detect a silent broker. Grace begins when the broker detects
@@ -105,16 +132,24 @@ service RunnerService {
   // Acknowledge receipt of a cancellation request for a claimed grant. Only
   // the assigned incarnation is accepted; idempotent, and accepted during
   // recovery. Starts the completion deadline; it is not completion.
+  // ReportCancelFailed and ReportLaunchFailed with cancelled = true also
+  // acknowledge; a delayed ordinary finish or seal does not prove receipt.
   rpc AcknowledgeCancel(AcknowledgeCancelRequest) returns (Job);
 
   // Report that the runner's termination attempt failed. Implies
-  // acknowledgment and makes the broker immediately eligible to take over.
+  // acknowledgment and makes the broker immediately eligible to take over
+  // while termination is still needed. The first valid detail is retained;
+  // identical retries are idempotent and conflicting retries fail. A late
+  // failure after completion is diagnostic, not a new takeover trigger.
   // Never releases capacity or implies that processes exited.
   rpc ReportCancelFailed(ReportCancelFailedRequest) returns (Job);
 
   // Report the observed outcome together with runner and root identities. If
   // start is missing, validate against the claim and store start and outcome
   // atomically. Matching retries are idempotent; conflicting reports fail.
+  // A valid late report can replace UNKNOWN, including in retained terminal
+  // history, but never changes the recorded takeover or release evidence.
+  // Deletion wins over a late report: a deleted job is NOT_FOUND.
   // Capacity remains held until the agreed release checks pass.
   rpc ReportFinished(ReportFinishedRequest) returns (Job);
 }
@@ -129,11 +164,23 @@ service ControlService {
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
   rpc GetJob(GetJobRequest) returns (Job);
 
+  // Read-only diagnosis by idempotency key. A retained job is returned;
+  // a committed no-wait rejection reports ADMISSION_BUSY, a deleted job
+  // reports IDEMPOTENCY_KEY_DELETED, and an absent key reports
+  // JOB_NOT_FOUND. Absence is only a point-in-time observation: an earlier
+  // in-flight request may still commit. Never treat it as permission to
+  // submit automatically under a different key. Untrusted storage is an
+  // explicit error, not absence.
+  rpc GetSubmission(GetSubmissionRequest) returns (Job);
+
   // Cancel a queued job (removes it from the queue and finishes it as
   // CANCELLED_BEFORE_START). For a reserved or running job, record the
   // request and push CancelRequested to the runner, which attempts
   // termination first. Separate configurable runner acknowledgment and
   // termination-completion deadlines apply; acknowledgment is not completion.
+  // An outcome report alone does not establish that known descendants exited
+  // or that no further launch is possible. Keep the deadline and reservation
+  // until the applicable outcome and release checks are established.
   // Configurable, unmeasured starting defaults: 5 s acknowledgment and
   // 30 s completion after acknowledgment. Job termination immediately
   // force-stops verified job processes, with no graceful-shutdown phase;
@@ -151,8 +198,10 @@ service ControlService {
   // attempt to terminate that verified runner incarnation and takes over
   // only after its death is verified; otherwise it waits with the
   // reservation held. A takeover is durably recorded before signalling and
-  // is not revoked by a late runner report. ReportCancelFailed allows
-  // takeover immediately. Coordination with a still-live runner and kill
+  // is not revoked by a late runner report. Its first eligible reason is
+  // retained; simultaneous triggers are ordered as specified in the design.
+  // ReportCancelFailed allows takeover immediately but is never an outcome.
+  // Coordination with a still-live runner and kill
   // mechanisms are not yet specified. A granted command may already be
   // running, so neither the request, a termination attempt nor a report
   // alone releases its reservation; the approved release checks still apply.
@@ -192,6 +241,10 @@ service ControlService {
   rpc DeleteHistory(DeleteHistoryRequest) returns (DeleteHistoryResponse);
 
   // Server-streaming broker event feed for monitors. Resumable by sequence.
+  // Before announcing ready after a restart, commit status_changed and
+  // queue_changed events with the current capacity and recomputed blocked
+  // reasons; publish them only after the ready transition commits.
+  // Replayed events describe past state, not proof the broker is live.
   rpc WatchEvents(WatchEventsRequest) returns (stream BrokerEvent);
 }
 
@@ -282,6 +335,7 @@ enum ErrorReason {
   STORAGE_CORRUPT = 19;            // DATA_LOSS; never auto-replace the database
   RETRY_NOT_ELIGIBLE = 20;         // FAILED_PRECONDITION
   IDEMPOTENCY_KEY_DELETED = 21;    // FAILED_PRECONDITION; that job's history was deleted
+  ADMISSION_BUSY = 22;             // FAILED_PRECONDITION; durable no-wait refusal
 }
 
 // ---------------------------------------------------------------- shared
@@ -370,6 +424,7 @@ message Job {
   Attribution attribution = 9;
   string service_version = 10;
 
+  // Submission commit; a no-wait job may have no durable queue entry.
   int64 queued_at_unix_ns = 11;
   optional int64 admitted_at_unix_ns = 12;
   optional int64 started_at_unix_ns = 13;  // root process start, once recorded
@@ -403,6 +458,8 @@ message Job {
   optional string cancel_failure_detail = 30;
   optional BrokerTermination broker_termination = 31;
   // Set while QUEUED and skipped by normal admission, e.g. oversized.
+  // Oversized takes precedence here even if paused or disconnected; clients
+  // display those independent conditions from status and runner_connected.
   BlockedReason blocked_reason = 32;
 }
 
@@ -412,10 +469,10 @@ message BrokerTermination {
     REASON_CANCEL_ACK_DEADLINE = 1;
     REASON_CANCEL_COMPLETION_DEADLINE = 2;
     REASON_CANCEL_RUNNER_FAILED = 3;
-    REASON_RUNNER_DEAD = 4;        // section 4 runner-death cleanup
+    REASON_RUNNER_DEAD = 4;        // verified assigned runner death
   }
   int64 started_at_unix_ns = 1;    // committed before the first signal
-  Reason reason = 2;
+  Reason reason = 2;               // first committed trigger; never rewritten
 }
 
 // ---------------------------------------------------------------- runner
@@ -599,6 +656,10 @@ message ListJobsResponse {
 
 message GetJobRequest {
   string job_id = 1;
+}
+
+message GetSubmissionRequest {
+  string idempotency_key = 1;
 }
 
 message CancelJobRequest {

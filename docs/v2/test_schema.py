@@ -26,6 +26,10 @@ class IdempotencyKeyDeleted(Exception):
     pass
 
 
+class NoWaitAdmissionBusy(Exception):
+    pass
+
+
 def new_id():
     return str(uuid.uuid4())
 
@@ -104,6 +108,22 @@ class RetryLineageTests(unittest.TestCase):
             (job_id, sequence, new_id()),
         )
 
+    def lookup_submission(self, db, key):
+        rows = db.execute(
+            """
+            SELECT 'job', id FROM jobs WHERE idempotency_key = ?
+            UNION ALL
+            SELECT 'busy', NULL FROM no_wait_rejections WHERE idempotency_key = ?
+            UNION ALL
+            SELECT 'deleted', NULL FROM deleted_idempotency_keys
+              WHERE idempotency_key = ?
+            """,
+            (key, key, key),
+        ).fetchall()
+        if len(rows) > 1:
+            raise AssertionError("submission key has conflicting records")
+        return rows[0] if rows else ("absent", None)
+
     def submit_retry_in_transaction(self, db, job_id, key, parent, payload):
         digest = hashlib.sha256(f"{parent}\0{payload}".encode()).digest()
         existing = db.execute(
@@ -119,6 +139,10 @@ class RetryLineageTests(unittest.TestCase):
             (key,),
         ).fetchone():
             raise IdempotencyKeyDeleted
+        if db.execute(
+            "SELECT 1 FROM no_wait_rejections WHERE idempotency_key = ?", (key,)
+        ).fetchone():
+            raise NoWaitAdmissionBusy
 
         predecessor = db.execute(
             """
@@ -223,9 +247,32 @@ class RetryLineageTests(unittest.TestCase):
             (job_id,),
         ).fetchone():
             raise ValueError("process exit is not verified")
+        last_deleted = db.execute(
+            "SELECT max(seq) FROM events WHERE job_id = ? OR kind = 'queue_changed'",
+            (job_id,),
+        ).fetchone()[0]
+        if last_deleted is not None:
+            db.execute(
+                "DELETE FROM events WHERE job_id = ? OR kind = 'queue_changed'",
+                (job_id,),
+            )
+            db.execute(
+                "UPDATE broker_state SET event_floor_seq = max(event_floor_seq, ?) "
+                "WHERE id = 1", (last_deleted,),
+            )
         db.execute("DELETE FROM reservations WHERE job_id = ?", (job_id,))
         db.execute("DELETE FROM job_processes WHERE job_id = ?", (job_id,))
         db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        db.execute(
+            "UPDATE broker_state SET last_event_seq = last_event_seq + 1 WHERE id = 1"
+        )
+        sequence = db.execute(
+            "SELECT last_event_seq FROM broker_state WHERE id = 1"
+        ).fetchone()[0]
+        db.execute(
+            "INSERT INTO events(seq, at_ns, job_id, kind, payload) "
+            "VALUES (?, 1, ?, 'job_deleted', ?)", (sequence, job_id, b"example"),
+        )
 
     def delete(self, db, job_id):
         db.execute("BEGIN IMMEDIATE")
@@ -499,6 +546,32 @@ class RetryLineageTests(unittest.TestCase):
             "SELECT count(*) FROM jobs"
         ).fetchone())
 
+    def test_history_deletion_purges_queue_snapshots_and_advances_event_floor(self):
+        other = new_id()
+        self.insert_job(self.db, other, new_id(), state="queued")
+        self.db.execute("UPDATE broker_state SET last_event_seq = 5 WHERE id = 1")
+        for seq, job_id, kind in (
+            (1, self.parent, "job_changed"),
+            (2, None, "queue_changed"),
+            (3, None, "status_changed"),
+            (4, other, "job_changed"),
+            (5, None, "queue_changed"),
+        ):
+            self.db.execute(
+                "INSERT INTO events(seq, at_ns, job_id, kind, payload) "
+                "VALUES (?, 1, ?, ?, ?)", (seq, job_id, kind, b"example"),
+            )
+
+        self.delete(self.db, self.parent)
+
+        self.assertEqual(
+            [(3, "status_changed"), (4, "job_changed"), (6, "job_deleted")],
+            self.db.execute("SELECT seq, kind FROM events ORDER BY seq").fetchall(),
+        )
+        self.assertEqual((5, 6), self.db.execute(
+            "SELECT event_floor_seq, last_event_seq FROM broker_state WHERE id = 1"
+        ).fetchone())
+
     def test_delete_before_retransmission_race_reports_deleted_key(self):
         child, key = new_id(), new_id()
         self.submit_retry(self.db, child, key, self.parent)
@@ -536,6 +609,179 @@ class RetryLineageTests(unittest.TestCase):
             "WHERE job_id = ?",
             (job,),
         )
+
+    def test_no_wait_busy_key_cannot_be_reused_by_a_job(self):
+        key = new_id()
+        self.db.execute(
+            "INSERT INTO no_wait_rejections(idempotency_key) VALUES (?)", (key,)
+        )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.insert_job(self.db, new_id(), key, state="queued")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "UPDATE jobs SET idempotency_key = ? WHERE id = ?",
+                (key, self.parent),
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "UPDATE jobs SET request_sha256 = ? WHERE id = ?",
+                (bytes([1]) * 32, self.parent),
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "INSERT INTO deleted_idempotency_keys(idempotency_key) VALUES (?)",
+                (key,),
+            )
+        self.assertEqual((0,), self.db.execute(
+            "SELECT count(*) FROM jobs WHERE idempotency_key = ?", (key,)
+        ).fetchone())
+        self.assertEqual((0,), self.db.execute(
+            "SELECT count(*) FROM queue_entries"
+        ).fetchone())
+
+    def test_no_wait_busy_cannot_replace_live_or_deleted_job_key(self):
+        key = self.db.execute(
+            "SELECT idempotency_key FROM jobs WHERE id = ?", (self.parent,)
+        ).fetchone()[0]
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "INSERT INTO no_wait_rejections(idempotency_key) VALUES (?)", (key,)
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "INSERT INTO deleted_idempotency_keys(idempotency_key) VALUES (?)",
+                (key,),
+            )
+
+        self.delete(self.db, self.parent)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "INSERT INTO no_wait_rejections(idempotency_key) VALUES (?)", (key,)
+            )
+        self.assertEqual([(key,)], self.db.execute(
+            "SELECT idempotency_key FROM deleted_idempotency_keys"
+        ).fetchall())
+
+    def test_retained_submission_keys_cannot_be_changed_or_deleted(self):
+        busy_key = new_id()
+        self.db.execute(
+            "INSERT INTO no_wait_rejections(idempotency_key) VALUES (?)", (busy_key,)
+        )
+        deleted_key = self.db.execute(
+            "SELECT idempotency_key FROM jobs WHERE id = ?", (self.parent,)
+        ).fetchone()[0]
+        self.delete(self.db, self.parent)
+
+        for table, key in (
+            ("no_wait_rejections", busy_key),
+            ("deleted_idempotency_keys", deleted_key),
+        ):
+            with self.subTest(table=table, operation="update"), \
+                    self.assertRaises(sqlite3.IntegrityError):
+                self.db.execute(
+                    f"UPDATE {table} SET idempotency_key = ? "
+                    "WHERE idempotency_key = ?", (new_id(), key),
+                )
+            with self.subTest(table=table, operation="delete"), \
+                    self.assertRaises(sqlite3.IntegrityError):
+                self.db.execute(
+                    f"DELETE FROM {table} WHERE idempotency_key = ?", (key,)
+                )
+            self.assertEqual([(key,)], self.db.execute(
+                f"SELECT idempotency_key FROM {table}"
+            ).fetchall())
+
+    def test_no_wait_busy_wins_over_competing_retry(self):
+        key, child = new_id(), new_id()
+        self.db.execute("BEGIN IMMEDIATE")
+        self.db.execute(
+            "INSERT INTO no_wait_rejections(idempotency_key) VALUES (?)", (key,)
+        )
+        thread, results = self.start_competitor(
+            lambda db: self.submit_retry(db, child, key, self.parent)
+        )
+        self.db.commit()
+
+        self.assertIsInstance(self.finish_competitor(thread, results), NoWaitAdmissionBusy)
+        self.assertIsNone(self.db.execute(
+            "SELECT id FROM jobs WHERE idempotency_key = ?", (key,)
+        ).fetchone())
+        self.assertEqual((0,), self.db.execute(
+            "SELECT retry_submitted FROM jobs WHERE id = ?", (self.parent,)
+        ).fetchone())
+        self.assertEqual(
+            (child, True), self.submit_retry(self.db, child, new_id(), self.parent)
+        )
+
+    def test_no_wait_reservation_wins_over_competing_busy(self):
+        key, job = new_id(), new_id()
+        self.db.execute("BEGIN IMMEDIATE")
+        self.insert_job(self.db, job, key, state="queued")
+        self.db.execute(
+            "UPDATE jobs SET state = 'reserved', admitted_at_ns = 2 WHERE id = ?",
+            (job,),
+        )
+        self.db.execute(
+            "INSERT INTO reservations "
+            "(job_id, grant_id, weight, granted_at_ns, service_run_id, "
+            "runner_incarnation_id, runner_pid, runner_start_time_ns) "
+            "VALUES (?, ?, 1, 2, 1, ?, 1, 1)",
+            (job, new_id(), new_id()),
+        )
+
+        def record_busy(db):
+            db.execute("BEGIN IMMEDIATE")
+            with db:
+                db.execute(
+                    "INSERT INTO no_wait_rejections(idempotency_key) VALUES (?)",
+                    (key,),
+                )
+
+        thread, results = self.start_competitor(record_busy)
+        self.db.commit()
+
+        self.assertIsInstance(self.finish_competitor(thread, results), sqlite3.IntegrityError)
+        self.assertEqual((job, "reserved", None), self.db.execute(
+            "SELECT j.id, j.state, r.released_at_ns FROM jobs AS j "
+            "JOIN reservations AS r ON r.job_id = j.id "
+            "WHERE j.idempotency_key = ?", (key,)
+        ).fetchone())
+        self.assertIsNone(self.db.execute(
+            "SELECT job_id FROM queue_entries WHERE job_id = ?", (job,)
+        ).fetchone())
+        self.assertEqual((0,), self.db.execute(
+            "SELECT count(*) FROM no_wait_rejections WHERE idempotency_key = ?", (key,)
+        ).fetchone())
+
+    def test_submission_lookup_distinguishes_job_busy_deleted_and_absent(self):
+        job_key = self.db.execute(
+            "SELECT idempotency_key FROM jobs WHERE id = ?", (self.parent,)
+        ).fetchone()[0]
+        busy_key, absent_key = new_id(), new_id()
+        self.db.execute(
+            "INSERT INTO no_wait_rejections(idempotency_key) VALUES (?)", (busy_key,)
+        )
+
+        self.assertEqual(("job", self.parent), self.lookup_submission(self.db, job_key))
+        self.assertEqual(("busy", None), self.lookup_submission(self.db, busy_key))
+        self.assertEqual(("absent", None), self.lookup_submission(self.db, absent_key))
+        self.delete(self.db, self.parent)
+        self.assertEqual(("deleted", None), self.lookup_submission(self.db, job_key))
+
+    def test_absent_submission_lookup_can_precede_an_inflight_commit(self):
+        key = new_id()
+        self.db.execute("BEGIN IMMEDIATE")
+        self.db.execute(
+            "INSERT INTO no_wait_rejections(idempotency_key) VALUES (?)", (key,)
+        )
+        reader = connect(self.path)
+        try:
+            self.assertEqual(("absent", None), self.lookup_submission(reader, key))
+            self.db.commit()
+            self.assertEqual(("busy", None), self.lookup_submission(reader, key))
+        finally:
+            reader.close()
 
     def test_broker_termination_requires_matching_cancel_phase(self):
         job = new_id()

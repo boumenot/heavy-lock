@@ -51,7 +51,7 @@ Init ==
                            noLaunch |-> FALSE, knownChild |-> FALSE,
                            rootId |-> 0, exit |-> 0, fromFinish |-> FALSE,
                            reportedDuringRecovery |-> FALSE, graceReset |-> FALSE,
-                           bypass |-> 0, outcome |-> "pending"]]
+                           bypass |-> 0, noWait |-> "none", outcome |-> "pending"]]
   /\ queue = <<>>
   /\ runner = [j \in Jobs |-> [up |-> TRUE, connected |-> TRUE,
                                grant |-> FALSE, cancel |-> FALSE,
@@ -81,6 +81,7 @@ Init ==
 \* A job denotes one logical submission, idempotency key and unique grant.
 Submit(j) ==
   /\ broker = "ready" /\ runner[j].up /\ runner[j].connected
+  /\ db[j].noWait = "none"
   /\ db[j].phase \in {"absent", "queued"}
   /\ IF db[j].phase = "absent"
         THEN /\ db' = [db EXCEPT ![j].phase = "queued"]
@@ -115,6 +116,39 @@ Backfill(j) ==
 NormalAdmit(j, resourcePass) ==
   /\ ~paused /\ ~Oversized(j) /\ (Head(Waiting) = j \/ Backfill(j))
   /\ Fits(j) /\ (Occupied = 0 \/ resourcePass)
+
+\* A no-wait candidate is registered for this decision but is not appended
+\* to the durable queue. It may be selected only if it would be the next
+\* normal choice after appending to Waiting; a busy key is never reusable.
+NoWaitAdmit(j, resourcePass) ==
+  /\ ~paused /\ ~Oversized(j) /\ Fits(j)
+  /\ (Occupied = 0 \/ resourcePass)
+  /\ IF Len(Waiting) = 0 THEN TRUE ELSE
+       LET h == Head(Waiting)
+       IN /\ runner[h].up /\ runner[h].connected /\ ~Fits(h)
+          /\ db[h].bypass < BackfillLimit
+          /\ \A i \in 2..Len(Waiting) : ~EligibleFollower(Waiting[i])
+
+TryNoWait(j, resourcePass) ==
+  /\ broker = "ready" /\ runner[j].up /\ runner[j].connected
+  /\ db[j].phase = "absent" /\ db[j].noWait = "none" /\ ~Oversized(j)
+  /\ db' = IF NoWaitAdmit(j, resourcePass)
+              THEN [k \in Jobs |->
+                      IF k = j
+                         THEN [db[k] EXCEPT !.phase = "reserved", !.held = TRUE,
+                                  !.issued = TRUE, !.assigned = runner[j].incarnation,
+                                  !.noWait = "admitted"]
+                      ELSE IF Len(Waiting) = 0 THEN db[k]
+                      ELSE IF k = Head(Waiting)
+                         THEN [db[k] EXCEPT !.bypass = @ + 1]
+                      ELSE db[k]]
+              ELSE [db EXCEPT ![j].noWait = "busy"]
+  /\ normalOK' = normalOK /\ (db'[j].noWait = "admitted" =>
+                               NoWaitAdmit(j, resourcePass))
+  /\ recoveryOK' = recoveryOK /\ broker = "ready"
+  /\ UNCHANGED <<queue, runner, roots, children, tracked, launches, grants,
+                 reports, broker, paused, reconciled, absent, probes,
+                 brokerCrashes, runnerCrashes, disconnects, grace>>
 
 Reserve(j, forced, resourcePass) ==
   /\ broker = "ready" /\ db[j].phase = "queued"
@@ -592,6 +626,7 @@ Next ==
                             \/ ReceiveStarted(m) \/ ReceiveFinished(m)
   \/ \E j \in Jobs :
        \/ Submit(j)
+       \/ \E resourcePass \in BOOLEAN : TryNoWait(j, resourcePass)
        \/ \E forced, resourcePass \in BOOLEAN : Reserve(j, forced, resourcePass)
        \/ Move(j, TRUE) \/ Move(j, FALSE) \/ SendGrant(j)
        \/ RequestClaim(j) \/ Spawn(j) \/ Fork(j) \/ TrackChild(j)
@@ -739,6 +774,68 @@ OversizedNext ==
   \/ /\ db[OversizedOther].held /\ Reserve(OversizedJob, TRUE, TRUE)
 OversizedSpec == Init /\ [][OversizedNext]_vars
 
+\* Small no-wait scenarios use only the indicated scheduler transitions.
+NoWaitHead == CHOOSE j \in Jobs : Weight[j] = 2
+NoWaitSlot == CHOOSE j \in Jobs \ {NoWaitHead} : TRUE
+NoWaitFollower == CHOOSE j \in Jobs \ {NoWaitHead, NoWaitSlot} : TRUE
+NoWaitCandidate == CHOOSE j \in Jobs \ {NoWaitHead, NoWaitSlot, NoWaitFollower} : TRUE
+NoWaitSetup ==
+  \/ Submit(NoWaitSlot)
+  \/ Reserve(NoWaitSlot, FALSE, TRUE)
+  \/ /\ db[NoWaitSlot].held /\ Submit(NoWaitHead)
+NoWaitBackfillNext ==
+  \/ NoWaitSetup
+  \/ /\ queue = <<NoWaitHead>> /\ TryNoWait(NoWaitCandidate, TRUE)
+NoWaitBackfillSpec == Init /\ [][NoWaitBackfillNext]_vars
+NoWaitOrderNext ==
+  \/ NoWaitSetup
+  \/ /\ db[NoWaitHead].phase = "queued" /\ Submit(NoWaitFollower)
+  \/ /\ queue = <<NoWaitHead, NoWaitFollower>>
+     /\ TryNoWait(NoWaitCandidate, TRUE)
+  \/ /\ db[NoWaitCandidate].noWait = "busy"
+     /\ Reserve(NoWaitFollower, FALSE, TRUE)
+  \/ /\ db[NoWaitCandidate].noWait = "busy" /\ Submit(NoWaitCandidate)
+NoWaitOrderSpec == Init /\ [][NoWaitOrderNext]_vars
+NoWaitDisconnectedNext ==
+  \/ NoWaitSetup
+  \/ /\ db[NoWaitHead].phase = "queued" /\ Disconnect(NoWaitHead)
+  \/ /\ queue = <<NoWaitHead>> /\ ~runner[NoWaitHead].connected
+     /\ TryNoWait(NoWaitCandidate, TRUE)
+NoWaitDisconnectedSpec == Init /\ [][NoWaitDisconnectedNext]_vars
+
+NoWaitFirst == CHOOSE j \in Jobs : TRUE
+NoWaitLast == CHOOSE j \in Jobs \ {NoWaitFirst} : TRUE
+NoWaitHeadNext ==
+  \/ Submit(NoWaitFirst)
+  \/ /\ db[NoWaitFirst].phase = "queued" /\ TryNoWait(NoWaitLast, TRUE)
+  \/ /\ db[NoWaitLast].noWait = "busy" /\ Reserve(NoWaitFirst, FALSE, TRUE)
+  \/ /\ db[NoWaitLast].noWait = "busy" /\ Submit(NoWaitLast)
+NoWaitHeadSpec == Init /\ [][NoWaitHeadNext]_vars
+
+NoWaitPausedNext ==
+  \/ /\ db[NoWaitFirst].noWait = "none" /\ ~paused /\ Pause
+  \/ /\ paused /\ TryNoWait(NoWaitFirst, TRUE)
+  \/ /\ db[NoWaitFirst].noWait = "busy" /\ paused /\ Pause
+  \/ /\ db[NoWaitFirst].noWait = "busy" /\ TryNoWait(NoWaitFirst, TRUE)
+NoWaitPausedSpec == Init /\ [][NoWaitPausedNext]_vars
+
+NoWaitRegistrationNext ==
+  \/ Disconnect(NoWaitFirst)
+  \/ /\ ~runner[NoWaitFirst].connected /\ TryNoWait(NoWaitFirst, TRUE)
+  \/ /\ ~runner[NoWaitFirst].connected /\ Reconnect(NoWaitFirst)
+  \/ /\ disconnects > 0 /\ TryNoWait(NoWaitFirst, TRUE)
+NoWaitRegistrationSpec == Init /\ [][NoWaitRegistrationNext]_vars
+
+\* A successful no-wait reservation still uses the ordinary one-shot claim.
+NoWaitLaunchNext ==
+  \/ TryNoWait(NoWaitFirst, TRUE)
+  \/ SendGrant(NoWaitFirst)
+  \/ \E m \in grants : DeliverGrant(m)
+  \/ RequestClaim(NoWaitFirst)
+  \/ \E m \in reports : CommitClaim(m) \/ DeliverClaim(m)
+  \/ Spawn(NoWaitFirst)
+NoWaitLaunchSpec == Init /\ [][NoWaitLaunchNext]_vars
+
 TypeOK ==
   /\ db \in [Jobs -> [phase : Phases, held : BOOLEAN, issued : BOOLEAN,
                        forced : BOOLEAN, forcedWhilePaused : BOOLEAN,
@@ -749,7 +846,8 @@ TypeOK ==
                        noLaunch : BOOLEAN, knownChild : BOOLEAN,
                        rootId : 0..2, exit : 0..2, fromFinish : BOOLEAN,
                        reportedDuringRecovery : BOOLEAN, graceReset : BOOLEAN,
-                       bypass : 0..BackfillLimit, outcome : Outcomes]]
+                       bypass : 0..BackfillLimit,
+                       noWait : {"none", "busy", "admitted"}, outcome : Outcomes]]
   /\ runner \in [Jobs -> [up : BOOLEAN, connected : BOOLEAN, grant : BOOLEAN,
                            cancel : BOOLEAN, fence : Fences, ticket : BOOLEAN,
                            identity : BOOLEAN,
@@ -806,6 +904,28 @@ UnknownOutcomeHeld ==
 NormalCapacity == Slots({j \in Active : ~db[j].forced}) <= Capacity
 NormalFIFO == normalOK
 NoReservationWhenNotReady == recoveryOK
+NoWaitResultConsistency ==
+  \A j \in Jobs :
+    /\ (db[j].noWait = "busy" => (db[j].phase = "absent" /\ ~db[j].held
+                                    /\ j \notin {queue[i] : i \in 1..Len(queue)}))
+    /\ (db[j].noWait = "admitted" => (db[j].issued
+                                        /\ db[j].phase \notin {"absent", "queued"}))
+NoWaitBackfillConsistent ==
+  db[NoWaitCandidate].noWait = "admitted" =>
+    (db[NoWaitCandidate].held /\ db[NoWaitHead].bypass = 1)
+NoWaitCandidateNotAdmitted == db[NoWaitCandidate].noWait # "admitted"
+NoWaitLastNotAdmitted == db[NoWaitLast].noWait # "admitted"
+NoWaitFirstNotAdmitted == db[NoWaitFirst].noWait # "admitted"
+NoWaitRegisteredBeforeAdmission ==
+  db[NoWaitFirst].noWait = "admitted" => runner[NoWaitFirst].connected
+NeverNoWaitBackfill ==
+  ~(db[NoWaitCandidate].noWait = "admitted" /\ db[NoWaitHead].bypass = 1)
+NeverNoWaitCandidateBusy == db[NoWaitCandidate].noWait # "busy"
+NeverNoWaitLastBusy == db[NoWaitLast].noWait # "busy"
+NeverNoWaitFirstBusy == db[NoWaitFirst].noWait # "busy"
+NeverNoWaitFirstAdmitted == db[NoWaitFirst].noWait # "admitted"
+NeverNoWaitLaunched ==
+  ~(db[NoWaitFirst].noWait = "admitted" /\ launches[NoWaitFirst].count > 0)
 StartedBeforeFinishing ==
   \A j \in Jobs : db[j].phase = "finishing" => db[j].started
 NeverForcedOverload == Occupied <= Capacity

@@ -67,8 +67,8 @@ CREATE TABLE jobs (
                       -- client UUIDv4, stable across submission retransmissions,
                       -- e.g. 'b0e4d7a2-91c3-4f5e-8d26-7a1c3e9f0b54'
   request_sha256      BLOB    NOT NULL CHECK (length(request_sha256) = 32),
-                      -- SHA-256 of the canonical submit payload, including
-                      -- retry_of_job_id; detects key reuse with another payload
+                      -- SHA-256 of the canonical submit payload and admission
+                      -- mode, including retry_of_job_id; detects key reuse
 
   -- What runs -----------------------------------------------------------
   command             TEXT    NOT NULL CHECK (length(command) > 0),
@@ -86,6 +86,7 @@ CREATE TABLE jobs (
   forced              INTEGER NOT NULL DEFAULT 0 CHECK (forced IN (0, 1)),
                       -- 1 when admitted by force-start, e.g. 0
   queued_at_ns        INTEGER NOT NULL,
+                      -- request commit; no-wait reservations never queue,
                       -- e.g. 1764121200000000000 (2025-11-26T01:40:00.000000000Z)
   admitted_at_ns      INTEGER,
                       -- reservation committed; NULL if never admitted,
@@ -209,6 +210,13 @@ CREATE TABLE deleted_idempotency_keys (
   idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) = 36)
 ) STRICT, WITHOUT ROWID;
 
+-- A durable no-wait busy decision is terminal for this key, preventing a
+-- duplicate from creating a job after the caller received "not admitted".
+-- As with deleted-key tombstones, only the random key is retained.
+CREATE TABLE no_wait_rejections (
+  idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) = 36)
+) STRICT, WITHOUT ROWID;
+
 CREATE TRIGGER jobs_record_deleted_idempotency_key
 AFTER DELETE ON jobs
 BEGIN
@@ -222,6 +230,67 @@ WHEN EXISTS (SELECT 1 FROM deleted_idempotency_keys
              WHERE idempotency_key = NEW.idempotency_key)
 BEGIN
   SELECT RAISE(ABORT, 'idempotency key belongs to deleted history');
+END;
+
+CREATE TRIGGER jobs_no_rejected_idempotency_key
+BEFORE INSERT ON jobs
+WHEN EXISTS (SELECT 1 FROM no_wait_rejections
+             WHERE idempotency_key = NEW.idempotency_key)
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency key belongs to a no-wait rejection');
+END;
+
+CREATE TRIGGER no_wait_rejections_no_existing_key
+BEFORE INSERT ON no_wait_rejections
+WHEN EXISTS (SELECT 1 FROM jobs WHERE idempotency_key = NEW.idempotency_key)
+  OR EXISTS (SELECT 1 FROM deleted_idempotency_keys
+             WHERE idempotency_key = NEW.idempotency_key)
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency key belongs to a job');
+END;
+
+CREATE TRIGGER deleted_keys_no_existing_key
+BEFORE INSERT ON deleted_idempotency_keys
+WHEN EXISTS (SELECT 1 FROM jobs WHERE idempotency_key = NEW.idempotency_key)
+  OR EXISTS (SELECT 1 FROM no_wait_rejections
+             WHERE idempotency_key = NEW.idempotency_key)
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency key belongs to a job or no-wait rejection');
+END;
+
+-- Retained keys are immutable and cannot be pruned under the v2 policy.
+CREATE TRIGGER deleted_keys_no_update
+BEFORE UPDATE OF idempotency_key ON deleted_idempotency_keys
+WHEN NEW.idempotency_key IS NOT OLD.idempotency_key
+BEGIN
+  SELECT RAISE(ABORT, 'deleted idempotency keys are immutable');
+END;
+
+CREATE TRIGGER deleted_keys_no_delete
+BEFORE DELETE ON deleted_idempotency_keys
+BEGIN
+  SELECT RAISE(ABORT, 'deleted idempotency keys are retained');
+END;
+
+CREATE TRIGGER no_wait_rejections_no_update
+BEFORE UPDATE OF idempotency_key ON no_wait_rejections
+WHEN NEW.idempotency_key IS NOT OLD.idempotency_key
+BEGIN
+  SELECT RAISE(ABORT, 'no-wait rejections are immutable');
+END;
+
+CREATE TRIGGER no_wait_rejections_no_delete
+BEFORE DELETE ON no_wait_rejections
+BEGIN
+  SELECT RAISE(ABORT, 'no-wait rejections are retained');
+END;
+
+CREATE TRIGGER jobs_idempotency_stable
+BEFORE UPDATE OF idempotency_key, request_sha256 ON jobs
+WHEN NEW.idempotency_key IS NOT OLD.idempotency_key
+  OR NEW.request_sha256 IS NOT OLD.request_sha256
+BEGIN
+  SELECT RAISE(ABORT, 'job idempotency identity is immutable');
 END;
 
 -- A surviving retry must not be reattached to a new job that happens to
@@ -348,7 +417,9 @@ CREATE TABLE job_resource_summaries (
 -- or a job's events on history deletion) raises broker_state.event_floor_seq
 -- to the highest deleted seq, so a resume across the gap gets EVENTS_EXPIRED.
 -- job_id deliberately has no foreign key: a cascade would delete events
--- without raising the floor. Payloads can contain command lines.
+-- without raising the floor. Payloads can contain command lines. On job
+-- deletion, remove its own events and all queue_changed events: the latter
+-- contain multiple jobs and cannot be identified by the single job_id.
 CREATE TABLE events (
   seq           INTEGER PRIMARY KEY CHECK (seq >= 1), -- event_seq on the wire
   at_ns         INTEGER NOT NULL,

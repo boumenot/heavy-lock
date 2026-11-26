@@ -27,7 +27,10 @@ nix develop -c bash -c \
    python3 docs/v2/model/check.py \
      BackfillScenarioSafety RecoveryAdmissionSafety \
      OversizedScenarioSafety BackfillDisconnected RecoveryAdmission \
-     OversizedSkipped \
+     OversizedSkipped NoWaitBackfillSafety NoWaitOrderSafety \
+     NoWaitHeadSafety NoWaitDisconnectedSafety NoWaitStrictSafety \
+     NoWaitPausedSafety NoWaitRegistrationSafety NoWaitLaunchSafety \
+     NoWaitBackfill NoWaitOrder NoWaitLaunch \
      --logs /tmp/heavy-lock-tlc-witnesses'
 ```
 
@@ -117,13 +120,25 @@ rejects such weights) is skipped: the effective head and backfill followers
 come from `Waiting`, the queue without oversized jobs, so an oversized job
 never blocks, never gains a bypass count and is admitted only by force. With
 every existing configuration's weights within capacity, `Waiting` equals the
-queue. Manual reorder and
-force are explicit exceptions; a forced job counts toward occupied capacity
-and may be admitted while paused, but not during recovery. Cancellation
-removes queued work or records a request for granted work; it does not prove
-termination. The user chose runner-first termination with a broker fallback
-on verified identities after either a configurable acknowledgment deadline
-or completion deadline expires, or after verified runner death. Acknowledgment
+queue.
+
+`TryNoWait` makes one atomic normal-admission decision for a connected
+candidate treated as if appended to `Waiting`. It records either an issued,
+held reservation without a queue entry or a durable `busy` result with no
+job, queue entry or reservation. A busy key cannot be reused by modeled
+ordinary submission. A capacity-blocked head can be bypassed only within its
+limit and after any earlier eligible follower. The model's connection flag
+is the broker's observation, not proof the physical stream remains open.
+It does not model actual RPC responses, payload equivalence, history
+deletion, lookup, network races or no-wait retry eligibility.
+
+Manual reorder and force are explicit exceptions; a forced job counts toward
+occupied capacity and may be admitted while paused, but not during recovery.
+Cancellation removes queued work or records a request for granted work; it
+does not prove termination. The user chose runner-first termination with a
+broker fallback on verified identities after either a configurable
+acknowledgment deadline or completion deadline expires, or after verified
+runner death. Acknowledgment
 does not mean completion, and neither deadline expiry is release evidence.
 Configurable, unmeasured starting defaults are 5 seconds for acknowledgment
 and 30 seconds for completion after acknowledgment. Explicit cancellation
@@ -197,7 +212,9 @@ The positive profiles check relevant subsets of:
   normal scheduling guards, accounting for forced reservations, and no new
   reservation while recovering or storage has failed. `NormalFIFO` (name
   kept for continuity) checks that each normal admission was either the
-  connected head or a bounded backfill within `BackfillLimit`.
+  connected head or a bounded backfill within `BackfillLimit`. It records the
+  scheduler's own predicate, not an independent scheduling specification;
+  the case-specific invariants provide narrower independent checks.
 - `GraceResetWhenConnected`, `ExpiredJobNotRevived`: reconnect/expiry ordering.
 
 `ClaimSpec` omits child creation, lifecycle report receivers, pause, force,
@@ -220,10 +237,19 @@ of one occupied slot, a blocked heavy head, an earlier fitting follower and
 a later fitting follower; it omits reconnect, grace expiry, reorder, force
 and crashes. `OversizedSpec` queues an oversized job (weight 2, capacity 1)
 ahead of a fitting job, admits the fitting job normally and then force-starts
-the oversized job; it omits disconnects, reorder and crashes. `GraceSpec` omits admission; `SchedulingSpec` and
-`StorageSchedulingSpec` omit launch and release, and the latter does not
-reconcile held work. Their combined results are not a compositional proof.
-The full `Spec` includes the omitted interactions.
+the oversized job; it omits disconnects, reorder and crashes.
+The `NoWait*Spec` profiles isolate a no-wait decision and selected scheduler
+transitions: an occupied slot and capacity-blocked head with or without an
+earlier fitting follower, an eligible head, a disconnected head, pause and
+resume, registration, or a reservation followed by the ordinary claim and
+spawn sequence. `NoWaitStrictSafety` uses the backfill scenario with limit
+zero. They do not model crashes, release, actual stream delivery, or the
+full interaction of independent controls. `GraceSpec` omits
+admission; `SchedulingSpec` and `StorageSchedulingSpec` omit launch and
+release, and the latter does not reconcile held work. Their combined results
+are not a compositional proof. The full `Spec` includes the modeled crash,
+release and control interactions, but not actual stream delivery or the
+other limitations below.
 
 ## Outcomes and actionable gaps
 
@@ -235,12 +261,23 @@ The following checks used TLC 2.18, one worker and `-Xmx256m` on macOS on
 | `BackfillScenarioSafety` | 4 jobs, capacity 2, limit 1; disconnected follower may be skipped, connected fitting follower may not | 24 / 9 | complete |
 | `RecoveryAdmissionSafety` | 2 unit jobs, capacity 2, one crash; held pre-crash reservation and later normal admission | 17 / 10 | complete |
 | `OversizedScenarioSafety` | 2 jobs, capacity 1, limit 1; oversized head never bypass-counted or normally admitted | 13 / 5 | complete |
+| `NoWaitBackfillSafety` | 4 jobs, capacity 2, limit 1; no-wait backfill and head bypass count | 11 / 5 | complete |
+| `NoWaitOrderSafety` | 4 jobs, capacity 2; earlier eligible follower wins and busy key is not reused | 17 / 7 | complete |
+| `NoWaitHeadSafety` | 2 unit jobs, capacity 2; earlier eligible head wins and busy key is not reused | 9 / 4 | complete |
+| `NoWaitDisconnectedSafety` | 4 jobs, capacity 2; disconnected effective head blocks no-wait | 11 / 6 | complete |
+| `NoWaitStrictSafety` | 4 jobs, capacity 2, limit 0; blocked head cannot be backfilled | 11 / 5 | complete |
+| `NoWaitPausedSafety` | 1 job; a busy key stays rejected after resume | 4 / 4 | complete |
+| `NoWaitRegistrationSafety` | 1 job; candidate must be observed connected at decision | 5 / 4 | complete |
+| `NoWaitLaunchSafety` | 1 job; no-wait reservation, grant, claim and spawn | 25 / 8 | complete |
 
 | Current witness | Deliberately violated invariant | Meaning |
 |---|---|---|
 | `BackfillDisconnected` | `NeverBackfillPastDisconnected` | After a fitting earlier follower disconnects, a later connected fitting follower is backfilled and the head's count increments. |
 | `OversizedSkipped` | `NeverAdmitPastOversized` | With limit 0 (strict FIFO), the fitting follower is still admitted while the oversized job stays queued, because the oversized job is not the effective head. |
 | `RecoveryAdmission` | `NeverAdmissionBesideUncertain` | After a crash and readiness, a second job is normally admitted while the first pre-crash reservation remains unreconciled and held; both weights count toward capacity. |
+| `NoWaitBackfill` | `NeverNoWaitBackfill` | A fitting registered candidate is reserved past a capacity-blocked head, incrementing its bypass count. |
+| `NoWaitOrder` | `NeverNoWaitCandidateBusy` | An earlier eligible fitting follower makes the no-wait candidate busy; the follower can subsequently be reserved. |
+| `NoWaitLaunch` | `NeverNoWaitLaunched` | A no-wait reservation can lead to one spawn through the existing durable claim. |
 
 The positive recovery scenario checks `PreexistingUncertainHeld`,
 `NormalCapacity`, `NeverForcedOverload` and `NoReservationWhenNotReady`
@@ -253,6 +290,14 @@ and readiness invariants. The oversized scenario checks
 admission rule it fails `OversizedNeverBypassed`, and `OversizedSkipped`
 finds no admission, confirming both cases detect the change. These constrained scenarios exclude many other
 interleavings.
+
+The no-wait cases check `NoWaitResultConsistency`, queue/reservation
+consistency and relevant capacity and readiness invariants. They also check
+the case-specific head, follower, pause, registration and one-shot claim
+rules; the witnesses show backfill, refusal and launch. Busy-key
+exclusivity under competing SQLite transactions is separately exercised by
+the schema tests. None of these checks proves response delivery or physical
+stream liveness.
 
 ### Historical checks
 
@@ -318,9 +363,10 @@ The current `RecoverySchedulingSafety` configuration increases capacity to
 two and adds capacity invariants; that broader profile has **not** been run
 at the new bound. The earlier `Safety` and `Recovery` results belonged to a
 prior model revision. Their current configurations, and `Stress`, have
-**not** completed for this revision. The old `Stress` run was itself
-incomplete. Until the shared runner migration is complete, these wider checks
-remain unrun; the tiny focused passes above are not substitutes.
+**not** completed for this revision, including the added no-wait invariant.
+The old `Stress` run was itself incomplete. Until the shared runner
+migration is complete, these wider checks remain unrun; the tiny focused
+passes above are not substitutes.
 
 Previously, `RecoveryReportSafety` and an earlier, larger
 `RunnerDeathCleanup` variant ran for over a minute without the required

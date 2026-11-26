@@ -25,6 +25,14 @@ CASES = {
     "RecoveryAdmissionSafety": None,
     "BackfillScenarioSafety": None,
     "OversizedScenarioSafety": None,
+    "NoWaitBackfillSafety": None,
+    "NoWaitOrderSafety": None,
+    "NoWaitHeadSafety": None,
+    "NoWaitDisconnectedSafety": None,
+    "NoWaitStrictSafety": None,
+    "NoWaitPausedSafety": None,
+    "NoWaitRegistrationSafety": None,
+    "NoWaitLaunchSafety": None,
     "RunnerDeathCleanup": None,
     "CrashBeforeLaunch": "NeverCrashBeforeLaunchUnknown",
     "PreventedClaim": "NeverReleasePreventedClaim",
@@ -47,6 +55,9 @@ CASES = {
     "RecoveryAdmission": "NeverAdmissionBesideUncertain",
     "BackfillDisconnected": "NeverBackfillPastDisconnected",
     "OversizedSkipped": "NeverAdmitPastOversized",
+    "NoWaitBackfill": "NeverNoWaitBackfill",
+    "NoWaitOrder": "NeverNoWaitCandidateBusy",
+    "NoWaitLaunch": "NeverNoWaitLaunched",
 }
 
 
