@@ -404,6 +404,7 @@ CREATE TABLE job_resource_summaries (
   cpu_time_ms              INTEGER CHECK (cpu_time_ms >= 0),
   -- Peak interval CPU: 100% per logical CPU; may exceed 100%.
   peak_cpu_percent         REAL    CHECK (peak_cpu_percent >= 0),
+  -- Maximum per-sample sum of observed process RSS in bytes.
   peak_combined_rss_bytes  INTEGER CHECK (peak_combined_rss_bytes >= 0),
   sample_count             INTEGER NOT NULL DEFAULT 0 CHECK (sample_count >= 0),
   measurement_completeness TEXT    NOT NULL

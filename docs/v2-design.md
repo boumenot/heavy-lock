@@ -86,7 +86,7 @@ other row is an explicit user decision.
 | Initial registration | A submission is queued unregistered with grace running until its first `WatchJob` registers; never reserved before registration *(delegated)* |
 | Oversized weights | Reject a weight above capacity at submission; a queued job oversized after a capacity decrease is skipped, never blocks and is never bypass-counted, and receives a visible warning *(delegated)* |
 | Deleted history and keys | The permanent tombstone retains only the idempotency key; reusing it fails with `IDEMPOTENCY_KEY_DELETED` and never creates a job. A deletion event or surviving retry can separately retain the job ID *(delegated)* |
-| Job history | Sample every five seconds; retain elapsed time, observed CPU time, sampled peak CPU and combined memory summaries indefinitely until explicitly deleted |
+| Job history | Sample every five seconds; retain elapsed time, observed CPU time, sampled peak CPU and combined RSS summaries indefinitely until explicitly deleted |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
 | Other recorded fields | Client name/version, service version, free memory at admission, termination signal when available, measurement completeness, queue/admission timestamps, explicitly supplied commit/target/configuration |
 | Attribution | Only explicit client-supplied values; missing stays unknown |
@@ -1394,9 +1394,9 @@ proven whole-job total.
 
 The assistant recommended this CPU-and-memory summary. Recording only
 elapsed time and peak memory would avoid CPU-accounting complexity but lose
-useful information about CPU consumption. The draft proposes combined RSS
-for memory; the elapsed interval, remaining units, sampler and platform
-parity remain open. The estimates have limitations:
+useful information about CPU consumption. The elapsed interval, remaining
+CPU-accounting details, sampler and platform parity remain open. The
+estimates have limitations:
 
 - Five-second snapshots can miss short-lived children and transient peaks.
 - Summed RSS can double-count shared pages and differs from macOS footprint
@@ -1422,6 +1422,19 @@ and lets similarly parallel jobs be compared across machines. Scaling by
 total machine capacity would show the fraction of that machine consumed,
 but the same four-CPU workload would display differently on machines with
 different CPU counts.
+
+**User decision: memory metric.** At each sample, sum the resident set size
+(RSS) in bytes of the observed job processes, and retain the maximum of those
+per-sample sums. This is not the sum of each process's individual peak. When
+RSS cannot be measured, record the gap as incomplete and leave an unavailable
+value unknown rather than inventing zero.
+
+The assistant recommended summed RSS because it is broadly available and
+supports later cross-platform comparisons. It can count shared pages more
+than once and miss transient peaks or unobserved processes. Summed macOS
+physical footprint was an alternative that uses a different OS accounting
+measure, but it is platform-specific and its access and accuracy still need
+verification. Neither metric proves a complete process-tree total.
 
 **Recommendations.** Define measurement completeness and failure reasons
 alongside values, bound sampler overhead on large trees, and verify
@@ -2177,6 +2190,7 @@ message ResourceSummary {
   optional int64 cpu_time_ms = 2;
   // Peak interval CPU: 100% per logical CPU; may exceed 100%.
   optional double peak_cpu_percent = 3;
+  // Maximum per-sample sum of observed process RSS in bytes.
   optional int64 peak_combined_rss_bytes = 4;
   uint32 sample_count = 5;
   MeasurementCompleteness completeness = 6;
@@ -2988,6 +3002,7 @@ CREATE TABLE job_resource_summaries (
   cpu_time_ms              INTEGER CHECK (cpu_time_ms >= 0),
   -- Peak interval CPU: 100% per logical CPU; may exceed 100%.
   peak_cpu_percent         REAL    CHECK (peak_cpu_percent >= 0),
+  -- Maximum per-sample sum of observed process RSS in bytes.
   peak_combined_rss_bytes  INTEGER CHECK (peak_combined_rss_bytes >= 0),
   sample_count             INTEGER NOT NULL DEFAULT 0 CHECK (sample_count >= 0),
   measurement_completeness TEXT    NOT NULL
@@ -3457,8 +3472,9 @@ current results from historical runs and list bounds and unchecked cases.
    routing/multiplexer, gRPC-Swift/runtime and code-generation versions, and
    gRPC-Gateway versus hand-written REST handlers. REST polling rather than
    event streaming is decided (section 6).
-8. Exact definitions of the chosen job metrics other than CPU normalization,
-   elapsed interval, sampler choice, platform parity and overhead (section 7).
+8. Elapsed interval, CPU-time accounting, sampler choice, measurement
+   completeness, platform parity and overhead (section 7). The CPU
+   percentage scale and combined RSS metric are decided.
 9. Command rendering and the payload-equivalence rule. Key-only
    tombstones after history deletion are a delegated decision
    (section 11.3).
