@@ -58,6 +58,7 @@ users' jobs or machines.
 | SQLite journal | WAL with `synchronous = FULL` everywhere and `fullfsync = ON` on macOS; measure commit latency |
 | SQLite driver | Start with `modernc.org/sqlite`; pin and validate a version before implementation relies on it |
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
+| Running-job cancellation | Explicit cancel: runner terminates first; broker may fall back on verified process identity if the runner is unavailable; reservation held until release checks pass; fallback trigger open |
 | Timestamp encoding | UTC Unix nanoseconds in signed `int64` on the wire and SQLite `INTEGER`; supersedes microseconds |
 | Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes and API parity; see [section 11](#11-interface-and-schema-design) |
 | Initial timers | Configurable: 30 s queued-disconnect grace, 5 s broker-to-runner heartbeat, 30 s launch investigation from reservation commit |
@@ -170,19 +171,48 @@ deliberately increase load while normal admission remains paused.
 time and any supplied actor/reason. Audit details require agreement;
 claimed actors are not authenticated.
 
+**User decision: cancelling a running job.** On an explicit cancel request,
+the runner attempts termination first. If the runner is unavailable, the
+broker may fall back to terminating the job itself, but only against
+verified process identities (root and known descendants). The reservation
+stays held until the already-approved release checks pass (section 5); an
+accepted cancel request, a termination attempt or a disconnect is not proof
+of exit. Cancellation is never triggered automatically by runner death or
+disconnection: the separately chosen runner-death policy leaves work running.
+
+Alternatives considered:
+- **Runner-only.** Simplest ownership, with no concurrent termination
+  attempts. But a crashed or unreachable runner leaves the cancel
+  unfulfilled and the job occupying capacity until it exits on its own.
+- **Broker-owned.** One consistent termination authority that works without
+  the runner, but the broker sees the tree only through OS observation, must
+  handle PID reuse and identity precision on every cancel, and duplicates the
+  runner's process-tree logic and knowledge of the command.
+- **Runner first, broker fallback (chosen).** Keeps normal termination in
+  the process that launched and tracks the tree, while letting cancellation
+  progress when the runner is gone. It introduces two possible terminators,
+  so attempts must be coordinated: the broker must not signal an identity it
+  cannot verify, must tolerate a runner that was only disconnected and is
+  still terminating, and must not treat its own attempt or a disconnect as
+  death. Both paths are limited by best-effort descendant tracking, so an
+  untracked descendant can survive either one.
+
+Still open: what counts as the runner being "unavailable" and when the
+broker falls back (no fallback trigger is selected), how the two attempts
+are serialized or deduplicated, platform termination mechanisms and
+escalation, and how a fallback result is recorded as the outcome.
+
 **Proposals for other controls.** Reorder waiting jobs only, visibly and
 with an audit entry. Cancel a waiting job by removing it and returning a
-distinct runner outcome. For running jobs, preserve the current
-process-tree termination approach: freeze/snapshot on POSIX, signal,
+distinct runner outcome. For the runner's own termination attempt, preserve
+the current process-tree approach: freeze/snapshot on POSIX, signal,
 resume appropriately, allow a grace interval and only then escalate.
-Hold capacity until cleanup or verified reconciliation establishes that
-the approved release conditions are satisfied. Do not treat an accepted
-cancel request as completed termination; untracked descendants are an
-explicitly accepted exception to complete tree verification (section 5).
+Untracked descendants are an explicitly accepted exception to complete tree
+verification (section 5).
 
 **Open.** Confirmation for other destructive actions, exit/status codes,
-concurrent cancel/reorder/admit races, who performs running cancellation,
-audit persistence, and whether pause survives a broker restart.
+concurrent cancel/reorder/admit races, the broker-fallback trigger and
+coordination, audit persistence, and whether pause survives a broker restart.
 
 ## 4. Runner and service lifecycle
 
@@ -258,8 +288,9 @@ Running-runner disconnect handling must not treat disconnection as death.
 children running when the original runner dies, and continues tracking them.
 It retains capacity until the release conditions below are met. The outcome
 can remain unknown if the runner could not report it. Disconnection alone
-is not proof of death or grounds for release. Handling a separately requested
-cancellation remains open.
+is not proof of death or grounds for release. A separately requested
+cancellation uses runner-first termination with a verified-identity broker
+fallback (section 3); runner death alone never triggers it.
 
 The alternative is to attempt termination on runner death. That can reclaim
 resources sooner, but interrupts useful work and still requires reliable
@@ -964,8 +995,13 @@ service ControlService {
 
   // Cancel a queued job (removes it from the queue and finishes it as
   // CANCELLED_BEFORE_START). For a reserved or running job, record the
-  // request and push CancelRequested to the runner; a granted command may
-  // already be running, so reports alone do not release its reservation.
+  // request and push CancelRequested to the runner, which attempts
+  // termination first. If the runner is unavailable, the broker may fall
+  // back to terminating verified process identities; the trigger and
+  // coordination are not yet specified. A granted command may already be
+  // running, so neither the request, a termination attempt nor a report
+  // alone releases its reservation; the approved release checks still apply.
+  // Runner death or disconnection never cancels a job automatically.
   // Terminal jobs: FAILED_PRECONDITION / JOB_TERMINAL. Repeated cancellation
   // of the same job is a no-op success.
   rpc CancelJob(CancelJobRequest) returns (Job);
@@ -2050,9 +2086,10 @@ current results from historical runs and list bounds and unchecked cases.
 
 ## Open decisions before implementation
 
-1. Confirmation and audit semantics for other controls; who terminates a
-   running job on cancellation;
-   concurrent control races.
+1. Confirmation and audit semantics for other controls; concurrent control
+   races. Running-job cancellation is runner-first with verified-identity
+   broker fallback; the fallback trigger, coordination of attempts and
+   platform termination mechanisms remain open.
 2. Concrete defaults still proposed or unset:
    - event retention (proposed 24 hours or 100,000 events)
    - page size (proposed 50, maximum 500)
@@ -2064,8 +2101,8 @@ current results from historical runs and list bounds and unchecked cases.
 4. Definition of successful queued rejoin, identity checks and checkpoint
    precision across repeated broker restarts; expiry/reconnect serialization
    and grace reset are decided.
-5. How to detect actual runner death and handle separately requested
-   cancellation; a disconnect alone is not death.
+5. How to detect actual runner death and when an explicitly requested
+   cancellation falls back to the broker; a disconnect alone is not death.
 6. Singleton-lock path, OS primitives and filesystem support; descendant and
    reparented-process discovery; precision and boot identity for process IDs;
    database-failure detection, explicit error mapping and repair workflows.
