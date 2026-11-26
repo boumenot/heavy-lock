@@ -86,7 +86,7 @@ other row is an explicit user decision.
 | Initial registration | A submission is queued unregistered with grace running until its first `WatchJob` registers; never reserved before registration *(delegated)* |
 | Oversized weights | Reject a weight above capacity at submission; a queued job oversized after a capacity decrease is skipped, never blocks and is never bypass-counted, and receives a visible warning *(delegated)* |
 | Deleted history and keys | The permanent tombstone retains only the idempotency key; reusing it fails with `IDEMPOTENCY_KEY_DELETED` and never creates a job. A deletion event or surviving retry can separately retain the job ID *(delegated)* |
-| Job history | Sample every five seconds, retain summaries rather than raw timestamped samples, keep indefinitely until explicitly deleted |
+| Job history | Sample every five seconds; retain elapsed time, observed CPU time, sampled peak CPU and combined memory summaries indefinitely until explicitly deleted |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
 | Other recorded fields | Client name/version, service version, free memory at admission, termination signal when available, measurement completeness, queue/admission timestamps, explicitly supplied commit/target/configuration |
 | Attribution | Only explicit client-supplied values; missing stays unknown |
@@ -1386,10 +1386,17 @@ object, without duplicating column-backed fields. This replaces the earlier
 and size limits. URL validation, normalization and any job fingerprint
 remain open. Fingerprinting is not required for v2 admission.
 
-**Proposed resource summaries.** Track the admitted job's process tree,
-with elapsed runtime, CPU time, sampled peak CPU usage and sampled peak
-combined RSS. Exact metric definitions, units and platform parity are
-open. These are measurements/estimates, not proven whole-job totals:
+**User decision: resource-summary metrics.** For each job, retain elapsed
+runtime, observed CPU time, sampled peak CPU usage and sampled peak combined
+memory. These remain historical summaries, not scheduling inputs. Mark
+detected measurement gaps as incomplete; do not present an estimate as a
+proven whole-job total.
+
+The assistant recommended this CPU-and-memory summary. Recording only
+elapsed time and peak memory would avoid CPU-accounting complexity but lose
+useful information about CPU consumption. The draft proposes combined RSS
+for memory; exact definitions, CPU normalization, elapsed interval, units,
+sampler and platform parity remain open. The estimates have limitations:
 
 - Five-second snapshots can miss short-lived children and transient peaks.
 - Summed RSS can double-count shared pages and differs from macOS footprint
@@ -3433,8 +3440,8 @@ current results from historical runs and list bounds and unchecked cases.
    routing/multiplexer, gRPC-Swift/runtime and code-generation versions, and
    gRPC-Gateway versus hand-written REST handlers. REST polling rather than
    event streaming is decided (section 6).
-8. Exact job metric definitions, sampler choice, platform parity and
-   overhead.
+8. Exact definitions of the chosen job metrics, CPU normalization, elapsed
+   interval, sampler choice, platform parity and overhead (section 7).
 9. Command rendering and the payload-equivalence rule. Key-only
    tombstones after history deletion are a delegated decision
    (section 11.3).
