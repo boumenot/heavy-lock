@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -89,8 +90,13 @@ type testBroker struct {
 
 func startBroker(t *testing.T, capacity uint32) *testBroker {
 	t.Helper()
+	return startBrokerAt(t, capacity, filepath.Join(t.TempDir(), "broker.db"), freePort(t))
+}
+
+func startBrokerAt(t *testing.T, capacity uint32, path string, port int) *testBroker {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "broker.db"))
+	store, err := storage.Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +114,10 @@ func startBroker(t *testing.T, capacity uint32) *testBroker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := transport.Listen(freePort(t), b)
+	if err := b.resources.restore(ctx); err != nil {
+		t.Fatal(err)
+	}
+	server, err := transport.Listen(port, b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,8 +126,9 @@ func startBroker(t *testing.T, capacity uint32) *testBroker {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() { defer wg.Done(); maintain(ctx, sched, b, t.Logf) }()
+	go func() { defer wg.Done(); b.resources.run(ctx, t.Logf) }()
 	tb := &testBroker{port: server.Port(), sched: sched, server: server}
 	var once sync.Once
 	tb.stop = func() {
@@ -229,6 +239,136 @@ func TestRunnerPropagatesOutcomesAndReleasesCapacity(t *testing.T) {
 				t.Fatalf("outcome %v, want %v", j.Outcome, tt.outcome)
 			}
 		})
+	}
+}
+
+func TestFinishedJobRetainsRuntimeAndDeclaredMetadata(t *testing.T) {
+	b := startBroker(t, 2)
+	code, inv := b.run(t, func(o *runner.Options) { o.Worklog = "16" }, "/bin/sleep", "0.2")
+	if code != 0 {
+		t.Fatalf("exit %d; log:\n%s", code, inv.log.String())
+	}
+	j := b.waitState(t, inv.log.jobID(t), pb.JobState_JOB_STATE_FINISHED)
+	if j.Command != "/bin/sleep 0.2" || j.ServiceVersion != "test" ||
+		j.Client.GetName() != "tuna" || j.Client.GetVersion() != "test" ||
+		j.Attribution.GetWorklog() != "16" || j.Attribution.Repository != nil ||
+		j.QueuedAtUnixNs <= 0 || j.AdmittedAtUnixNs == nil || j.FreeMemoryAtAdmissionBytes == nil {
+		t.Fatalf("job metadata = %+v", j)
+	}
+	summary := j.Resources
+	if summary == nil || summary.ElapsedMs == nil {
+		t.Fatalf("finished job has no observed root runtime: %+v", summary)
+	}
+	if *summary.ElapsedMs < 120 || *summary.ElapsedMs > 5000 {
+		t.Fatalf("root runtime = %d ms; want about 200 ms", *summary.ElapsedMs)
+	}
+	if summary.Completeness != pb.MeasurementCompleteness_MEASUREMENT_COMPLETENESS_PARTIAL ||
+		summary.GetIncompletenessReason() == "" {
+		t.Fatalf("unverified descendants must be reported as partial: %+v", summary)
+	}
+
+	code, inv = b.run(t, nil, filepath.Join(t.TempDir(), "missing"))
+	if code != runner.ExitNotFound {
+		t.Fatalf("launch failure exit %d; log:\n%s", code, inv.log.String())
+	}
+	unlaunched := b.waitState(t, inv.log.jobID(t), pb.JobState_JOB_STATE_FINISHED)
+	if unlaunched.Resources != nil && unlaunched.Resources.ElapsedMs != nil {
+		t.Fatalf("unlaunched job has a fabricated runtime: %+v", unlaunched.Resources)
+	}
+}
+
+func TestSuppliedMetadataRoundTripsThroughBroker(t *testing.T) {
+	b := startBroker(t, 2)
+	conn, err := grpc.NewClient(fmt.Sprintf("127.0.0.1:%d", b.port), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	self, err := procid.Self()
+	if err != nil {
+		t.Fatal(err)
+	}
+	attribution := &pb.Attribution{Repository: proto.String("owner/repo"), Branch: proto.String("feature"),
+		Worklog: proto.String("owner/repo#16"), AgentSession: proto.String("session"), Purpose: proto.String("build"),
+		CommitSha: proto.String("1234567"), BuildTarget: proto.String("target"), BuildConfiguration: proto.String("debug"),
+		Extra: map[string]string{"tool.example": "value"}}
+	client := &pb.ClientInfo{Name: proto.String("client"), Version: proto.String("1")}
+	resp, err := pb.NewRunnerServiceClient(conn).SubmitJob(context.Background(), &pb.SubmitJobRequest{
+		IdempotencyKey: "1b4e28ba-2fa1-41d2-883f-0016d3cca427", Command: "make 'target value'", Weight: 1,
+		Cwd: proto.String("/example"), Client: client, Attribution: attribution,
+		Runner: &pb.RunnerIncarnation{IncarnationId: "2b4e28ba-2fa1-41d2-883f-0016d3cca427", Process: self},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := b.sched.Job(context.Background(), resp.GetJob().GetJobId())
+	if err != nil || !proto.Equal(job.GetAttribution(), attribution) || !proto.Equal(job.GetClient(), client) ||
+		job.GetCwd() != "/example" || job.GetCommand() != "make 'target value'" || job.GetServiceVersion() != "test" {
+		t.Fatalf("declared metadata was not retained: job=%+v err=%v", job, err)
+	}
+}
+
+func TestRuntimeSurvivesBrokerRestartAndDelayedReport(t *testing.T) {
+	path, port := filepath.Join(t.TempDir(), "broker.db"), freePort(t)
+	b := startBrokerAt(t, 2, path, port)
+	stdin, input := io.Pipe()
+	t.Cleanup(func() { _ = input.Close(); _ = stdin.Close() })
+	started := time.Now()
+	inv := b.start(t, func(o *runner.Options) {
+		o.Stdin = stdin
+		o.ReconnectWindow = 10 * time.Second
+	}, "/bin/sh", "-c", "read -r line; exit 0")
+	id := inv.log.jobID(t)
+	job := b.waitState(t, id, pb.JobState_JOB_STATE_RUNNING)
+	b.stop()
+	if err := input.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, state, err := procid.Observe(int(job.Process.Pid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state != procid.Live {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("command did not exit while broker was stopped")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Keep the report undeliverable after exit; that delay must not become
+	// part of the monotonic root runtime.
+	<-time.After(300 * time.Millisecond)
+	restarted := startBrokerAt(t, 2, path, port)
+	if code := inv.wait(t); code != 0 {
+		t.Fatalf("runner exit %d; log:\n%s", code, inv.log.String())
+	}
+	final := restarted.waitState(t, id, pb.JobState_JOB_STATE_FINISHED)
+	if final.Resources == nil || final.Resources.ElapsedMs == nil ||
+		final.Resources.CpuTimeMs == nil || !strings.Contains(final.Resources.GetIncompletenessReason(), "restart") {
+		t.Fatalf("restarted job summary = %+v", final.Resources)
+	}
+	if gap := time.Since(started) - time.Duration(*final.Resources.ElapsedMs)*time.Millisecond; gap < 250*time.Millisecond {
+		t.Fatalf("runtime included delayed report: runtime=%dms gap=%v", *final.Resources.ElapsedMs, gap)
+	}
+}
+
+func TestRunningJobSamplesAreRetainedAtFinish(t *testing.T) {
+	b := startBroker(t, 2)
+	code, inv := b.run(t, nil, "/bin/sleep", "11")
+	if code != 0 {
+		t.Fatalf("exit %d; log:\n%s", code, inv.log.String())
+	}
+	j := b.waitState(t, inv.log.jobID(t), pb.JobState_JOB_STATE_FINISHED)
+	s := j.Resources
+	if s == nil || s.SampleCount < 2 || s.PeakCombinedRssBytes == nil || *s.PeakCombinedRssBytes <= 0 ||
+		s.CpuTimeMs == nil || s.PeakCpuPercent == nil || s.ElapsedMs == nil {
+		t.Fatalf("finished job did not retain two five-second samples: %+v", s)
+	}
+	if s.Completeness != pb.MeasurementCompleteness_MEASUREMENT_COMPLETENESS_PARTIAL || s.GetIncompletenessReason() == "" {
+		t.Fatalf("sampling uncertainty was not retained: %+v", s)
 	}
 }
 

@@ -34,6 +34,20 @@ private func hex(_ data: Data) -> String {
     #expect(!decoded.hasRetryOfJobID)
 }
 
+@Test func finishMeasurementsMatchGoEncoding() throws {
+    var report = Heavylock_V2_ReportFinishedRequest()
+    report.jobID = "job"
+    report.grantID = "grant"
+    report.elapsedMs = 0
+    report.rootCpuTimeMs = 1234
+    let encoded: Data = try report.serializedBytes()
+    #expect(hex(encoded) == "0a036a6f6212056772616e74300038d209")
+    let decoded = try Heavylock_V2_ReportFinishedRequest(serializedBytes: encoded)
+    #expect(decoded == report)
+    #expect(decoded.hasElapsedMs && decoded.elapsedMs == 0)
+    #expect(decoded.hasRootCpuTimeMs && decoded.rootCpuTimeMs == 1234)
+}
+
 @Test func contractNames() {
     #expect(Heavylock_V2_RunnerService.descriptor.fullyQualifiedService == "heavylock.v2.RunnerService")
     #expect(Heavylock_V2_ControlService.descriptor.fullyQualifiedService == "heavylock.v2.ControlService")

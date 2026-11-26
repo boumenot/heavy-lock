@@ -76,7 +76,31 @@ func (s *Scheduler) ReportStarted(ctx context.Context, id, grant string, runner 
 }
 
 func (s *Scheduler) ReportFinished(ctx context.Context, id, grant string, runner *pb.RunnerIncarnation, p *pb.ProcessIdentity, outcome *pb.Outcome) (*pb.Job, []*pb.BrokerEvent, error) {
-	return s.runnerOp(ctx, id, false, func(tx *storage.Tx) error { return tx.ReportFinished(id, grant, runner, p, outcome) })
+	return s.ReportFinishedWithResources(ctx, id, grant, runner, p, outcome, nil)
+}
+
+// ReportFinishedWithResources commits the runner's outcome and final
+// resource summary in the same transaction, before any possible release.
+func (s *Scheduler) ReportFinishedWithResources(ctx context.Context, id, grant string, runner *pb.RunnerIncarnation, p *pb.ProcessIdentity, outcome *pb.Outcome, summary *pb.ResourceSummary) (*pb.Job, []*pb.BrokerEvent, error) {
+	return s.runnerOp(ctx, id, false, func(tx *storage.Tx) error {
+		before, err := tx.Job(id)
+		if err != nil {
+			return err
+		}
+		if err := tx.ReportFinished(id, grant, runner, p, outcome); err != nil {
+			return err
+		}
+		if summary == nil {
+			return nil
+		}
+		if before.Outcome != nil && before.Outcome.Kind != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN && before.Resources != nil {
+			if before.Resources.ElapsedMs != nil && summary.ElapsedMs != nil && *before.Resources.ElapsedMs != *summary.ElapsedMs {
+				return storage.ErrIdentity
+			}
+			return nil
+		}
+		return tx.SaveResources(id, summary)
+	})
 }
 
 func (s *Scheduler) ReportLaunchFailed(ctx context.Context, id, grant string, runner *pb.RunnerIncarnation, detail string, cancelled bool) (*pb.Job, []*pb.BrokerEvent, error) {

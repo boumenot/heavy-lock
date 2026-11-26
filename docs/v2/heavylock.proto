@@ -609,6 +609,10 @@ message ReportFinishedRequest {
   Outcome outcome = 3;             // kind EXITED or SIGNALED
   RunnerIncarnation runner = 4;
   ProcessIdentity process = 5;     // root, even if ReportStarted was lost
+  // Runner-observed monotonic start-to-exit duration; absent when unknown.
+  optional int64 elapsed_ms = 6;
+  // CPU time returned by the root's wait operation; absent when unknown.
+  optional int64 root_cpu_time_ms = 7;
 }
 
 // ---------------------------------------------------------------- control

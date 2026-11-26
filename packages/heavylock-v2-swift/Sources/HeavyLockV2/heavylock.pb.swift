@@ -1786,6 +1786,26 @@ public nonisolated struct Heavylock_V2_ReportFinishedRequest: Sendable {
   /// Clears the value of `process`. Subsequent reads from it will return its default value.
   public mutating func clearProcess() {self._process = nil}
 
+  /// Runner-observed monotonic start-to-exit duration; absent when unknown.
+  public var elapsedMs: Int64 {
+    get {_elapsedMs ?? 0}
+    set {_elapsedMs = newValue}
+  }
+  /// Returns true if `elapsedMs` has been explicitly set.
+  public var hasElapsedMs: Bool {self._elapsedMs != nil}
+  /// Clears the value of `elapsedMs`. Subsequent reads from it will return its default value.
+  public mutating func clearElapsedMs() {self._elapsedMs = nil}
+
+  /// CPU time returned by the root's wait operation; absent when unknown.
+  public var rootCpuTimeMs: Int64 {
+    get {_rootCpuTimeMs ?? 0}
+    set {_rootCpuTimeMs = newValue}
+  }
+  /// Returns true if `rootCpuTimeMs` has been explicitly set.
+  public var hasRootCpuTimeMs: Bool {self._rootCpuTimeMs != nil}
+  /// Clears the value of `rootCpuTimeMs`. Subsequent reads from it will return its default value.
+  public mutating func clearRootCpuTimeMs() {self._rootCpuTimeMs = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1793,6 +1813,8 @@ public nonisolated struct Heavylock_V2_ReportFinishedRequest: Sendable {
   fileprivate var _outcome: Heavylock_V2_Outcome? = nil
   fileprivate var _runner: Heavylock_V2_RunnerIncarnation? = nil
   fileprivate var _process: Heavylock_V2_ProcessIdentity? = nil
+  fileprivate var _elapsedMs: Int64? = nil
+  fileprivate var _rootCpuTimeMs: Int64? = nil
 }
 
 public nonisolated struct Heavylock_V2_GetHealthRequest: Sendable {
@@ -3916,7 +3938,7 @@ nonisolated extension Heavylock_V2_ReportLaunchFailedRequest: SwiftProtobuf.Mess
 
 nonisolated extension Heavylock_V2_ReportFinishedRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ReportFinishedRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}job_id\0\u{3}grant_id\0\u{1}outcome\0\u{1}runner\0\u{1}process\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}job_id\0\u{3}grant_id\0\u{1}outcome\0\u{1}runner\0\u{1}process\0\u{3}elapsed_ms\0\u{3}root_cpu_time_ms\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3929,6 +3951,8 @@ nonisolated extension Heavylock_V2_ReportFinishedRequest: SwiftProtobuf.Message,
       case 3: try { try decoder.decodeSingularMessageField(value: &self._outcome) }()
       case 4: try { try decoder.decodeSingularMessageField(value: &self._runner) }()
       case 5: try { try decoder.decodeSingularMessageField(value: &self._process) }()
+      case 6: try { try decoder.decodeSingularInt64Field(value: &self._elapsedMs) }()
+      case 7: try { try decoder.decodeSingularInt64Field(value: &self._rootCpuTimeMs) }()
       default: break
       }
     }
@@ -3954,6 +3978,12 @@ nonisolated extension Heavylock_V2_ReportFinishedRequest: SwiftProtobuf.Message,
     try { if let v = self._process {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
     } }()
+    try { if let v = self._elapsedMs {
+      try visitor.visitSingularInt64Field(value: v, fieldNumber: 6)
+    } }()
+    try { if let v = self._rootCpuTimeMs {
+      try visitor.visitSingularInt64Field(value: v, fieldNumber: 7)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -3963,6 +3993,8 @@ nonisolated extension Heavylock_V2_ReportFinishedRequest: SwiftProtobuf.Message,
     if lhs._outcome != rhs._outcome {return false}
     if lhs._runner != rhs._runner {return false}
     if lhs._process != rhs._process {return false}
+    if lhs._elapsedMs != rhs._elapsedMs {return false}
+    if lhs._rootCpuTimeMs != rhs._rootCpuTimeMs {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -202,9 +202,10 @@ type runner struct {
 	interrupt     context.Context
 	stopInterrupt context.CancelFunc
 
-	mu     sync.Mutex
-	child  *os.Process // the running command, if any
-	signal syscall.Signal
+	mu              sync.Mutex
+	child           *os.Process // the command, until its wait completes
+	childSignalable bool
+	signal          syscall.Signal
 	// anySignal records any runner signal, including one forwarded to a
 	// running command; a deliberate interruption is never retried.
 	anySignal bool
@@ -227,19 +228,21 @@ func (r *runner) routeSignals() {
 				r.mu.Lock()
 				r.anySignal = true
 				child := r.child
+				var signalErr error
 				if child == nil {
 					r.signal = sig
+				} else if r.childSignalable && sig != syscall.SIGINT {
+					// Keep the fence held through signaling so the PID
+					// cannot be reaped and reused in between.
+					signalErr = child.Signal(sig)
 				}
 				r.mu.Unlock()
-				switch {
-				case child == nil:
+				if child == nil {
 					r.stopInterrupt()
 					return
-				case sig != syscall.SIGINT:
-					// A terminal's SIGINT already reaches the command in the
-					// runner's process group; termination requests are
-					// forwarded.
-					_ = child.Signal(sig)
+				}
+				if signalErr != nil && !errors.Is(signalErr, os.ErrProcessDone) {
+					r.logf("could not forward signal to the command: %v", signalErr)
 				}
 			}
 		}
@@ -252,6 +255,24 @@ func (r *runner) setChild(p *os.Process) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.child = p
+	r.childSignalable = p != nil
+}
+
+func (r *runner) disarmChild(p *os.Process) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.child == p {
+		r.childSignalable = false
+	}
+}
+
+func (r *runner) killChild(p *os.Process) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.child != p || !r.childSignalable {
+		return os.ErrProcessDone
+	}
+	return p.Kill()
 }
 
 func (r *runner) signalled() bool {

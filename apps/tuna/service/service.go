@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/boumenot/heavy-lock/apps/tuna/broker"
+	"github.com/boumenot/heavy-lock/apps/tuna/jobmetrics"
 	"github.com/boumenot/heavy-lock/apps/tuna/procid"
 	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
@@ -39,6 +40,8 @@ type Options struct {
 	Log            io.Writer
 	// Sampler defaults to scheduler.DarwinSampler.
 	Sampler scheduler.Sampler
+	// JobSampler observes historical job resources independently of admission.
+	JobSampler jobmetrics.Source
 	// EventMaxAge and EventMaxCount bound durable event replay; zero selects
 	// the initial 24-hour/100,000-event limits. Job history is unaffected.
 	EventMaxAge   time.Duration
@@ -142,6 +145,9 @@ func Run(ctx context.Context, o Options) (err error) {
 	if err != nil {
 		return err
 	}
+	if err := b.resources.restore(ctx); err != nil {
+		return fmt.Errorf("restore job resource summaries: %w", err)
+	}
 	server, err := transport.Listen(o.Port, b)
 	if err != nil {
 		return err
@@ -163,10 +169,14 @@ func Run(ctx context.Context, o Options) (err error) {
 	var wg sync.WaitGroup
 	maintenance, stop := context.WithCancel(ctx)
 	defer func() { stop(); wg.Wait() }()
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		maintain(maintenance, sched, b, logf)
+	}()
+	go func() {
+		defer wg.Done()
+		b.resources.run(maintenance, logf)
 	}()
 
 	select {

@@ -39,7 +39,7 @@ type attempt struct {
 	noWatch    bool
 	cmd        *exec.Cmd
 	proc       *pb.ProcessIdentity
-	exited     chan *os.ProcessState
+	exited     chan childExit
 
 	ran        bool // the command was spawned and has exited
 	code       int
@@ -53,7 +53,7 @@ func (r *runner) attempt(ctx context.Context, retryOf string, noWait bool) resul
 		r:         r,
 		req:       r.submitRequest(retryOf),
 		noWait:    noWait,
-		exited:    make(chan *os.ProcessState, 1),
+		exited:    make(chan childExit, 1),
 		heartbeat: defaultHeartbeat,
 	}
 	if !noWait {
@@ -174,8 +174,8 @@ func (a *attempt) loop(ctx context.Context) result {
 		case <-reconnect:
 			reconnect = nil
 			connect()
-		case state := <-a.exited:
-			if res, done := a.childExited(state); done {
+		case exit := <-a.exited:
+			if res, done := a.childExited(exit); done {
 				return res
 			}
 		case <-a.r.interrupt.Done():
@@ -345,11 +345,13 @@ func (a *attempt) spawn(ctx context.Context) (result, bool) {
 		return a.abandon(ctx), true
 	}
 	err := cmd.Err
+	start := time.Now()
 	if err == nil {
 		err = cmd.Start()
 	}
 	if err == nil {
 		a.r.child = cmd.Process
+		a.r.childSignalable = true
 	}
 	a.r.mu.Unlock()
 	if err != nil {
@@ -361,8 +363,7 @@ func (a *attempt) spawn(ctx context.Context) (result, bool) {
 	// Observe the root before it can be reaped, so its identity is exact.
 	proc, perr := procid.Of(cmd.Process.Pid)
 	go func() {
-		_ = cmd.Wait()
-		a.exited <- cmd.ProcessState
+		a.exited <- waitForCommand(cmd, start, func() { a.r.disarmChild(cmd.Process) }, a.r.logf)
 	}()
 	if _, err := retry(ctx, a.r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
 		return a.r.client.SealLaunch(c, &pb.SealLaunchRequest{JobId: a.jobID, GrantId: a.grant.GetGrantId(), Runner: a.r.inc})
@@ -413,9 +414,9 @@ func (a *attempt) cancel(ctx context.Context) (result, bool) {
 		}); err != nil {
 			a.r.logf("cancellation acknowledgement for job %s not delivered: %s", a.jobID, describe(err))
 		}
-		// Immediate force; os.Process never signals a reaped PID. Only the
-		// root is targeted; descendants are not discovered.
-		if err := a.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		// Signal under the same fence as reaping. Only the root is targeted;
+		// descendant observations are not termination evidence.
+		if err := a.r.killChild(a.cmd.Process); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			if _, rerr := retry(ctx, a.r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
 				return a.r.client.ReportCancelFailed(c, &pb.ReportCancelFailedRequest{JobId: a.jobID, GrantId: grant, Runner: a.r.inc, Error: err.Error()})
 			}); rerr != nil {
@@ -433,10 +434,17 @@ func (a *attempt) cancel(ctx context.Context) (result, bool) {
 	return result{}, false
 }
 
-func (a *attempt) childExited(state *os.ProcessState) (result, bool) {
+func (a *attempt) childExited(exit childExit) (result, bool) {
 	a.running, a.ran = false, true
 	a.r.setChild(nil)
-	code, outcome := exitStatus(state)
+	if exit.state == nil {
+		a.r.logf("could not wait for command in job %s: %v; its reservation stays held", a.jobID, exit.err)
+		return result{code: ExitSoftware, jobID: a.jobID}, true
+	}
+	if exit.timingErr != nil {
+		a.r.logf("could not observe root runtime for job %s: %v", a.jobID, exit.timingErr)
+	}
+	code, outcome := exitStatus(exit.state)
 	a.code = code
 	if a.proc == nil {
 		return result{code: code, jobID: a.jobID}, true
@@ -446,6 +454,7 @@ func (a *attempt) childExited(state *os.ProcessState) (result, bool) {
 	if _, err := retry(context.WithoutCancel(a.r.interrupt), a.r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
 		return a.r.client.ReportFinished(c, &pb.ReportFinishedRequest{
 			JobId: a.jobID, GrantId: a.grant.GetGrantId(), Outcome: outcome, Runner: a.r.inc, Process: a.proc,
+			ElapsedMs: exit.elapsedMs, RootCpuTimeMs: exit.rootCPUMs,
 		})
 	}); err != nil {
 		a.r.logf("finish report for job %s not delivered: %s; its reservation stays held until the broker verifies the command exited", a.jobID, describe(err))

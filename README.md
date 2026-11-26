@@ -420,14 +420,43 @@ are not provided. The runner:
   stop the command; its exit status still propagates, and the reservation
   stays held until the broker verifies the exit.
 
-Only the command root is tracked, and process identity uses darwin
-`sysctl`; descendants that outlive the root are not discovered or verified.
+For admission, cancellation and release, only the command root is tracked;
+process identity uses darwin `sysctl`. The observational resource sampler
+does not make descendants safe to signal or prove that they have exited.
 The advertised 30-second launch-investigation timeout does not yet trigger
 investigation; its clock and restart reconstruction are tracked in #15.
 Service identity, REST/CORS and submission equivalence are specified in the
 [v2 design](docs/v2-design.md#6-apis-port-and-local-access-risks).
 Both APIs are unauthenticated; any local process, and potentially any web
 page permitted by the browser, can access exposed data and controls.
+
+For resource history, the broker samples the observed process tree every five
+seconds, checkpoints summaries at most once per minute during a run, and
+stores the final summary with the outcome. Root runtime uses the runner's
+monotonic exit observation and is unknown if that observation fails. CPU
+includes the root's final wait counter when available; peak CPU uses 100% per
+logical core, and peak memory is the largest sampled sum of process RSS.
+Missing measurements remain unknown. Summaries are always partial or
+unavailable: short-lived or reparented children and spikes can be missed,
+summed RSS can double-count shared pages, and total tree CPU can be incomplete
+or double-counted. A restart marks potentially lost samples partial. These
+historical measurements never control admission or release.
+
+The runner supplies `--worklog` explicitly; gRPC clients may also supply
+repository, branch, session, purpose, commit, target, configuration and
+validated extra metadata. None is inferred from the working directory.
+
+On macOS 26.7.3/arm64 (Apple A18 Pro), a locked benchmark on 2026-11-26
+observed about 507 system processes and measured 7.89–8.56 ms wall time and
+about 1.13 MB of Go allocations per snapshot (three runs of 30 snapshots).
+This includes launching `ps`, but not the child's CPU/allocations, per-job
+aggregation or checkpoint writes; cost can grow with the process table.
+Reproduce with:
+
+```bash
+heavy-lock -- nix develop -c go -C apps/tuna test ./jobmetrics -run '^$' \
+  -bench '^BenchmarkDarwinSnapshot$' -benchtime=30x -benchmem -count=3
+```
 
 The control domain uses the same scheduler and SQLite store as the runner,
 not a REST-specific queue. The service default is port 49783; a bind conflict

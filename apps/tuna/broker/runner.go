@@ -8,6 +8,7 @@ import (
 
 	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"github.com/boumenot/heavy-lock/apps/tuna/jobmetrics"
 	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
 	"google.golang.org/grpc"
@@ -26,6 +27,13 @@ var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-
 
 type RunnerOptions struct {
 	HeartbeatInterval time.Duration
+	Resources         FinishResources
+}
+
+// FinishResources prepares a historical summary and commits it with the
+// lifecycle report. The callback validates and durably commits the report.
+type FinishResources interface {
+	Finish(context.Context, *pb.ReportFinishedRequest, func(*pb.ResourceSummary) (*pb.Job, error)) (*pb.Job, error)
 }
 
 // Runner serves RunnerService over the single shared scheduler. Streams
@@ -35,6 +43,7 @@ type Runner struct {
 	sched     *scheduler.Scheduler
 	hub       *Hub
 	heartbeat time.Duration
+	resources FinishResources
 }
 
 func NewRunner(s *scheduler.Scheduler, hub *Hub, o RunnerOptions) (*Runner, error) {
@@ -44,7 +53,7 @@ func NewRunner(s *scheduler.Scheduler, hub *Hub, o RunnerOptions) (*Runner, erro
 	if o.HeartbeatInterval <= 0 {
 		o.HeartbeatInterval = DefaultHeartbeatInterval
 	}
-	return &Runner{sched: s, hub: hub, heartbeat: o.HeartbeatInterval}, nil
+	return &Runner{sched: s, hub: hub, heartbeat: o.HeartbeatInterval, resources: o.Resources}, nil
 }
 
 func validRunner(r *pb.RunnerIncarnation) error {
@@ -377,7 +386,26 @@ func (b *Runner) ReportFinished(ctx context.Context, req *pb.ReportFinishedReque
 	if err := validOutcome(req.Outcome); err != nil {
 		return nil, err
 	}
-	job, _, err := b.sched.ReportFinished(ctx, req.JobId, req.GrantId, req.Runner, req.Process, req.Outcome)
+	if req.ElapsedMs != nil && *req.ElapsedMs < 0 {
+		return nil, invalid("elapsed_ms", "the observed runtime must not be negative")
+	}
+	if req.RootCpuTimeMs != nil && *req.RootCpuTimeMs < 0 {
+		return nil, invalid("root_cpu_time_ms", "the observed root CPU time must not be negative")
+	}
+	commit := func(summary *pb.ResourceSummary) (*pb.Job, error) {
+		job, _, err := b.sched.ReportFinishedWithResources(ctx, req.JobId, req.GrantId, req.Runner, req.Process, req.Outcome, summary)
+		return job, err
+	}
+	var job *pb.Job
+	var err error
+	if b.resources != nil {
+		job, err = b.resources.Finish(ctx, req, commit)
+	} else {
+		root := jobmetrics.Identity{PID: req.Process.Pid, StartTimeUnixNs: req.Process.StartTimeUnixNs}
+		a := jobmetrics.New(root, nil, false)
+		a.Finish(req.ElapsedMs, req.RootCpuTimeMs)
+		job, err = commit(a.Summary())
+	}
 	return b.result(ctx, req.JobId, req.GrantId, req.Runner, job, err)
 }
 
