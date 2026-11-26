@@ -55,6 +55,7 @@ other row is an explicit user decision.
 | Initial platforms | Apple Silicon macOS 13+ first *(minimum version delegated)*; Intel macOS is not required initially; Linux and Windows are later targets |
 | V1 switch | Stop using v1 and switch to v2; no mixed v1/v2 admission or nesting, migration plan, or legacy compatibility requirement |
 | Runner CLI | Retain the common v1 command separator, weight and worklog options *(delegated)*, plus the already-decided `--no-wait`; an explicit broker port is still required |
+| CLI queue controls | Built-in queue/job inspection and queue controls *(delegated)*; the monitor and REST API remain available |
 | APIs | gRPC for runner, Swift monitor and other clients; REST queries and controls for `curl`, with polling rather than REST streaming |
 | Runner updates | Push over `WatchJob`, with a current-state snapshot on reconnect |
 | Monitor event replay | Configurable bounded replay; initial limits are 24 hours and 100,000 events |
@@ -1493,10 +1494,11 @@ discovery or a security boundary.
 
 Apart from the selected REST query/control scope and polling,
 REST-to-gRPC mapping, and gRPC streams for runner and monitor, these
-contract details remain unapproved proposals. CLI control equivalents,
-port-argument spelling, IPv4/IPv6 binding behavior, Swift gRPC
-dependency/version choices, browser CORS/preflight interoperability and
-service identity verification also remain open.
+contract details remain unapproved proposals. CLI control spelling and
+coverage beyond the delegated queue controls, port-argument spelling,
+IPv4/IPv6 binding behavior, Swift gRPC dependency/version choices, browser
+CORS/preflight interoperability and service identity verification also
+remain open.
 
 ## 7. Resource history and attribution
 
@@ -1681,7 +1683,6 @@ The existing monitor checks v1 OS locks as well as status records, so
 publishing old-format JSON alone would not establish compatibility.
 Requiring and verifying a legacy read-only view would ease a transition that
 the user does not need, at the cost of additional compatibility machinery.
-The form of any v2 status CLI is a separate question.
 
 **Delegated decision: familiar runner CLI.** Keep the command separator
 `--` and the existing `--weight heavy|light|<positive integer>` and
@@ -1698,6 +1699,21 @@ supplied explicitly, and v2 rejects a weight above capacity rather than
 silently clamping it. Redesigning those options would allow a cleaner break
 but require more script changes. The port option's spelling, other
 configuration and environment-variable compatibility remain open.
+
+**Delegated decision: CLI queue controls.** Provide built-in terminal
+inspection of status, the queue and jobs, and commands for pause, resume,
+reorder, cancellation and force-start. They use the existing broker
+operations and do not bypass their safety checks. This adopts the assistant's
+recommendation under the user's delegation rather than recording an
+individual user selection.
+
+These commands make queue management more convenient without a monitor or
+hand-written `curl` requests, but add command design, output and testing
+work. Inspection-only would be smaller and require the monitor or REST for
+changes; relying entirely on the monitor and REST would be simpler still.
+Exact spelling, output, confirmation policy, history deletion and other
+API coverage remain open. The user-selected monitor confirmation rules and
+unprompted direct APIs are unchanged.
 
 The macOS-first v2 rollout leaves the existing v1 runner available on Linux
 and Windows until their v2 support is ready; it does not make mixed v1/v2
@@ -3679,10 +3695,11 @@ current results from historical runs and list bounds and unchecked cases.
     restarts. The initial architecture and minimum macOS version are decided
     (section 1); macOS login startup is delegated (section 4).
 12. The v2 nesting marker, retry delay, port-option spelling and other CLI
-    configuration. The simple v1/v2 switch and lack of legacy status
-    compatibility are decided, and common runner options are retained by
-    delegation (section 9); no-wait, oversized weights and capacity fixed per
-    broker run are delegated decisions (section 2).
+    configuration, including CLI control details. The simple v1/v2 switch
+    and lack of legacy status compatibility are decided, and common runner
+    options and CLI queue controls are retained by delegation (section 9);
+    no-wait, oversized weights and capacity fixed per broker run are delegated
+    decisions (section 2).
 13. The [formal review gaps](v2/model/README.md#outcomes-and-actionable-gaps):
     verification under realistic OS/process assumptions, discovery of a
     formerly untracked child after release, and safety versus progress when
