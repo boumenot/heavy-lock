@@ -331,9 +331,10 @@ not ready, `recovering`, `storage_unavailable`), green otherwise, and dark
 when not live, so stale state never looks like running. `head_blocked_reason`
 describes only the effective head and followers may backfill past it, so a
 blocked head is not shown as a stall.
-Sections are Running, Queued and Recently finished; row actions are an
-icon menu; paths under home display as `~`. A worklog links to the issue
-from v1's lookup, `gh issue view` in the job's cwd (or `--repo` from an
+Sections are Running, Queued and Recently finished; each available row action
+has its own labelled icon button with a 1-second default tooltip delay;
+paths under home display as `~`. A worklog
+links to the issue from v1's lookup, `gh issue view` in the job's cwd (or `--repo` from an
 explicit `owner/repo#N` worklog or repository attribution), cached per
 key, using only the returned URL. The cwd links to its git top-level
 directory and branch (`git rev-parse`), or to the cwd outside git. A
@@ -347,7 +348,8 @@ before cutover and raise its macOS 13 floor. Polling REST would lose
 resumable events. Trusting `BrokerStatus` counts alone showed stale counts in
 a live smoke test.
 
-**Limits.** Running-job cancellation, recovery after broker restart and the
+**Limits.** Cancellation of a single running root is covered against a real
+broker; process-tree cancellation, recovery after broker restart and the
 full job lifecycle are not verified end to end until recovery (#15) lands;
 a smoke test showed a runner orphaned by a broker restart staying in
 "waiting for admission" and ignoring SIGTERM/SIGINT until the broker

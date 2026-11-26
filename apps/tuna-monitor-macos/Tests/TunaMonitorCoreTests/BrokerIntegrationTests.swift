@@ -8,7 +8,7 @@ import Testing
 /// Drives the monitor's gRPC client and session against a real broker. Opt
 /// in with `TUNA_MONITOR_TEST_TUNA=<path to a built tuna>`; the broker gets a
 /// temporary data directory and a free port, so it never touches the user's
-/// broker. Cancelling running work is left to the recovery worklog.
+/// broker. Descendant cancellation and recovery are left to the recovery worklog.
 @MainActor
 @Suite(
     .enabled(
@@ -73,6 +73,21 @@ struct BrokerIntegrationTests {
         session.request(.resume)
         #expect(await waitFor { session.state.status?.paused == false })
         #expect(session.state.controlError == nil)
+
+        runners.append(try launch(tuna, ["--port", "\(port)", "--", "/bin/sleep", "30"]))
+        #expect(await waitFor { session.state.active.contains { $0.state == .running } })
+        let running = try #require(session.state.active.first { $0.state == .running })
+        let cancelRunning = ControlAction.cancel(JobReference(running))
+        session.request(cancelRunning)
+        #expect(session.pendingConfirmation == cancelRunning)
+        session.confirmPending()
+        #expect(
+            await waitFor {
+                session.state.recent.contains {
+                    $0.jobID == running.jobID && $0.outcome.kind == .signaled
+                        && $0.hasCancelRequestedAtUnixNs
+                }
+            })
 
         broker.terminate()
         broker.waitUntilExit()

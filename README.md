@@ -614,13 +614,15 @@ worklog links to its issue title and URL from `gh issue view` run in the
 job's cwd (an `owner/repo#N` worklog or repository attribution is passed as
 `--repo`); the repository is never guessed. The cwd links to its git
 checkout's top-level directory and branch in Finder, or to the cwd itself
-outside git, with home shown as `~`. Each row's actions are in an
-`ellipsis.circle` menu. Force-started jobs are marked `FORCED`, including
-in history. Pause, resume and move to front/back are sent immediately,
-in the order requested; a move is not offered to the job already at that
-end of the queue, where it would change nothing. Every cancel and force-start asks for confirmation, and the request is
-refused if the broker stopped being live meanwhile. There is no history
-deletion UI. Like v1, the Dock tile shows the longest-running job's
+outside git, with home shown as `~`. Each available row action has its own
+icon button with a descriptive tooltip (1-second default delay, overridable
+by the macOS tooltip preference). Force-started jobs are marked
+`FORCED`, including in history. Pause, resume and move to front/back are
+sent immediately, in the order requested; a move is not offered to the job
+already at that end of the queue, where it would change nothing. Every
+cancel and force-start asks for confirmation, and the request is refused if
+the broker stopped being live meanwhile. There is no history deletion UI.
+Like v1, the Dock tile shows the longest-running job's
 worklog (`#?` when unattributed, `—` idle, `+N` for other running jobs) in
 a green, grey or dashed red (not live) ring, with the queued count as a
 badge while live. The bordered tile also has a stop light for normal
@@ -639,8 +641,8 @@ the queue. The v1 monitor and `heavy-lock-status` are not views of v2 jobs.
 and session tests against a scripted broker, and an integration test
 against a temporary real broker when `build/tuna/tuna` exists (set
 `TUNA_MONITOR_TEST_TUNA` to choose a binary for direct `swift test`).
-Running-job cancellation and recovery are not yet verified end to end
-(#15).
+Cancellation of a single running root is covered; cancellation of a
+process tree and recovery are not yet verified end to end (#15).
 
 The shell deliberately uses `mkShellNoCC` and does not provide Swift: on
 macOS the monitor builds with the system Xcode `swift` (`xcode-select

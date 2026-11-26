@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import HeavyLockV2
 import Synchronization
@@ -57,6 +58,19 @@ import Testing
 
 @Suite struct PresentationTests {
     let now = Date(timeIntervalSince1970: 1_000)
+
+    @Test func monitorRegistersOneSecondTooltipDelayWithoutOverridingUserPreference() {
+        let suiteName = "TunaMonitorTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        MonitorPreferences.registerDefaults(in: defaults)
+        #expect(defaults.integer(forKey: "NSInitialToolTipDelay") == 1_000)
+
+        defaults.set(500, forKey: "NSInitialToolTipDelay")
+        MonitorPreferences.registerDefaults(in: defaults)
+        #expect(defaults.integer(forKey: "NSInitialToolTipDelay") == 500)
+    }
 
     @Test func forcedJobsAreMarkedInRowsIncludingHistory() {
         #expect(Presentation.row(job("a", .running, forced: true), capacity: 2, now: self.now).forced)
@@ -128,6 +142,16 @@ import Testing
                 == [.moveToFront(b), .moveToBack(b), .forceStart(b), .cancel(b)])
         #expect(ControlAction.jobActions(for: queue[2], in: queue) == [.moveToFront(c), .forceStart(c), .cancel(c)])
         #expect(ControlAction.jobActions(for: queue[0], in: [queue[0]]) == [.forceStart(a), .cancel(a)])
+    }
+
+    @Test @MainActor func availableJobActionIconsAreDistinctAndResolvable() {
+        let queue = [job("a", .queued), job("b", .queued), job("c", .queued)]
+        let actions = ControlAction.jobActions(for: queue[1], in: queue)
+        let symbols = actions.map(\.systemImageName)
+        #expect(Set(symbols).count == actions.count)
+        for action in actions {
+            #expect(NSImage(systemSymbolName: action.systemImageName, accessibilityDescription: action.title) != nil)
+        }
     }
 }
 

@@ -10,6 +10,7 @@ struct TunaMonitorApp: App {
     private let port: Int
 
     init() {
+        MonitorPreferences.registerDefaults()
         let port = Self.port(arguments: CommandLine.arguments, environment: ProcessInfo.processInfo.environment)
         self.port = port
         let client: any BrokerClient

@@ -127,22 +127,27 @@ struct MonitorView: View {
             Spacer()
             let actions = ControlAction.jobActions(for: job, in: self.session.state.queue)
             if !actions.isEmpty {
-                Menu {
+                HStack(spacing: 3) {
                     ForEach(actions, id: \.self) { action in
-                        Button(action.title) { self.session.request(action) }
-                            .disabled(self.session.inFlight.contains(action))
+                        Button {
+                            self.session.request(action)
+                        } label: {
+                            Image(systemName: action.systemImageName)
+                                .imageScale(.large)
+                                .frame(width: 24, height: 24)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(.quaternary)
+                        }
+                        .help(action.title)
+                        .accessibilityLabel(action.title)
+                        .disabled(!state.isLive || self.session.inFlight.contains(action))
                     }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .imageScale(.large)
                 }
-                .menuStyle(.button)
-                .buttonStyle(.borderless)
-                .menuIndicator(.hidden)
                 .fixedSize()
-                .help("Actions")
-                .accessibilityLabel("Actions")
-                .disabled(!state.isLive)
             }
         }
         .padding(.vertical, 2)

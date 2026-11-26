@@ -50,6 +50,17 @@ public enum ControlAction: Equatable, Hashable, Sendable {
         }
     }
 
+    public var systemImageName: String {
+        switch self {
+        case .pause: "pause.fill"
+        case .resume: "play.fill"
+        case .moveToFront: "arrow.up.to.line"
+        case .moveToBack: "arrow.down.to.line"
+        case .forceStart: "bolt.fill"
+        case .cancel: "xmark.circle"
+        }
+    }
+
     /// The control's name in messages.
     public var name: String {
         switch self {
