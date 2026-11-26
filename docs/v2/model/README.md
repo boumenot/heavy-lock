@@ -126,9 +126,7 @@ termination. The user chose runner-first termination with a broker fallback
 on verified identities after either a configurable acknowledgment deadline
 or completion deadline expires, or after verified runner death. Acknowledgment
 does not mean completion, and neither deadline expiry is release evidence.
-The configurable defaults are unmeasured: 5 seconds for acknowledgment and
-30 seconds for completion after acknowledgment. The acknowledgment clock
-start and recovery/clock handling remain open.
+Durations, clock starts and recovery/clock handling remain open.
 The model abstracts who terminates: root and child
 exits are nondeterministic, so release safety is checked whichever party
 causes them. It does not model either deadline, acknowledgments, explicit

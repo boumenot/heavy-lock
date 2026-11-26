@@ -97,8 +97,7 @@ service ControlService {
   // request and push CancelRequested to the runner, which attempts
   // termination first. Separate configurable runner acknowledgment and
   // termination-completion deadlines apply; acknowledgment is not completion.
-  // Configurable, unmeasured defaults: 5 s acknowledgment, 30 s completion
-  // after acknowledgment. The precise acknowledgment clock start remains open.
+  // Durations and clock starts are not yet specified.
   // If either expires, or runner death is verified, the broker may fall back
   // on verified process identities, subject to safe coordination.
   // Expiry proves neither runner death nor process exit and never permits
@@ -109,6 +108,8 @@ service ControlService {
   // running, so neither the request, a termination attempt nor a report
   // alone releases its reservation; the approved release checks still apply.
   // Runner death or disconnection never cancels a job automatically.
+  // The monitor confirms every cancellation (any state) before sending this;
+  // confirmation is a client UI responsibility and is not enforced here.
   // Terminal jobs: FAILED_PRECONDITION / JOB_TERMINAL. Repeated cancellation
   // of the same job is a no-op success.
   rpc CancelJob(CancelJobRequest) returns (Job);

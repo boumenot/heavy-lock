@@ -58,7 +58,8 @@ users' jobs or machines.
 | SQLite journal | WAL with `synchronous = FULL` everywhere and `fullfsync = ON` on macOS; measure commit latency |
 | SQLite driver | Start with `modernc.org/sqlite`; pin and validate a version before implementation relies on it |
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
-| Running-job cancellation | Explicit cancel: runner first; broker may take over on verified identities after acknowledgment/completion deadline expiry or verified runner death; configurable, unmeasured defaults: 5 s acknowledgment, 30 s completion after acknowledgment; expiry is not release evidence; coordination remains open |
+| Cancel confirmation | Monitor confirms every cancel (queued, reserved or running); direct API clients get no prompt |
+| Running-job cancellation | Explicit cancel: runner first; broker may take over on verified identities after acknowledgment/completion deadline expiry or verified runner death; durations unset; expiry is not release evidence; coordination remains open |
 | Timestamp encoding | UTC Unix nanoseconds in signed `int64` on the wire and SQLite `INTEGER`; supersedes microseconds |
 | Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes and API parity; see [section 11](#11-interface-and-schema-design) |
 | Initial timers | Configurable: 30 s queued-disconnect grace, 5 s broker-to-runner heartbeat, 30 s launch investigation from reservation commit |
@@ -171,6 +172,27 @@ deliberately increase load while normal admission remains paused.
 time and any supplied actor/reason. Audit details require agreement;
 claimed actors are not authenticated.
 
+**User decision: confirm every cancellation in the monitor.** The monitor
+must ask the user to confirm before sending any cancel request, whether the
+job is queued, reserved or running. Direct API clients (gRPC or curl/REST)
+do not get a monitor prompt; as with force-start, confirmation is a monitor
+UI step, not something the broker enforces or authenticates.
+
+Alternatives considered:
+- **Confirm only active (reserved or running) jobs.** Less friction for the
+  common case of dropping waiting work, since removing a queued job loses
+  only its queue position. But a job can be admitted between the monitor
+  showing it as queued and the request arriving, so an unconfirmed cancel
+  could terminate running work. Avoiding that needs an atomic state guard,
+  for example a request that cancels only if the job is still queued and
+  fails otherwise, plus a retry path through confirmation.
+- **No confirmation.** Fastest and simplest, but a misclick can discard a
+  queue position or terminate long-running work, which cannot be undone.
+- **Confirm every cancellation (chosen).** One consistent rule with no
+  queued-to-active race to guard in the UI: whatever state the job reaches
+  before the request lands, the user already confirmed cancelling it. The
+  cost is an extra step for routine queued cancellations.
+
 **User decision: cancelling a running job.** On an explicit cancel request,
 the runner attempts termination first. The broker may fall back to
 terminating the job itself after either of two configurable deadlines
@@ -221,9 +243,8 @@ Fallback triggers considered (user chose deadline expiry or verified death):
 
 **User decision: separate acknowledgment and completion deadlines.** The
 runner must acknowledge the cancellation request and complete termination
-within separately configurable deadlines. Initial, unmeasured defaults are
-**5 seconds for acknowledgment** and **30 seconds for completion after
-acknowledgment**. Acknowledgment means the runner
+within separately configurable deadlines. No durations have been chosen.
+Acknowledgment means the runner
 has received the request, not that termination is complete; acknowledgment
 alone cannot satisfy the completion deadline. If either deadline expires,
 the broker may take over, subject to verified process identities and safe
@@ -247,12 +268,14 @@ Deadline alternatives:
 Short deadlines improve responsiveness but can trigger premature takeover
 while a live runner is still receiving the request or cleaning up, increasing
 overlap between termination attempts. Longer deadlines reduce that risk but
-delay cancellation when the runner is hung. The current runner's
-20-second graceful-shutdown interval (`_stopGrace` in `lib/heavy_lock.dart`)
-motivated the initial 30-second completion allowance; it does not validate
-that default or prescribe v2 escalation. Neither default has been measured.
+delay cancellation when the runner is hung. A completion deadline shorter
+than the runner's own graceful-shutdown interval (currently 20 seconds,
+`_stopGrace` in `lib/heavy_lock.dart`) would routinely trigger takeover
+during normal cleanup; this is a consideration, not a selected value.
 
-Still open: the precise acknowledgment clock start, recovery/clock handling,
+Still open: both deadline durations, when each clock starts (including
+whether completion is measured from the request or from acknowledgment),
+recovery/clock handling,
 response/reset rules, handling an explicit failed termination result,
 coordination or fencing of a still-live runner, platform termination
 mechanisms and escalation, and how a fallback result is recorded.
@@ -267,9 +290,10 @@ resume appropriately, allow a grace interval and only then escalate.
 Untracked descendants are an explicitly accepted exception to complete tree
 verification (section 5).
 
-**Open.** Confirmation for other destructive actions, exit/status codes,
-concurrent cancel/reorder/admit races, acknowledgment clock start and
-recovery/clock handling, coordination with a still-live runner, audit persistence, and
+**Open.** Confirmation for other destructive actions (cancellation and
+force-start are decided), exit/status codes,
+concurrent cancel/reorder/admit races, cancellation deadline durations,
+clock starts and recovery/clock handling, coordination with a still-live runner, audit persistence, and
 whether pause survives a broker restart.
 
 ## 4. Runner and service lifecycle
@@ -1056,8 +1080,7 @@ service ControlService {
   // request and push CancelRequested to the runner, which attempts
   // termination first. Separate configurable runner acknowledgment and
   // termination-completion deadlines apply; acknowledgment is not completion.
-  // Configurable, unmeasured defaults: 5 s acknowledgment, 30 s completion
-  // after acknowledgment. The precise acknowledgment clock start remains open.
+  // Durations and clock starts are not yet specified.
   // If either expires, or runner death is verified, the broker may fall back
   // on verified process identities, subject to safe coordination.
   // Expiry proves neither runner death nor process exit and never permits
@@ -1068,6 +1091,8 @@ service ControlService {
   // running, so neither the request, a termination attempt nor a report
   // alone releases its reservation; the approved release checks still apply.
   // Runner death or disconnection never cancels a job automatically.
+  // The monitor confirms every cancellation (any state) before sending this;
+  // confirmation is a client UI responsibility and is not enforced here.
   // Terminal jobs: FAILED_PRECONDITION / JOB_TERMINAL. Repeated cancellation
   // of the same job is a no-op success.
   rpc CancelJob(CancelJobRequest) returns (Job);
@@ -1543,7 +1568,7 @@ fills `job_id`.
 | `GET` | `/v1/queue` | `GetQueue` | Waiting jobs in FIFO order, head first |
 | `GET` | `/v1/jobs` | `ListJobs` | Query: `states` (repeatable), `repository`, `clientName`, `queuedAfterUnixNs`, `queuedBeforeUnixNs`, `pageSize`, `pageToken` |
 | `GET` | `/v1/jobs/{job_id}` | `GetJob` | Full job record |
-| `POST` | `/v1/jobs/{job_id}/cancel` | `CancelJob` | Body: optional `reason` |
+| `POST` | `/v1/jobs/{job_id}/cancel` | `CancelJob` | Body: optional `reason`. Monitor confirmation is a UI step, not enforced by the API |
 | `POST` | `/v1/jobs/{job_id}/move` | `MoveJob` | Body: one of `toFront`, `toBack`, `beforeJobId`, `afterJobId` |
 | `POST` | `/v1/jobs/{job_id}/force-start` | `ForceStartJob` | Confirmation is a monitor UI step, not enforced by the API |
 | `POST` | `/v1/queue/pause` | `PauseQueue` | Stops new normal admissions only |
@@ -2155,8 +2180,7 @@ current results from historical runs and list bounds and unchecked cases.
 1. Confirmation and audit semantics for other controls; concurrent control
    races. Running-job cancellation is runner-first with verified-identity
    broker fallback after acknowledgment/completion deadline expiry or verified
-   runner death. Defaults are 5 s acknowledgment and 30 s completion after
-   acknowledgment; the acknowledgment clock start, recovery/clock handling,
+   runner death. Both deadline durations and clock starts, recovery/clock handling,
    explicit failed-result handling, coordination/fencing of a still-live
    runner and platform termination mechanisms remain open.
 2. Concrete defaults still proposed or unset:
