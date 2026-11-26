@@ -95,11 +95,17 @@ service ControlService {
   // Cancel a queued job (removes it from the queue and finishes it as
   // CANCELLED_BEFORE_START). For a reserved or running job, record the
   // request and push CancelRequested to the runner, which attempts
-  // termination first. After a configurable runner response timeout or
-  // verified runner death, the broker may fall back to terminating verified
-  // process identities. An expired timeout proves neither runner death nor
-  // process exit; the duration and coordination with a still-live runner
-  // are not yet specified. A granted command may already be
+  // termination first. Separate configurable runner acknowledgment and
+  // termination-completion deadlines apply; acknowledgment is not completion.
+  // Configurable, unmeasured defaults: 5 s acknowledgment, 30 s completion
+  // after acknowledgment. The precise acknowledgment clock start remains open.
+  // If either expires, or runner death is verified, the broker may fall back
+  // on verified process identities, subject to safe coordination.
+  // Expiry proves neither runner death nor process exit and never permits
+  // release. Recovery/clock rules, explicit failed-result handling and
+  // coordination with a still-live runner are not yet specified.
+  // Acknowledgment RPC/message and persistent deadline state remain draft
+  // contract gaps. A granted command may already be
   // running, so neither the request, a termination attempt nor a report
   // alone releases its reservation; the approved release checks still apply.
   // Runner death or disconnection never cancels a job automatically.

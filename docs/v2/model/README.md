@@ -123,12 +123,18 @@ force are explicit exceptions; a forced job counts toward occupied capacity
 and may be admitted while paused, but not during recovery. Cancellation
 removes queued work or records a request for granted work; it does not prove
 termination. The user chose runner-first termination with a broker fallback
-on verified identities after a configurable response timeout or verified
-runner death. The model abstracts who terminates: root and child
+on verified identities after either a configurable acknowledgment deadline
+or completion deadline expires, or after verified runner death. Acknowledgment
+does not mean completion, and neither deadline expiry is release evidence.
+The configurable defaults are unmeasured: 5 seconds for acknowledgment and
+30 seconds for completion after acknowledgment. The acknowledgment clock
+start and recovery/clock handling remain open.
+The model abstracts who terminates: root and child
 exits are nondeterministic, so release safety is checked whichever party
-causes them. It does not model the response timeout, coordination of two
-termination attempts, signal delivery or escalation, and it never cancels
-on runner crash or disconnect. Recovery permits existing-job reports/rejoin but blocks new
+causes them. It does not model either deadline, acknowledgments, explicit
+failed-result handling, coordination of two termination attempts, signal
+delivery or escalation, and it never cancels on runner crash or disconnect.
+Recovery permits existing-job reports/rejoin but blocks new
 submissions, claims and admissions. The user explicitly permits an original
 runner to spawn under a previously committed claim even while recovery is
 underway or storage has failed; the reservation stays held. Recovery must

@@ -58,7 +58,7 @@ users' jobs or machines.
 | SQLite journal | WAL with `synchronous = FULL` everywhere and `fullfsync = ON` on macOS; measure commit latency |
 | SQLite driver | Start with `modernc.org/sqlite`; pin and validate a version before implementation relies on it |
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
-| Running-job cancellation | Explicit cancel: runner terminates first; broker falls back on verified process identity after a configurable runner response timeout or verified runner death; timeout is not proof of death/exit; reservation held until release checks pass; timeout duration and live-runner coordination open |
+| Running-job cancellation | Explicit cancel: runner first; broker may take over on verified identities after acknowledgment/completion deadline expiry or verified runner death; configurable, unmeasured defaults: 5 s acknowledgment, 30 s completion after acknowledgment; expiry is not release evidence; coordination remains open |
 | Timestamp encoding | UTC Unix nanoseconds in signed `int64` on the wire and SQLite `INTEGER`; supersedes microseconds |
 | Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes and API parity; see [section 11](#11-interface-and-schema-design) |
 | Initial timers | Configurable: 30 s queued-disconnect grace, 5 s broker-to-runner heartbeat, 30 s launch investigation from reservation commit |
@@ -173,8 +173,9 @@ claimed actors are not authenticated.
 
 **User decision: cancelling a running job.** On an explicit cancel request,
 the runner attempts termination first. The broker may fall back to
-terminating the job itself after a configurable runner response timeout
-expires or after verified runner death, but only against verified process
+terminating the job itself after either of two configurable deadlines
+expires (runner acknowledgment or termination completion), or after verified
+runner death, but only against verified process
 identities (root and known descendants). An expired timeout is only a
 trigger for the fallback attempt: it does not prove runner death or process
 exit and does not authorize release. The reservation
@@ -200,7 +201,7 @@ Alternatives considered:
   disconnect as death. Both paths are limited by best-effort descendant tracking, so an
   untracked descendant can survive either one.
 
-Fallback triggers considered (user chose timeout or verified death):
+Fallback triggers considered (user chose deadline expiry or verified death):
 - **Verified runner death only.** Safest against a duplicate terminator,
   since the broker acts only once the runner cannot act. But a hung,
   partitioned or unverifiable runner leaves the cancel unfulfilled and
@@ -208,7 +209,7 @@ Fallback triggers considered (user chose timeout or verified death):
 - **Explicit operator takeover.** A human decides when the broker steps in,
   avoiding a timer guess, but cancellation then needs a second action and
   stalls unattended.
-- **Runner response timeout or verified death (chosen).** Cancellation
+- **Runner deadline expiry or verified death (chosen).** Cancellation
   progresses without a human when the runner is slow, hung or unreachable,
   improving availability. The cost is that the timeout can expire while the
   runner is alive and still terminating, so both may signal the same tree
@@ -218,10 +219,45 @@ Fallback triggers considered (user chose timeout or verified death):
   reuse between verification and signalling, must be handled. A too-short
   timeout increases overlap; a too-long one delays cancellation.
 
-Still open: the timeout duration and what response resets or satisfies it,
-coordination or fencing of a runner that is still live when the broker
-falls back, platform termination mechanisms and escalation, and how a
-fallback result is recorded as the outcome.
+**User decision: separate acknowledgment and completion deadlines.** The
+runner must acknowledge the cancellation request and complete termination
+within separately configurable deadlines. Initial, unmeasured defaults are
+**5 seconds for acknowledgment** and **30 seconds for completion after
+acknowledgment**. Acknowledgment means the runner
+has received the request, not that termination is complete; acknowledgment
+alone cannot satisfy the completion deadline. If either deadline expires,
+the broker may take over, subject to verified process identities and safe
+coordination with a potentially still-live runner. Neither expiry proves
+runner death or process exit, nor permits capacity release.
+
+Deadline alternatives:
+- **One termination-result deadline.** Fewer timers and protocol states,
+  but no early distinction between an unresponsive runner and one carrying
+  out a slow termination. A long cleanup allowance also delays takeover when
+  the request was never acknowledged.
+- **Acknowledgment only.** Detects an undelivered request or unresponsive
+  runner quickly, but a runner can acknowledge and then hang indefinitely
+  during cleanup without triggering takeover.
+- **Separate acknowledgment and completion deadlines (chosen).** Distinguishes
+  request receipt from cleanup progress and bounds both waits. This needs
+  additional timing and acknowledgment state, and either deadline can race
+  a delayed response from a still-live runner, making safe coordination
+  necessary rather than treating timeout as a fence.
+
+Short deadlines improve responsiveness but can trigger premature takeover
+while a live runner is still receiving the request or cleaning up, increasing
+overlap between termination attempts. Longer deadlines reduce that risk but
+delay cancellation when the runner is hung. The current runner's
+20-second graceful-shutdown interval (`_stopGrace` in `lib/heavy_lock.dart`)
+motivated the initial 30-second completion allowance; it does not validate
+that default or prescribe v2 escalation. Neither default has been measured.
+
+Still open: the precise acknowledgment clock start, recovery/clock handling,
+response/reset rules, handling an explicit failed termination result,
+coordination or fencing of a still-live runner, platform termination
+mechanisms and escalation, and how a fallback result is recorded.
+The acknowledgment wire message/RPC and any persistent deadline state
+remain contract-design gaps; this decision does not select those mechanisms.
 
 **Proposals for other controls.** Reorder waiting jobs only, visibly and
 with an audit entry. Cancel a waiting job by removing it and returning a
@@ -232,8 +268,9 @@ Untracked descendants are an explicitly accepted exception to complete tree
 verification (section 5).
 
 **Open.** Confirmation for other destructive actions, exit/status codes,
-concurrent cancel/reorder/admit races, the cancel-response timeout
-duration, coordination with a still-live runner, audit persistence, and whether pause survives a broker restart.
+concurrent cancel/reorder/admit races, acknowledgment clock start and
+recovery/clock handling, coordination with a still-live runner, audit persistence, and
+whether pause survives a broker restart.
 
 ## 4. Runner and service lifecycle
 
@@ -1017,11 +1054,17 @@ service ControlService {
   // Cancel a queued job (removes it from the queue and finishes it as
   // CANCELLED_BEFORE_START). For a reserved or running job, record the
   // request and push CancelRequested to the runner, which attempts
-  // termination first. After a configurable runner response timeout or
-  // verified runner death, the broker may fall back to terminating verified
-  // process identities. An expired timeout proves neither runner death nor
-  // process exit; the duration and coordination with a still-live runner
-  // are not yet specified. A granted command may already be
+  // termination first. Separate configurable runner acknowledgment and
+  // termination-completion deadlines apply; acknowledgment is not completion.
+  // Configurable, unmeasured defaults: 5 s acknowledgment, 30 s completion
+  // after acknowledgment. The precise acknowledgment clock start remains open.
+  // If either expires, or runner death is verified, the broker may fall back
+  // on verified process identities, subject to safe coordination.
+  // Expiry proves neither runner death nor process exit and never permits
+  // release. Recovery/clock rules, explicit failed-result handling and
+  // coordination with a still-live runner are not yet specified.
+  // Acknowledgment RPC/message and persistent deadline state remain draft
+  // contract gaps. A granted command may already be
   // running, so neither the request, a termination attempt nor a report
   // alone releases its reservation; the approved release checks still apply.
   // Runner death or disconnection never cancels a job automatically.
@@ -2111,9 +2154,11 @@ current results from historical runs and list bounds and unchecked cases.
 
 1. Confirmation and audit semantics for other controls; concurrent control
    races. Running-job cancellation is runner-first with verified-identity
-   broker fallback after a configurable response timeout or verified runner
-   death; the timeout duration, coordination/fencing of a still-live runner
-   and platform termination mechanisms remain open.
+   broker fallback after acknowledgment/completion deadline expiry or verified
+   runner death. Defaults are 5 s acknowledgment and 30 s completion after
+   acknowledgment; the acknowledgment clock start, recovery/clock handling,
+   explicit failed-result handling, coordination/fencing of a still-live
+   runner and platform termination mechanisms remain open.
 2. Concrete defaults still proposed or unset:
    - event retention (proposed 24 hours or 100,000 events)
    - page size (proposed 50, maximum 500)
@@ -2125,8 +2170,8 @@ current results from historical runs and list bounds and unchecked cases.
 4. Definition of successful queued rejoin, identity checks and checkpoint
    precision across repeated broker restarts; expiry/reconnect serialization
    and grace reset are decided.
-5. How to detect actual runner death; a disconnect or an expired cancel
-   response timeout alone is not death.
+5. How to detect actual runner death; a disconnect or either expired
+   cancellation deadline alone is not death.
 6. Singleton-lock path, OS primitives and filesystem support; descendant and
    reparented-process discovery; precision and boot identity for process IDs;
    database-failure detection, explicit error mapping and repair workflows.
