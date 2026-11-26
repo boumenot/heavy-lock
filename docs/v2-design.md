@@ -593,6 +593,44 @@ Notes:
   (polling, server-sent events, WebSocket or a gRPC stream), error format
   and pagination remain open.
 
+#### Recommendation: REST-to-gRPC operation parity
+
+**Recommendation, not a user decision.** Give each REST-exposed broker
+business operation an equivalent gRPC operation, with both protocols using
+the same broker domain logic and consistent validation, state transitions
+and outcomes. This is **one-way** parity: runner-specific lifecycle RPCs
+such as submission, admission watching and start/finish reporting need not
+be exposed over REST.
+
+| Candidate REST business operations | Recommended gRPC capability |
+|---|---|
+| Status | Read capacity, occupied slots, pause and recovery state |
+| Queue, job list and job detail | Read the ordered queue and list or inspect jobs; `ListJobs` and `GetJob` are illustrated above |
+| Cancel, reorder, force-start, pause and resume | Apply the same control and safety rules |
+| Completed-history deletion | Apply the same eligibility checks and guarded cleanup |
+
+The illustrative gRPC listing above does not yet define all these
+capabilities. Simple diagnostic or liveness endpoints need not map
+mechanically one-to-one, although business readiness and recovery state
+should be available to both clients. Force-start confirmation remains a
+monitor UI step, not a requirement enforced by either API.
+
+Parity makes behavior accessible to either client type and reduces policy
+drift, but expands the gRPC contract, documentation, tests and versioning
+surface. A gRPC-Gateway mapping could reduce handler duplication, at the
+cost of generation, runtime dependencies and shared-port routing
+complexity. Separately implemented handlers can instead call the same
+domain layer, but require additional mapping and consistency tests. No
+gateway has been selected.
+
+Equivalent operations do not imply identical wire formats: JSON and
+Protobuf differ in field presence and representation, HTTP and gRPC use
+different error conventions, and gRPC streams do not automatically map
+to REST polling or event delivery. Both APIs remain unauthenticated on the
+same loopback port; equivalent gRPC controls also expose those actions to
+other local users and processes that can connect. Exact method names,
+mapping and streaming semantics, and REST mutation scope remain open.
+
 ### 11.3 SQLite schema (illustrative)
 
 The schema shows the kinds of state the decisions require. Names, types,
@@ -744,8 +782,8 @@ tag metadata, timestamps format, indexes, SQLite driver and settings
 3. Durable execution/recovery state machine, broker-instance exclusion,
    process identity and descendant accounting, corruption/disk-full behavior.
 4. Default broker port, identity/version checks, shared-listener routing,
-   API contracts/versioning, REST controls and event delivery (candidate
-   contracts and schema are in section 11).
+   API contracts/versioning, operation parity, REST controls and event
+   delivery (candidate contracts and schema are in section 11).
 5. Exact job metrics, completeness/error reporting, sampler choice,
    platform parity and overhead.
 6. Metadata schema, required fields/tags, command rendering, history
