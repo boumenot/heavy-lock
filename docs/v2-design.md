@@ -59,6 +59,7 @@ other row is an explicit user decision.
 | Monitor event replay | Configurable bounded replay; initial limits are 24 hours and 100,000 events |
 | Transport | Both APIs share a configurable loopback TCP port, broker default 49783; runner takes an explicit port argument |
 | Access | No API authentication; no remote access |
+| Browser access | REST is available to browser clients; the origin policy remains open |
 | Service | One independently supervised broker per OS user, protected by a port-independent OS singleton lock |
 | Admission | FIFO with bounded backfill *(delegated; supersedes strict FIFO)*: a later eligible connected job may pass a head blocked only by slot capacity, at most K times per head (configurable, default 1; K = 0 is strict FIFO); manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
 | No-wait | One registered-stream normal-admission decision; a definite refusal exits 75 without queueing, while an ambiguous result is an error, not 75 *(delegated)* |
@@ -1394,6 +1395,19 @@ exposed job details and controls. **Loopback is not user isolation.**
 Per-user scheduling and user-only database permissions do not restrict
 access through the API. Supplied attribution cannot establish authority.
 
+**User decision: browser access.** Allow browser clients to use the REST
+API. The user intends a personal service listening only on localhost;
+this does not authorize binding a LAN or public address. A browser page can
+attempt to contact loopback from another origin, so the selected API remains
+accessible beyond native `curl` clients. The exact allowed-origin and CORS
+policy remains open; it is not authentication.
+
+The assistant recommended rejecting unexpected browser origins to reduce
+browser-based risk. The user chose to allow browser access for the local
+service. This enables web clients but expands the unauthenticated HTTP
+surface; depending on browser restrictions and origin policy, a visited
+page may be able to read job details or invoke controls.
+
 **Historical alternatives, not selected.** Unix sockets or named pipes
 can use OS access controls, and `curl` supports Unix sockets, but TCP was
 chosen. A bearer token would restrict callers at the cost of credential
@@ -1409,12 +1423,11 @@ generation/runtime machinery. Plaintext gRPC on loopback requires
 HTTP/2 cleartext support and deliberate shared-listener routing.
 No gateway or multiplexer has been selected.
 
-Validate HTTP Host/authority against permitted loopback values, reject
-unexpected browser origins, and avoid permissive CORS. These reduce some
-browser-based risks but are **not authentication** and do not stop direct
-local clients. An identity/version handshake can detect an unrelated
-service or stale broker at the configured port; it is not port discovery
-or a security boundary.
+Validate HTTP Host/authority against permitted loopback values. Select an
+origin and CORS policy that implements the chosen browser access. Browser
+rules are **not authentication** and do not stop direct local clients. An
+identity/version handshake can detect an unrelated service or stale broker
+at the configured port; it is not port discovery or a security boundary.
 
 **Open.** Section 11 proposes complete gRPC and REST contracts:
 - versioned `/v1` paths and a `heavylock.v2` package
@@ -1425,7 +1438,8 @@ Apart from the selected REST query/control scope and polling,
 REST-to-gRPC mapping, and gRPC streams for runner and monitor, these
 contract details remain unapproved proposals. CLI control equivalents,
 port-argument spelling, IPv4/IPv6 binding behavior, Swift gRPC
-dependency/version choices and service identity verification also remain open.
+dependency/version choices, browser-origin policy and service identity
+verification also remain open.
 
 ## 7. Resource history and attribution
 
@@ -3566,10 +3580,10 @@ current results from historical runs and list bounds and unchecked cases.
 6. Singleton-lock path, OS primitives and filesystem support; descendant and
    reparented-process discovery; precision and boot identity for process IDs;
    database-failure detection, explicit error mapping and repair workflows.
-7. Identity/version checks, shared-listener routing/multiplexer,
-   gRPC-Swift/runtime and code-generation versions, and gRPC-Gateway versus
-   hand-written REST handlers. The broker port default and REST polling
-   rather than event streaming are decided (section 6).
+7. Identity/version checks, browser-origin policy, shared-listener
+   routing/multiplexer, gRPC-Swift/runtime and code-generation versions, and
+   gRPC-Gateway versus hand-written REST handlers. The broker port default
+   and REST polling rather than event streaming are decided (section 6).
 8. Reliable monotonic root-runtime measurement across delayed reports and
    restarts, CPU-time accounting, sampler choice, measurement completeness,
    platform parity and overhead (section 7). The elapsed interval, CPU
