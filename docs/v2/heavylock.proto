@@ -101,8 +101,12 @@ service ControlService {
   // If either expires, or runner death is verified, the broker may fall back
   // on verified process identities, subject to safe coordination.
   // Expiry proves neither runner death nor process exit and never permits
-  // release. Recovery/clock rules, explicit failed-result handling and
-  // coordination with a still-live runner are not yet specified.
+  // release. If a still-live runner blocks safe coordination, the broker may
+  // attempt to terminate that verified runner incarnation and takes over
+  // only after its death is verified; otherwise it waits with the
+  // reservation held. Recovery/clock rules, explicit failed-result handling,
+  // coordination with a still-live runner and kill mechanisms are not yet
+  // specified.
   // Acknowledgment RPC/message and persistent deadline state remain draft
   // contract gaps. A granted command may already be
   // running, so neither the request, a termination attempt nor a report

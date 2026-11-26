@@ -58,6 +58,7 @@ users' jobs or machines.
 | SQLite journal | WAL with `synchronous = FULL` everywhere and `fullfsync = ON` on macOS; measure commit latency |
 | SQLite driver | Start with `modernc.org/sqlite`; pin and validate a version before implementation relies on it |
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
+| Blocked cancel takeover | On deadline expiry with a live runner blocking safe coordination, broker tries to terminate that verified runner; takes over only after its exact incarnation is verified dead and coordination is safe; otherwise waits holding the reservation. Explicit cancel only |
 | Cancel confirmation | Monitor confirms every cancel (queued, reserved or running); direct API clients get no prompt |
 | Running-job cancellation | Explicit cancel: runner first; broker may take over on verified identities after acknowledgment/completion deadline expiry or verified runner death; durations unset; expiry is not release evidence; coordination remains open |
 | Timestamp encoding | UTC Unix nanoseconds in signed `int64` on the wire and SQLite `INTEGER`; supersedes microseconds |
@@ -282,6 +283,41 @@ mechanisms and escalation, and how a fallback result is recorded.
 The acknowledgment wire message/RPC and any persistent deadline state
 remain contract-design gaps; this decision does not select those mechanisms.
 
+**User decision: blocked cancellation takeover.** If a cancellation deadline
+expires while the still-live runner holds the coordination needed for safe
+termination (for example, it owns the serialization of termination steps or
+has frozen part of the tree), the broker should attempt to terminate that
+verified runner. It takes over termination of the job only once that exact
+runner incarnation (UUIDv4 plus OS process identity) is verified dead and
+safe coordination is then possible. If either cannot be established, the
+broker waits and retains the reservation. This applies only to an explicit
+job cancellation; it does not change the runner-death policy, which never
+terminates a job, and the broker never kills a runner merely because it
+disconnected. Killing the runner is not evidence that the job's processes
+exited, and the approved release checks still apply.
+
+Alternative considered: **wait indefinitely** for the runner to finish or
+release coordination. It never kills a live runner and avoids the risks
+below, but a hung runner blocks the cancellation and holds capacity with no
+automatic remedy. The chosen approach trades those risks for progress:
+- **Lost outcome reports.** A runner killed mid-termination cannot report
+  the exit status or partial observations it had collected; the outcome may
+  stay unknown or be reconstructed only from what the broker can verify.
+- **Stopped descendants.** If the runner froze or stopped parts of the tree
+  before dying, those processes stay stopped and need explicit cleanup by
+  the broker; they must not be counted as exited.
+- **Identity validation.** The broker must target exactly the recorded
+  runner incarnation; PID reuse or imprecise identity means it must not
+  signal and must keep waiting.
+- **Failed termination.** The runner may not die (permissions, uninterruptible
+  state, failed signal); then the broker cannot take over and waits with the
+  reservation held.
+
+Still open: how the broker detects that the runner holds blocking
+coordination, the kill/escalation sequence and OS mechanisms for terminating
+the runner and verifying its death, cleanup of stopped descendants, and how
+the resulting outcome is recorded.
+
 **Proposals for other controls.** Reorder waiting jobs only, visibly and
 with an audit entry. Cancel a waiting job by removing it and returning a
 distinct runner outcome. For the runner's own termination attempt, preserve
@@ -293,7 +329,8 @@ verification (section 5).
 **Open.** Confirmation for other destructive actions (cancellation and
 force-start are decided), exit/status codes,
 concurrent cancel/reorder/admit races, cancellation deadline durations,
-clock starts and recovery/clock handling, coordination with a still-live runner, audit persistence, and
+clock starts and recovery/clock handling, detection of blocking coordination
+and runner-kill mechanisms for takeover, audit persistence, and
 whether pause survives a broker restart.
 
 ## 4. Runner and service lifecycle
@@ -1084,8 +1121,12 @@ service ControlService {
   // If either expires, or runner death is verified, the broker may fall back
   // on verified process identities, subject to safe coordination.
   // Expiry proves neither runner death nor process exit and never permits
-  // release. Recovery/clock rules, explicit failed-result handling and
-  // coordination with a still-live runner are not yet specified.
+  // release. If a still-live runner blocks safe coordination, the broker may
+  // attempt to terminate that verified runner incarnation and takes over
+  // only after its death is verified; otherwise it waits with the
+  // reservation held. Recovery/clock rules, explicit failed-result handling,
+  // coordination with a still-live runner and kill mechanisms are not yet
+  // specified.
   // Acknowledgment RPC/message and persistent deadline state remain draft
   // contract gaps. A granted command may already be
   // running, so neither the request, a termination attempt nor a report
@@ -2182,7 +2223,11 @@ current results from historical runs and list bounds and unchecked cases.
    broker fallback after acknowledgment/completion deadline expiry or verified
    runner death. Both deadline durations and clock starts, recovery/clock handling,
    explicit failed-result handling, coordination/fencing of a still-live
-   runner and platform termination mechanisms remain open.
+   runner and platform termination mechanisms remain open. When a live
+   runner blocks safe coordination, the broker tries to kill that verified
+   runner and takes over only after its exact incarnation is verified dead,
+   otherwise waiting; detection of blocking coordination, kill/escalation
+   mechanisms and cleanup of stopped descendants remain open.
 2. Concrete defaults still proposed or unset:
    - event retention (proposed 24 hours or 100,000 events)
    - page size (proposed 50, maximum 500)

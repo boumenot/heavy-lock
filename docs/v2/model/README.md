@@ -132,6 +132,12 @@ exits are nondeterministic, so release safety is checked whichever party
 causes them. It does not model either deadline, acknowledgments, explicit
 failed-result handling, coordination of two termination attempts, signal
 delivery or escalation, and it never cancels on runner crash or disconnect.
+The user's blocked-takeover rule (on deadline expiry, the broker may kill a
+live runner that blocks safe coordination, taking over only after that exact
+incarnation is verified dead) maps onto the existing nondeterministic runner
+crash: release still requires the verified-death or seal fence plus the
+release checks, so a broker-induced runner kill cannot free capacity by
+itself. Stopped descendants, lost reports and failed kills are not modeled.
 Recovery permits existing-job reports/rejoin but blocks new
 submissions, claims and admissions. The user explicitly permits an original
 runner to spawn under a previously committed claim even while recovery is
