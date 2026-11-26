@@ -339,7 +339,8 @@ key, using only the returned URL. The cwd links to its git top-level
 directory and branch (`git rev-parse`), or to the cwd outside git. A
 Project link was requested, but jobs carry no Project or agent-session
 reference (the runner sends only `worklog`) and no supported link target is
-known, so none is shown.
+known, so none is shown; the link is deferred to
+[#33](https://github.com/boumenot/heavy-lock/issues/33).
 
 **Alternatives.** Extending the v1 monitor would mix two protocols in one app
 before cutover and raise its macOS 13 floor. Polling REST would lose

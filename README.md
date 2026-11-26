@@ -628,8 +628,9 @@ admission: red when the queue is paused, amber when the broker holds all
 admissions (not ready, recovering or durable state unavailable), green
 otherwise, and all dark when the broker is not live. A blocked queue head
 alone does not turn it amber, since other jobs may still be admitted; its
-reason shows on the job's row. Jobs carry no Copilot app Project reference, so the
-monitor has no Project link.
+reason shows on the job's row. A Copilot app Project link is deferred to
+[#33](https://github.com/boumenot/heavy-lock/issues/33); jobs carry no
+Project reference yet.
 
 The API is unauthenticated loopback gRPC: any local process or user can see
 full commands, arguments, working directories and history, and can control
