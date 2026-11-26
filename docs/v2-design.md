@@ -60,7 +60,7 @@ other row is an explicit user decision.
 | Transport | Both APIs share a configurable loopback TCP port, broker default 49783; runner takes an explicit port argument |
 | Access | No API authentication; no remote access |
 | Browser access | REST permits any browser origin; the API remains unauthenticated and loopback-only |
-| Service | One independently supervised broker per OS user, protected by a port-independent OS singleton lock |
+| Service | One independently supervised broker per OS user, protected by a port-independent OS singleton lock; the macOS launchd agent starts at login *(startup delegated)* |
 | Admission | FIFO with bounded backfill *(delegated; supersedes strict FIFO)*: a later eligible connected job may pass a head blocked only by slot capacity, at most K times per head (configurable, default 1; K = 0 is strict FIFO); manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
 | No-wait | One registered-stream normal-admission decision; a definite refusal exits 75 without queueing, while an ambiguous result is an error, not 75 *(delegated)* |
 | Pause | Pause normal admissions until explicitly resumed, including across broker restarts; running jobs continue and confirmed force-start remains allowed |
@@ -954,9 +954,19 @@ not equivalent to a stable per-user singleton, especially if ports differ.
 The OS lock adds platform and filesystem dependencies, but removes that
 split-brain source while preserving automatic cleanup after owner exit.
 
-**Proposal.** Use a launchd agent on macOS and appropriate per-user
-supervision on other platforms. Installation, startup at login, SSH-only
-operation and upgrades need platform-specific design.
+**Delegated decision: macOS startup.** Install a per-user launchd agent
+that starts the broker at login and supervises it for crash restart. This
+adopts the assistant's recommendation under the user's delegation rather
+than recording an individual user selection. The broker remains independent
+of the monitor and terminal; the runner does not start it on demand.
+
+Automatic login startup makes the service available without a separate
+manual step, but keeps it running even when heavy-lock is unused. Manually
+starting a supervised service would avoid that background process but
+requires the user to remember to start it before submitting work.
+Installation, upgrades, login-session behavior and SSH-only operation need
+platform-specific design and verification. Supervision on later platforms
+is also open.
 
 **User decision: initial unavailability.** If a new submission cannot reach
 the service, fail immediately with a clear, distinct error. Do not ask the
@@ -3628,10 +3638,11 @@ current results from historical runs and list bounds and unchecked cases.
     features and actual platform sync behavior, and measure `FULL`/macOS
     `fullfsync` commit latency. The driver and settings are decided, but
     their validation is pending.
-11. Go/protobuf tooling, distribution, supervision, validation of macOS 13+
-    on Apple Silicon, later Intel macOS/Linux/Windows release plans, and
-    monotonic launch-timeout reconstruction across broker restarts. The
-    initial architecture and minimum macOS version are decided (section 1).
+11. Go/protobuf tooling, distribution, installation and upgrade behavior,
+    validation of macOS 13+ on Apple Silicon, later Intel macOS/Linux/Windows
+    release plans, and monotonic launch-timeout reconstruction across broker
+    restarts. The initial architecture and minimum macOS version are decided
+    (section 1); macOS login startup is delegated (section 4).
 12. The v2 nesting marker, retry delay and CLI option spelling. The simple
     v1/v2 switch and lack of legacy status compatibility are decided
     (section 9); no-wait, oversized weights and capacity fixed per broker
