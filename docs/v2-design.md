@@ -315,12 +315,14 @@ human-readable string and record the exit code. Original shell quoting
 cannot reliably be recovered; the string is not guaranteed replayable.
 Do not invent an exit code when the outcome cannot be recovered.
 
-The living draft also records choices to retain client name/version,
-service version, free memory at admission, termination signal where
-available and measurement completeness; queue-entry and admission
-timestamps distinguish queue wait from process startup. Jobs never
-admitted have no admission timestamp. Commit SHA, build/test target and
-build configuration are recorded only when explicitly supplied.
+**Proposal (unconfirmed).** The earlier living draft listed these as
+decisions, but no separate user choice is recorded for them: retain
+client name/version, service version, free memory at admission,
+termination signal where available and measurement completeness;
+queue-entry and admission timestamps distinguish queue wait from process
+startup, and jobs never admitted have no admission timestamp. Commit SHA,
+build/test target and build configuration would be recorded only when
+explicitly supplied, consistent with the attribution decision below.
 
 **User decision.** Attribution uses only caller-supplied values. Missing
 repository, branch, issue/worklog, agent/session or purpose remains
