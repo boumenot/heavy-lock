@@ -1,7 +1,7 @@
 # Heavy-lock v2 design and decision record
 
 Status: **design only; implementation is not authorized by this document**.
-This record captures the design discussion through 2026-11-25, including
+This record captures the design discussion through 2026-11-26, including
 the user's choices, alternatives, assistant recommendations and unresolved
 questions. It supersedes the earlier exploratory v2 draft, not the
 [current technical decisions](technical-decisions.md) or
@@ -47,13 +47,13 @@ users' jobs or machines.
 
 ## Current choices at a glance
 
-Rows marked *(delegated)* are delegated decisions as defined above; every
-other row is an explicit user decision.
+Choices marked *(delegated)* are delegated decisions as defined above; other
+choices are explicit user decisions.
 
 | Area | Decision |
 |---|---|
 | Language and packaging | Go runner and broker; one executable with a service mode |
-| Initial platforms | Apple Silicon macOS 13+ first *(architecture and minimum version delegated)*; Intel macOS is not required initially; Linux and Windows are later targets |
+| Initial platforms | Apple Silicon *(architecture delegated)* on macOS 26+ *(minimum version user-confirmed)*, developed and validated on the user's current Mac; other platforms are out of current scope |
 | V1 switch | Stop using v1 and switch to v2; no mixed v1/v2 admission or nesting, migration plan, or legacy compatibility requirement |
 | Runner CLI | Retain the common v1 command separator, weight and worklog options *(delegated)*, plus the already-decided `--no-wait`; an explicit broker port is still required |
 | CLI queue controls | Built-in queue/job inspection and queue controls *(delegated)*; the monitor and REST API remain available |
@@ -121,6 +121,8 @@ release. The existing v1 runner remains available on those other platforms
 until v2 supports them. Release dates are not yet decided. This choice does
 not establish that the required macOS
 process-safety mechanisms have been implemented or verified.
+The user's later direction limits current implementation and validation to
+their own environment; these later platforms are not current work.
 
 The assistant recommended supporting all three platforms before the first
 stable v2 release to preserve v1 platform parity, at the cost of more
@@ -143,19 +145,30 @@ termination mechanisms on both before claiming support. Cross-compilation
 alone is not that verification. Whether or when to support Intel later
 remains undecided.
 
-**Delegated decision: minimum macOS version.** Target macOS 13 and later
-for the initial Apple Silicon release, matching the existing monitor's
-declared minimum. This adopts the assistant's recommendation under the
-user's delegation; it is not an individual user selection. It preserves
-the current monitor baseline rather than limiting v2 to the user's current
-macOS version.
+**User decision: minimum macOS version.** Target macOS 26 and later for the
+initial Apple Silicon release. After noting that their Mac runs macOS 26,
+the user confirmed: "26+ is more than fine."
 
-Supporting that baseline requires validating dependencies, process identity
-and lifecycle safety on macOS 13 and current macOS before claiming support;
-the existing monitor's deployment target does not prove v2 compatibility.
-A newer minimum would narrow validation and dependency constraints but
-exclude older systems. Revisit this target if a required dependency or
-platform mechanism cannot support it safely.
+This supersedes the earlier delegated recommendation of macOS 13+, which
+matched the existing v1 monitor's declared minimum. The newer floor narrows
+the initial validation matrix and removes older deployment constraints, but
+excludes earlier macOS versions from the initial v2 release. It does not
+change the v1 monitor's target or prove that v2 works on macOS 26.
+
+**User direction: environment baseline.** "the base line for minimum
+requirements should be the machine this application is currently running on"
+and "do not unnecessarily broaden the scope." Develop and validate v2 on the
+user's current Mac, not an expanded architecture or OS-version matrix without
+a demonstrated need. On 2026-11-26 the observed host was macOS 26.7.3 on
+`arm64`, with Xcode 27.2 and Swift 6.4.2. These are observations, not a new
+minimum patch-version requirement; the selected floor remains macOS 26+.
+Results on that host do not establish that other macOS releases were tested.
+
+[gRPC Swift 2's published compatibility policy](https://github.com/grpc/grpc-swift-2/blob/2.4.4/Sources/GRPCCore/Documentation.docc/Articles/Compatibility.md)
+lists macOS 15 as its minimum, so its platform floor no longer conflicts with
+the v2 target. It is a candidate for the monitor, not yet a validated
+toolchain selection: the chosen versions, their dependencies and generation
+still need to be exercised with the actual Swift/Xcode toolchain.
 
 **Alternatives and recommendations.** The assistant initially recommended
 retaining Dart to reuse the runner and avoid a rewrite. Dart isolates can
@@ -178,10 +191,10 @@ and protobuf libraries with generated bindings. Keep platform process
 adapters explicit and the scheduler independently testable.
 
 **Open.** The selected SQLite driver's version and validation, native-library
-needs for other dependencies, cross-compilation, binary distribution,
-validation of the macOS 13+ Apple Silicon target, possible later Intel macOS
-support, Linux and Windows release plans, and runner/service version
-compatibility. No complete dependency set is selected here.
+needs for other dependencies, distribution, validation on the user's Mac, and
+runner/service version compatibility. Cross-compilation and other platforms
+are future questions, not work required for the initial release. No complete
+dependency set is selected here.
 
 ## 2. Queue and admission policy
 
@@ -916,7 +929,8 @@ every supported platform:
   are not proof of death.
 
 Only macOS is an initial stable v2 release target; Linux and Windows are
-later targets. The candidates for all three remain unverified.
+later targets. The candidates for all three remain unverified; the later
+platform entries are historical context, not current implementation scope.
 
 | Platform | Candidate mechanisms and unresolved limits |
 |---|---|
@@ -3718,11 +3732,11 @@ current results from historical runs and list bounds and unchecked cases.
     `fullfsync` commit latency. The driver and settings are decided, but
     their validation is pending.
 11. Go/protobuf tooling, distribution, installation and upgrade behavior,
-    validation of macOS 13+ on Apple Silicon, later Intel macOS/Linux/Windows
-    release plans, and monotonic launch-timeout reconstruction across broker
-    restarts. The initial architecture and minimum macOS version are
-    delegated decisions (section 1); macOS login startup is delegated
-    (section 4).
+    validation on the user's current Apple Silicon Mac, and monotonic
+    launch-timeout reconstruction across broker restarts. The initial
+    architecture is delegated and macOS 26+ is user-confirmed (section 1);
+    later platform plans are outside current scope. macOS login startup is
+    delegated (section 4).
 12. The v2 nesting marker, retry delay, port-option spelling and other CLI
     configuration, including CLI control details. The simple v1/v2 switch
     and lack of legacy status compatibility are decided, and common runner

@@ -10,12 +10,17 @@ decision attribution, alternatives and risks; the proposed
 [TLA+ model](v2/model/README.md) are starting points, not proof that the
 implementation or its platform dependencies are safe.
 
-The initial release targets macOS 13+ on Apple Silicon, subject to validating
-both the platform floor and architecture. The core is one Go executable,
-running as a client or a supervised per-user broker; the optional macOS
-monitor is a separate Swift app. The initial-platform choice was delegated,
-not a direct user selection. Linux, Windows and possible Intel support are
-later work.
+The initial release targets macOS 26+ on Apple Silicon, developed and
+validated on the user's current Mac. The user confirmed the macOS floor and
+directed that the machine be the requirements baseline; the architecture
+choice was delegated. On 2026-11-26 the observed host was macOS 26.7.3/arm64
+with Xcode 27.2 and Swift 6.4.2. These observations do not make 26.7.3 the
+minimum or establish that other macOS versions have been tested. Do not
+expand the OS or architecture test matrix without a demonstrated need.
+
+The core is one Go executable, running as a client or a supervised per-user
+broker; the optional macOS monitor is a separate Swift app. Linux, Windows
+and possible Intel support are outside the current implementation scope.
 
 Do not silently reopen the user-selected or delegated decisions summarized
 in the design. In particular, retain the accepted unauthenticated loopback
@@ -92,7 +97,7 @@ following the [development lifecycle](development-lifecycle.md).
 - Pin the Go toolchain, protobuf compiler and Go plugins, and select
   compatible gRPC-Swift/compiler versions. Update `flake.nix`, the lockfile
   as needed, and development documentation; keep Dart available for v1.
-  Verify Swift/Xcode requirements against the selected macOS floor.
+  Verify Swift/Xcode requirements on the user's current Mac.
 - Establish a buildable single Go executable with explicit client and broker
   roles, generated Go/Swift contract bindings, and an isolated Swift monitor
   integration path. Keep generated artifacts and their regeneration procedure
@@ -386,11 +391,12 @@ claiming unverified platform or durability guarantees.
   documented v2 equivalents as the toolchain becomes concrete. Record pass,
   fail, not run and not applicable separately, with actual platforms and
   limitations.
-- Validate packaging, installation and upgrade behavior on Apple Silicon
-  and the supported macOS floor. Finish or stop v1 work before using v2 for
-  actual heavy work; switch all invokers together, including nested
-  invocations. Do not bridge the independent gates or remove v1 lock files.
-  The old monitor and `heavy-lock-status` are not v2 status views.
+- Validate packaging, installation and upgrade behavior on the user's
+  current Apple Silicon Mac and record the actual OS/toolchain versions.
+  Finish or stop v1 work before using v2 for actual heavy work; switch all
+  invokers together, including nested invocations. Do not bridge the
+  independent gates or remove v1 lock files. The old monitor and
+  `heavy-lock-status` are not v2 status views.
 
 **Release acceptance**
 
@@ -431,9 +437,10 @@ before relying on them. Priorities are:
 4. Queued-rejoin checkpoint precision, launch-timeout reconstruction, retry
    delay, event-pruning clock behavior, reliable monotonic timing,
    CPU-accounting completeness and sampler overhead.
-5. Distribution and installation details and actual validation of the
-   delegated Apple Silicon/macOS 13+ target. Later platform support remains
-   out of scope for the first release.
+5. Distribution and installation details and actual validation on the
+   user's Mac. The Apple Silicon architecture was delegated and the
+   macOS 26+ minimum user-confirmed; other platforms remain outside the
+   current scope.
 
 These are technical decisions or evidence gaps, not invitations to
 re-confirm choices already made. If a necessary mechanism cannot be
