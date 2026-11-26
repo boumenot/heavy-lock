@@ -1,0 +1,474 @@
+// heavy-lock v2 broker API.
+//
+// Conventions:
+// - Every timestamp is UTC Unix microseconds in an int64 field ending in
+//   "_unix_us". Every duration ends in "_us" or "_ms" and is measured by the
+//   broker's monotonic clock; durations are never derived from wall-clock
+//   subtraction. Wall-clock timestamps are informational: the system clock
+//   can move backwards, so they never order events or validate transitions.
+// - IDs are lowercase canonical UUIDv4 strings.
+// - Errors use standard gRPC status codes. Each non-OK status carries a
+//   google.rpc.ErrorInfo detail with domain "heavylock.v2" and reason set to
+//   the ErrorReason enum value name (for example "JOB_NOT_WAITING").
+// - The API is unauthenticated. Every RPC trusts the local caller.
+syntax = "proto3";
+
+package heavylock.v2;
+
+option go_package = "github.com/boumenot/heavy-lock/gen/heavylock/v2;heavylockv2";
+
+// RunnerService is used by the runner process that executes a job.
+service RunnerService {
+  // Enqueue a job. Idempotent on idempotency_key: the same key with an
+  // equivalent payload returns the existing job with created = false; the
+  // same key with a different payload fails with ALREADY_EXISTS /
+  // IDEMPOTENCY_KEY_REUSED. Fails with UNAVAILABLE while recovery runs.
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+
+  // Server-streaming job channel (push, not polling). Every call, including
+  // a reconnect, starts with a snapshot of the job's current durable state;
+  // there is no per-job resume token. Subsequent messages are pushed state
+  // changes: queue position, grant, cancellation and terminal state. The
+  // runner treats the snapshot as level-triggered: a present grant that it
+  // has not yet acted on means launch (at most once per grant_id), and a
+  // present cancel_requested_at_unix_us means cancel. An open stream is the
+  // runner's connection signal for the queued-runner grace period, and the
+  // broker sends a heartbeat at least every heartbeat_interval_ms so the
+  // runner can detect a dead broker. Closing the stream while queued starts
+  // grace; it never releases a reserved or running job's capacity.
+  rpc WatchJob(WatchJobRequest) returns (stream JobEvent);
+
+  // Confirm the command process was launched under grant_id. Idempotent for
+  // the same grant and process identity. FAILED_PRECONDITION /
+  // GRANT_MISMATCH if the grant is not the job's active grant.
+  rpc ReportStarted(ReportStartedRequest) returns (Job);
+
+  // Report that the command was not launched under grant_id, either because
+  // launching failed or because cancellation was requested first. Releases
+  // the reservation and makes the job terminal with outcome LAUNCH_FAILED or
+  // CANCELLED_BEFORE_START.
+  rpc ReportLaunchFailed(ReportLaunchFailedRequest) returns (Job);
+
+  // Report the observed process outcome. The broker stores it and moves the
+  // job to FINISHING. Idempotent for the same grant and outcome. Capacity is
+  // released, and the job becomes FINISHED, only after the broker verifies
+  // the tracked processes have ended.
+  rpc ReportFinished(ReportFinishedRequest) returns (Job);
+}
+
+// ControlService carries broker operations shared by runners, the monitor
+// and other clients. Every REST endpoint maps to exactly one RPC here
+// (one-way parity); the reverse is not required.
+service ControlService {
+  rpc GetHealth(GetHealthRequest) returns (Health);
+  rpc GetStatus(GetStatusRequest) returns (BrokerStatus);
+  rpc GetQueue(GetQueueRequest) returns (Queue);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  rpc GetJob(GetJobRequest) returns (Job);
+
+  // Cancel a queued job (removes it from the queue and finishes it as
+  // CANCELLED_BEFORE_START). For a reserved or running job, record the
+  // request and push CancelRequested to the runner; the job stays RESERVED
+  // or RUNNING until the runner reports ReportLaunchFailed(cancelled) or
+  // ReportFinished, because a granted command may already be running.
+  // Terminal jobs: FAILED_PRECONDITION / JOB_TERMINAL. Repeated cancellation
+  // of the same job is a no-op success.
+  rpc CancelJob(CancelJobRequest) returns (Job);
+
+  // Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+  rpc MoveJob(MoveJobRequest) returns (Queue);
+
+  // Admit a waiting job immediately, bypassing FIFO order and resource
+  // checks. Its weight counts toward occupied capacity, so occupancy may
+  // exceed capacity. Confirmation is a client UI responsibility. It never
+  // bypasses recovery (UNAVAILABLE / RECOVERING). Its interaction with a
+  // paused queue is an open decision.
+  rpc ForceStartJob(ForceStartJobRequest) returns (Job);
+
+  rpc PauseQueue(PauseQueueRequest) returns (BrokerStatus);
+  rpc ResumeQueue(ResumeQueueRequest) returns (BrokerStatus);
+
+  // Delete one terminal job's history. FAILED_PRECONDITION / JOB_NOT_TERMINAL
+  // or PROCESSES_UNRECONCILED when deletion is unsafe.
+  rpc DeleteJob(DeleteJobRequest) returns (DeleteJobResponse);
+
+  // Delete terminal job history finished before a cutoff. Non-terminal and
+  // unreconciled jobs are skipped and counted, never deleted.
+  rpc DeleteHistory(DeleteHistoryRequest) returns (DeleteHistoryResponse);
+
+  // Server-streaming broker event feed for monitors. Resumable by sequence.
+  rpc WatchEvents(WatchEventsRequest) returns (stream BrokerEvent);
+}
+
+// ---------------------------------------------------------------- enums
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_QUEUED = 1;    // waiting in FIFO order
+  JOB_STATE_RESERVED = 2;  // capacity durably reserved; grant issued
+  JOB_STATE_RUNNING = 3;   // runner reported the launched process
+  JOB_STATE_FINISHING = 4; // outcome reported; awaiting verified process exit
+  JOB_STATE_FINISHED = 5;  // terminal; see outcome
+}
+
+enum OutcomeKind {
+  OUTCOME_KIND_UNSPECIFIED = 0;
+  OUTCOME_KIND_EXITED = 1;                 // process exited; exit_code set
+  OUTCOME_KIND_SIGNALED = 2;               // POSIX signal termination
+  OUTCOME_KIND_CANCELLED_BEFORE_START = 3; // cancelled while queued, or reserved
+                                           // and the runner confirmed no launch
+  OUTCOME_KIND_REMOVED_DISCONNECTED = 4;   // grace period expired while queued
+  OUTCOME_KIND_LAUNCH_FAILED = 5;          // grant issued, launch failed
+  OUTCOME_KIND_LOST = 6;                   // recovery could not determine outcome
+}
+
+enum ClientOs {
+  CLIENT_OS_UNSPECIFIED = 0; // not reported; stored as NULL
+  CLIENT_OS_MACOS = 1;
+  CLIENT_OS_LINUX = 2;
+  CLIENT_OS_WINDOWS = 3;
+  CLIENT_OS_OTHER = 4;
+}
+
+enum ClientArchitecture {
+  CLIENT_ARCHITECTURE_UNSPECIFIED = 0; // not reported; stored as NULL
+  CLIENT_ARCHITECTURE_ARM64 = 1;
+  CLIENT_ARCHITECTURE_AMD64 = 2;
+  CLIENT_ARCHITECTURE_OTHER = 3;
+}
+
+enum MeasurementCompleteness {
+  MEASUREMENT_COMPLETENESS_UNSPECIFIED = 0;
+  MEASUREMENT_COMPLETENESS_COMPLETE = 1;
+  MEASUREMENT_COMPLETENESS_PARTIAL = 2;
+  MEASUREMENT_COMPLETENESS_UNAVAILABLE = 3;
+}
+
+enum ProcessRole {
+  PROCESS_ROLE_UNSPECIFIED = 0;
+  PROCESS_ROLE_RUNNER = 1;
+  PROCESS_ROLE_COMMAND = 2;
+  PROCESS_ROLE_DESCENDANT = 3;
+}
+
+enum BlockedReason {
+  BLOCKED_REASON_UNSPECIFIED = 0; // head is not blocked or queue is empty
+  BLOCKED_REASON_PAUSED = 1;
+  BLOCKED_REASON_INSUFFICIENT_SLOTS = 2;
+  BLOCKED_REASON_RESOURCE_CHECK = 3;
+  BLOCKED_REASON_RECOVERING = 4;
+  BLOCKED_REASON_RUNNER_DISCONNECTED = 5;
+}
+
+enum ErrorReason {
+  ERROR_REASON_UNSPECIFIED = 0;
+  RECOVERING = 1;                  // UNAVAILABLE
+  INVALID_ARGUMENT_FIELD = 2;      // INVALID_ARGUMENT; ErrorInfo.metadata["field"]
+  IDEMPOTENCY_KEY_REUSED = 3;      // ALREADY_EXISTS
+  JOB_NOT_FOUND = 4;               // NOT_FOUND
+  JOB_NOT_WAITING = 5;             // FAILED_PRECONDITION
+  JOB_TERMINAL = 6;                // FAILED_PRECONDITION
+  JOB_NOT_TERMINAL = 7;            // FAILED_PRECONDITION
+  GRANT_MISMATCH = 8;              // FAILED_PRECONDITION
+  PROCESSES_UNRECONCILED = 9;      // FAILED_PRECONDITION
+  WEIGHT_EXCEEDS_CAPACITY = 10;    // INVALID_ARGUMENT
+  RESERVED_METADATA_KEY = 11;      // INVALID_ARGUMENT
+  METADATA_TOO_LARGE = 12;         // RESOURCE_EXHAUSTED
+  EVENTS_EXPIRED = 13;             // OUT_OF_RANGE; resume with a fresh snapshot
+  INVALID_PAGE_TOKEN = 14;         // INVALID_ARGUMENT
+}
+
+// ---------------------------------------------------------------- shared
+
+message ClientInfo {
+  optional string name = 1;
+  optional string version = 2;
+  ClientOs os = 3;
+  ClientArchitecture architecture = 4;
+}
+
+message Attribution {
+  // Known keys stored in dedicated columns. Absent means unknown; an empty
+  // string is rejected (INVALID_ARGUMENT_FIELD).
+  optional string repository = 1;
+  optional string branch = 2;
+  optional string worklog = 3;
+  optional string agent_session = 4;
+  optional string purpose = 5;
+  optional string commit_sha = 6;
+  optional string build_target = 7;
+  optional string build_configuration = 8;
+  // Extra string metadata stored as validated JSON. Keys must match
+  // ^[a-z][a-z0-9_.-]{0,63}$, must not equal a known key or reserved field,
+  // values are at most 1024 bytes, and the encoded object at most 16 KiB.
+  map<string, string> extra = 9;
+}
+
+message ProcessIdentity {
+  int64 pid = 1;
+  // Platform process start time in UTC Unix microseconds; with pid it
+  // distinguishes PID reuse. Precision is platform-dependent, so identities
+  // are compared only with values derived by the same platform method.
+  int64 start_time_unix_us = 2;
+}
+
+message Grant {
+  string grant_id = 1;
+  uint32 weight = 2;
+  bool forced = 3;
+  int64 granted_at_unix_us = 4;
+  // The runner should call ReportStarted or ReportLaunchFailed before this
+  // monotonic deadline elapses. Expiry alone never releases capacity: the
+  // broker must verify that no command was launched under this grant.
+  int64 launch_timeout_ms = 5;
+}
+
+message Outcome {
+  OutcomeKind kind = 1;
+  // Native exit code: POSIX 0..255 or Windows unsigned 32-bit value.
+  optional int64 exit_code = 2;
+  optional int32 signal_number = 3;   // POSIX only
+  optional string signal_name = 4;    // POSIX only, e.g. "SIGKILL"
+  optional string detail = 5;         // human-readable broker explanation
+}
+
+message ResourceSummary {
+  optional int64 elapsed_ms = 1;
+  optional int64 cpu_time_ms = 2;
+  optional double peak_cpu_percent = 3;
+  optional int64 peak_combined_rss_bytes = 4;
+  uint32 sample_count = 5;
+  MeasurementCompleteness completeness = 6;
+  optional string incompleteness_reason = 7;
+}
+
+message Job {
+  string job_id = 1;
+  string idempotency_key = 2;
+  JobState state = 3;
+  string command = 4;
+  optional string cwd = 5;
+  uint32 weight = 6;
+  bool forced = 7;
+  ClientInfo client = 8;
+  Attribution attribution = 9;
+  string service_version = 10;
+
+  int64 queued_at_unix_us = 11;
+  optional int64 admitted_at_unix_us = 12;
+  optional int64 started_at_unix_us = 13;
+  optional int64 finished_at_unix_us = 14;
+  optional int64 cancel_requested_at_unix_us = 15;
+
+  // Present only while QUEUED; 0 is the head.
+  optional uint32 queue_position = 16;
+  bool runner_connected = 17;
+  optional int64 grace_remaining_ms = 18;
+
+  optional Grant grant = 19;
+  optional ProcessIdentity process = 20;
+  optional int64 free_memory_at_admission_bytes = 21;
+  optional Outcome outcome = 22;
+  optional ResourceSummary resources = 23;
+  optional string cancel_reason = 24;
+}
+
+// ---------------------------------------------------------------- runner
+
+message SubmitJobRequest {
+  string idempotency_key = 1;      // UUIDv4, stable across retries
+  string command = 2;              // full command line, recorded verbatim
+  optional string cwd = 3;
+  uint32 weight = 4;               // 1..capacity
+  ClientInfo client = 5;
+  Attribution attribution = 6;
+}
+
+message SubmitJobResponse {
+  Job job = 1;
+  bool created = 2;
+}
+
+message WatchJobRequest {
+  string job_id = 1;
+}
+
+message JobEvent {
+  // Broker-wide sequence of the last committed change reflected by this
+  // message. Per-job streams are filtered, so values are not contiguous.
+  // Snapshots and heartbeats reuse the current value rather than allocating.
+  int64 event_seq = 1;
+  int64 at_unix_us = 2;
+  oneof event {
+    Job snapshot = 10;             // always first on every call
+    QueuePositionChanged queue_position_changed = 11;
+    Grant granted = 12;
+    CancelRequested cancel_requested = 13;
+    Job finished = 14;             // terminal; the broker closes the stream after it
+    Heartbeat heartbeat = 15;
+  }
+}
+
+message QueuePositionChanged {
+  uint32 position = 1;
+  uint32 queue_length = 2;
+  BlockedReason head_blocked_reason = 3;
+}
+
+message CancelRequested {
+  // When true, the runner must terminate its process tree and then call
+  // ReportFinished with the observed outcome.
+  bool terminate_running = 1;
+  optional string reason = 2;
+}
+
+message Heartbeat {
+  int64 heartbeat_interval_ms = 1;
+}
+
+message ReportStartedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  ProcessIdentity process = 3;     // the command process
+  ProcessIdentity runner = 4;      // the runner process
+}
+
+message ReportLaunchFailedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  string error = 3;                // stored as outcome_detail
+  // True when the runner did not launch because cancellation was requested;
+  // the outcome is then CANCELLED_BEFORE_START instead of LAUNCH_FAILED.
+  bool cancelled = 4;
+}
+
+message ReportFinishedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  Outcome outcome = 3;             // kind EXITED or SIGNALED
+}
+
+// ---------------------------------------------------------------- control
+
+message GetHealthRequest {}
+
+message Health {
+  bool live = 1;
+  bool ready = 2;                  // false while recovery runs
+  string service_version = 3;
+  int64 started_at_unix_us = 4;
+  int64 schema_version = 5;
+  optional string recovery_detail = 6;
+}
+
+message GetStatusRequest {}
+
+message BrokerStatus {
+  uint32 capacity = 1;
+  uint32 occupied = 2;             // may exceed capacity after force-start
+  bool paused = 3;
+  optional int64 paused_at_unix_us = 4;
+  bool recovering = 5;
+  uint32 queued_jobs = 6;
+  uint32 running_jobs = 7;
+  BlockedReason head_blocked_reason = 8;
+  optional int64 free_memory_bytes = 9;
+  optional double load_average_1m = 10;
+}
+
+message GetQueueRequest {}
+
+message Queue {
+  repeated Job jobs = 1;           // FIFO order; head first
+  BlockedReason head_blocked_reason = 2;
+}
+
+message ListJobsRequest {
+  repeated JobState states = 1;            // empty means all
+  optional string repository = 2;
+  optional string client_name = 3;
+  optional int64 queued_after_unix_us = 4; // inclusive
+  optional int64 queued_before_unix_us = 5; // exclusive
+  uint32 page_size = 6;                    // 0 means 50; maximum 500
+  string page_token = 7;
+}
+
+message ListJobsResponse {
+  // Newest first by (queued_at_unix_us, job_id). Keyset pagination: the
+  // token encodes the last key and filters, so pages are stable under
+  // concurrent inserts.
+  repeated Job jobs = 1;
+  string next_page_token = 2;              // empty when no more pages
+}
+
+message GetJobRequest {
+  string job_id = 1;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+  optional string reason = 2;
+}
+
+message MoveJobRequest {
+  string job_id = 1;
+  oneof target {
+    bool to_front = 2;
+    bool to_back = 3;
+    string before_job_id = 4;
+    string after_job_id = 5;
+  }
+}
+
+message ForceStartJobRequest {
+  string job_id = 1;
+}
+
+message PauseQueueRequest {}
+message ResumeQueueRequest {}
+
+message DeleteJobRequest {
+  string job_id = 1;
+}
+
+message DeleteJobResponse {}
+
+message DeleteHistoryRequest {
+  int64 finished_before_unix_us = 1;
+}
+
+message DeleteHistoryResponse {
+  uint32 deleted = 1;
+  uint32 skipped = 2;
+}
+
+message WatchEventsRequest {
+  // 0 means start with a snapshot. Otherwise resume after this sequence.
+  // OUT_OF_RANGE / EVENTS_EXPIRED if any event after it is no longer
+  // retained (the sequence is below the broker's event floor, raised by
+  // pruning and history deletion) or if it is beyond the last issued
+  // sequence (for example, a replaced database). The client then restarts
+  // from 0. Sequences are never reused.
+  int64 after_event_seq = 1;
+}
+
+message BrokerEvent {
+  // Equals the stored event's sequence; snapshots and heartbeats carry the
+  // last committed sequence they reflect.
+  int64 event_seq = 1;
+  int64 at_unix_us = 2;
+  oneof event {
+    BrokerSnapshot snapshot = 10;
+    Job job_changed = 11;
+    Queue queue_changed = 12;
+    BrokerStatus status_changed = 13;
+    string job_deleted = 14;       // job_id
+    Heartbeat heartbeat = 15;
+  }
+}
+
+message BrokerSnapshot {
+  BrokerStatus status = 1;
+  Queue queue = 2;
+  repeated Job active_jobs = 3;    // RESERVED, RUNNING and FINISHING
+}

@@ -51,6 +51,8 @@ users' jobs or machines.
 | New submission while service unavailable | Fail immediately and clearly; do not auto-start, retry until restart, or run unscheduled |
 | Recovery | SQLite persists queue and active state; reconcile verified live jobs and occupied slots before admitting new work |
 | Database typing | SQLite STRICT tables |
+| SQLite journal | WAL |
+| Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes, API parity and push updates; see [section 11](#11-interface-and-schema-design) |
 | Queued-runner disconnect | Preserve place during a grace period, then remove if still disconnected; service downtime does not count |
 | Job history | Sample every five seconds, retain summaries rather than raw timestamped samples, keep indefinitely until explicitly deleted |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
@@ -223,8 +225,9 @@ and completion-report retry separately from initial unavailability.
 starts the command locally with inherited terminal I/O, reports process
 identity and completion, and participates in reconnection. gRPC streaming
 can carry queue/admission events and unary calls can report transitions.
-Lease/heartbeat details and the durable admission-to-process-start handshake
-are open. Keeping execution in the runner lets jobs survive a broker crash,
+Section 11.1 now proposes the heartbeat, grant, launch-timeout and
+start/finish reporting handshake. Concrete intervals and the verification
+rule after an expired launch timeout remain open. Keeping execution in the runner lets jobs survive a broker crash,
 but requires reconciliation of partially started jobs and surviving children.
 
 ## 5. Persistence and crash recovery
@@ -236,8 +239,9 @@ process identities and reconnecting runners **before admitting any new
 jobs**. If safety cannot be established, fail closed.
 
 **User decision.** Use SQLite STRICT tables throughout. This requires
-SQLite 3.37.0 or later; the illustrative schema in section 11 follows this
-choice while leaving its exact fields and constraints open.
+SQLite 3.37.0 or later; the schema in section 11.3 also uses built-in JSON
+functions, so it requires 3.38.0 or later. The user also chose WAL; durability
+and performance settings are in section 11.4.
 
 The monitor may crash/restart without stopping the broker or its jobs.
 Running state is not proven by a database row, heartbeat or PID alone.
@@ -255,7 +259,9 @@ its command or descendants alive; timeout is evidence of lost contact,
 not proof of termination. Heartbeats may trigger investigation, but cannot
 alone release capacity.
 
-**Open.** Recovery state machine, schema/migrations, transaction boundaries,
+**Open.** Section 11 proposes the schema, migrations and transaction
+boundaries; the user has not separately approved them. Still open: the
+recovery state machine,
 broker-instance exclusion, identities across restart, accounting for
 reparented/detached descendants, database corruption/disk-full behavior,
 and how operators resolve genuinely unverifiable state. Recovery is a
@@ -302,12 +308,16 @@ local clients. An identity/version handshake can detect an unrelated
 service or stale broker at the configured port; it is not port discovery
 or a security boundary.
 
-**Open.** REST control endpoints versus read-only scope, API versioning,
-health/readiness definitions, errors, streaming/event delivery for the
-monitor, CLI control equivalents, port-argument spelling, IPv4/IPv6
-binding behavior, and service identity verification. Control endpoints
-are needed somewhere for the requested monitor actions; their REST
-contract is not yet agreed.
+**Open.** Section 11 proposes complete gRPC and REST contracts:
+- versioned `/v1` paths and a `heavylock.v2` package
+- health and readiness
+- error mapping
+- every control over REST
+- SSE event delivery for the monitor
+
+The user has not approved these beyond the one-way parity and push-update
+recommendations. CLI control equivalents, port-argument spelling, IPv4/IPv6
+binding behavior and service identity verification also remain open.
 
 ## 7. Resource history and attribution
 
@@ -333,12 +343,12 @@ repository, branch, issue/worklog, agent/session or purpose remains
 unknown, never inferred from cwd or other context. Values are declarations,
 not authenticated identities.
 
-**Proposals.** Use a versioned, validated metadata schema with bounded
-fields and a defined unknown-field policy. A job record can include job ID,
-cwd, weight, declared attribution, lifecycle times/status and outcome.
-Exact required fields versus tags, allowed lengths, URL validation,
-normalization and any job fingerprint remain open. Fingerprinting is
-not required for v2 admission.
+**User decision (approved recommendation).** Store known metadata fields in
+dedicated columns and extensible extras in one validated `metadata_json`
+object, without duplicating column-backed fields. This replaces the earlier
+`job_tags` draft. Section 11 proposes the exact fields and the key, length
+and size limits. URL validation, normalization and any job fingerprint
+remain open. Fingerprinting is not required for v2 admission.
 
 **Proposed resource summaries.** Track the admitted job's process tree,
 with elapsed runtime, CPU time, sampled peak CPU usage and sampled peak
@@ -448,460 +458,1175 @@ shared-port APIs, process identity/cancellation, lost replies, disconnects,
 broker crashes, restart reconciliation and database failures. Verify
 platform-specific behavior rather than extrapolating from macOS.
 
-## 11. Proposed interfaces and schema (illustrative)
+## 11. Interface and schema design
 
-**Status: illustrative proposals.** The exact contracts and schema are
-candidate starting points for discussion. Method names, paths, message
-fields, table and column names, and state values are **not approved
-decisions**. They apply the decisions above (gRPC for the runner, REST for
-the monitor, SQLite STRICT tables, no authentication, strict FIFO,
-runner-executed commands) but do not settle any open question listed elsewhere.
+**Status.** The user asked for a complete RPC design and a complete SQLite
+schema, using WAL and SQLite options that help performance. The canonical
+files are [`docs/v2/heavylock.proto`](v2/heavylock.proto) and
+[`docs/v2/schema.sql`](v2/schema.sql), embedded verbatim below. The proto
+compiles with `protoc` 31.1. The schema loads in `sqlite3` 3.51 in WAL
+mode, and scripted constraint scenarios pass. Parsing and constraint tests
+show the files are well formed and internally enforced; they do not prove
+the protocol is semantically correct. If the embedded copies and the files
+ever differ, the files are authoritative.
 
-### 11.1 Runner-to-broker gRPC (proposed)
+This is a design specification, not authorization to implement. The table
+below lists recommendations made earlier in the discussion that the user
+approved, plus WAL, which the user specified directly. Everything else in
+these files is a **new proposal**. It was drafted during the design
+discussion and then revised in this record for consistency and safety. It is a complete baseline, but the
+user has not separately approved it. Proposals introduced or changed during
+that revision include:
+- `synchronous = FULL`, and on macOS `fullfsync` (section 11.4)
+- `WatchJob` snapshot-on-every-call reconnect semantics
+- cancelling a reserved job through the runner
+- storing the outcome while a job is `FINISHING`
+- never-reused event sequences with a resume floor
+- dropping wall-clock ordering constraints
+- SSE monitor event delivery
 
-The runner executes the command; the broker never launches it. The broker
-admits work by durably reserving capacity and granting a start.
+**Concrete defaults remain proposals**:
+- grace duration, launch timeout and heartbeat interval (the contract
+  carries them but sets no value)
+- event retention, the `ListJobs` page size, and the SQLite cache and mmap
+  sizes
+- the pause/force-start interaction (section 3)
+
+| Area | User decision (approved recommendation) |
+|---|---|
+| Timestamps | Every persisted timestamp is UTC Unix microseconds in SQLite `INTEGER` (`*_at_us`); the wire contract proposes the same `int64` encoding (`*_unix_us`) |
+| Durations | Measured with the broker's monotonic clock (`*_us`, `*_ms`), never by subtracting wall-clock timestamps |
+| Queue order | Explicit `queue_entries.queue_seq`, never timestamp order |
+| Metadata | Dedicated columns for known fields plus a validated `metadata_json` object for extras; replaces the earlier `job_tags` table |
+| `ClientInfo` | Name, version, OS and architecture; explicitly reported only |
+| Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected |
+| Outcome | Native `int64` exit code, optional POSIX signal number and name, and `outcome_kind` |
+| API parity | One-way REST-to-gRPC parity: every REST endpoint maps to a `ControlService` RPC |
+| Runner updates | `WatchJob` is a push stream, not polling |
+| SQLite journal | WAL (direct user instruction, with performance-oriented options considered) |
+
+### 11.1 gRPC contract
+
+The proto defines two services on the shared loopback port:
+- **`RunnerService`** carries the runner's job lifecycle: `SubmitJob`,
+  `WatchJob`, `ReportStarted`, `ReportLaunchFailed` and `ReportFinished`.
+- **`ControlService`** carries broker operations shared by runners, the
+  monitor and other clients: health, status, queue, listing, detail,
+  controls, history deletion and `WatchEvents`.
+
+The runner executes the command; the broker never launches it.
+
+**Push, not polling.** After submitting, the runner opens one long-lived
+server-streaming `WatchJob` call.
+- The broker pushes queue-position changes, the `Grant`, cancellation
+  requests and the terminal `finished` event.
+- `Heartbeat` events arrive at least every heartbeat interval, so the
+  runner can detect a dead broker.
+- `GetJob` returns on-demand snapshots, for example for diagnosis.
+
+Five-second resource sampling is a separate broker activity. An open
+`WatchJob` stream is the queued runner's connection signal: closing it
+while queued starts the grace period. A lost stream or heartbeat never
+releases a reserved or running job's capacity.
+
+**Reconnect (proposal).** Every `WatchJob` call, including a reconnect,
+starts with a snapshot of the job's current durable state; there is no
+per-job resume token. The runner treats the snapshot as level-triggered:
+- A present `grant` it has not acted on means launch. The runner launches
+  at most once per `grant_id`, and `ReportStarted` is idempotent.
+- A present `cancel_requested_at_unix_us` means cancel.
+
+Missed transitions are recovered from current state rather than replayed.
+Pushed messages carry the broker-wide `event_seq`. Per-job values are not
+contiguous, and snapshots and heartbeats reuse the current sequence rather
+than allocating a new one.
+
+**Lifecycle invariants.**
+- A `Grant` is sent only after its reservation commits.
+- After a grant, the runner calls either `ReportStarted` (with command and
+  runner process identities: PID plus start time) or `ReportLaunchFailed`,
+  before `launch_timeout_ms` elapses on the monotonic clock.
+- `ReportFinished` stores the observed outcome, so a broker crash cannot
+  lose it, and moves the job to `FINISHING`. The job becomes `FINISHED`,
+  and capacity is released, only after the broker verifies its tracked
+  processes have ended.
+- `CancelJob` finishes a queued job immediately (`CANCELLED_BEFORE_START`).
+  For a reserved or running job, it records the request and pushes
+  `CancelRequested`. A granted command may already be running, so the job
+  stays reserved or running until the runner reports one of:
+  - `ReportLaunchFailed` with `cancelled = true` (`CANCELLED_BEFORE_START`)
+  - `ReportFinished`
+- An expired launch timeout alone never releases capacity. The broker must
+  verify that no command was launched under the grant; the exact rule for
+  that verification remains open.
+- Submission and report calls are idempotent. A retried `SubmitJob` with
+  the same key and an equivalent payload returns the existing job with
+  `created = false`.
+- None of this authorizes automatic retry of an initial submission when
+  the service is unreachable; that still fails immediately.
+
+**Errors.** Errors use standard gRPC status codes. Each non-OK status
+carries a `google.rpc.ErrorInfo` with domain `heavylock.v2` and an
+`ErrorReason` name. While recovery runs, calls fail with `UNAVAILABLE`/`RECOVERING`
+until reconciliation completes.
+
+**Listing.** `ListJobs` covers queued, running and finished jobs, newest
+first by `(queued_at_unix_us, job_id)`. It filters by state, repository,
+client name and a queue-time range. It uses keyset pagination with opaque
+tokens; the proposed default page size is 50 and the maximum 500.
+`GetQueue` separately returns current FIFO order, including manual moves.
+
+**Unauthenticated.** Any local process that can connect may submit, list,
+read full commands (which may contain secrets) and invoke every control,
+including on jobs it did not submit. A job ID is not proof of ownership,
+and loopback is not user isolation.
 
 ```protobuf
-// Illustrative only; package, names and fields are not approved.
+// heavy-lock v2 broker API.
+//
+// Conventions:
+// - Every timestamp is UTC Unix microseconds in an int64 field ending in
+//   "_unix_us". Every duration ends in "_us" or "_ms" and is measured by the
+//   broker's monotonic clock; durations are never derived from wall-clock
+//   subtraction. Wall-clock timestamps are informational: the system clock
+//   can move backwards, so they never order events or validate transitions.
+// - IDs are lowercase canonical UUIDv4 strings.
+// - Errors use standard gRPC status codes. Each non-OK status carries a
+//   google.rpc.ErrorInfo detail with domain "heavylock.v2" and reason set to
+//   the ErrorReason enum value name (for example "JOB_NOT_WAITING").
+// - The API is unauthenticated. Every RPC trusts the local caller.
 syntax = "proto3";
+
 package heavylock.v2;
 
-service Runner {
-  // Enqueue a job. The same key and payload return the existing job;
-  // reusing the key with a changed payload is rejected.
-  rpc SubmitJob(SubmitJobRequest) returns (Job);
-  // List queued, running and completed jobs with optional filters.
+option go_package = "github.com/boumenot/heavy-lock/gen/heavylock/v2;heavylockv2";
+
+// RunnerService is used by the runner process that executes a job.
+service RunnerService {
+  // Enqueue a job. Idempotent on idempotency_key: the same key with an
+  // equivalent payload returns the existing job with created = false; the
+  // same key with a different payload fails with ALREADY_EXISTS /
+  // IDEMPOTENCY_KEY_REUSED. Fails with UNAVAILABLE while recovery runs.
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+
+  // Server-streaming job channel (push, not polling). Every call, including
+  // a reconnect, starts with a snapshot of the job's current durable state;
+  // there is no per-job resume token. Subsequent messages are pushed state
+  // changes: queue position, grant, cancellation and terminal state. The
+  // runner treats the snapshot as level-triggered: a present grant that it
+  // has not yet acted on means launch (at most once per grant_id), and a
+  // present cancel_requested_at_unix_us means cancel. An open stream is the
+  // runner's connection signal for the queued-runner grace period, and the
+  // broker sends a heartbeat at least every heartbeat_interval_ms so the
+  // runner can detect a dead broker. Closing the stream while queued starts
+  // grace; it never releases a reserved or running job's capacity.
+  rpc WatchJob(WatchJobRequest) returns (stream JobEvent);
+
+  // Confirm the command process was launched under grant_id. Idempotent for
+  // the same grant and process identity. FAILED_PRECONDITION /
+  // GRANT_MISMATCH if the grant is not the job's active grant.
+  rpc ReportStarted(ReportStartedRequest) returns (Job);
+
+  // Report that the command was not launched under grant_id, either because
+  // launching failed or because cancellation was requested first. Releases
+  // the reservation and makes the job terminal with outcome LAUNCH_FAILED or
+  // CANCELLED_BEFORE_START.
+  rpc ReportLaunchFailed(ReportLaunchFailedRequest) returns (Job);
+
+  // Report the observed process outcome. The broker stores it and moves the
+  // job to FINISHING. Idempotent for the same grant and outcome. Capacity is
+  // released, and the job becomes FINISHED, only after the broker verifies
+  // the tracked processes have ended.
+  rpc ReportFinished(ReportFinishedRequest) returns (Job);
+}
+
+// ControlService carries broker operations shared by runners, the monitor
+// and other clients. Every REST endpoint maps to exactly one RPC here
+// (one-way parity); the reverse is not required.
+service ControlService {
+  rpc GetHealth(GetHealthRequest) returns (Health);
+  rpc GetStatus(GetStatusRequest) returns (BrokerStatus);
+  rpc GetQueue(GetQueueRequest) returns (Queue);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
   rpc GetJob(GetJobRequest) returns (Job);
-  // Stream current state, queue position, admission grant and
-  // cancellation. The runner re-opens it after a disconnect.
-  rpc WatchJob(WatchJobRequest) returns (stream JobEvent);
-  // Confirm the command started under a grant, with process identity.
-  rpc ReportStarted(ReportStartedRequest) returns (Job);
-  // Report the outcome. Does not by itself release capacity.
-  rpc ReportFinished(ReportFinishedRequest) returns (Job);
-  // Request cancellation of a waiting job; no ownership is verified.
-  rpc CancelWaitingJob(CancelWaitingJobRequest) returns (Job);
+
+  // Cancel a queued job (removes it from the queue and finishes it as
+  // CANCELLED_BEFORE_START). For a reserved or running job, record the
+  // request and push CancelRequested to the runner; the job stays RESERVED
+  // or RUNNING until the runner reports ReportLaunchFailed(cancelled) or
+  // ReportFinished, because a granted command may already be running.
+  // Terminal jobs: FAILED_PRECONDITION / JOB_TERMINAL. Repeated cancellation
+  // of the same job is a no-op success.
+  rpc CancelJob(CancelJobRequest) returns (Job);
+
+  // Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+  rpc MoveJob(MoveJobRequest) returns (Queue);
+
+  // Admit a waiting job immediately, bypassing FIFO order and resource
+  // checks. Its weight counts toward occupied capacity, so occupancy may
+  // exceed capacity. Confirmation is a client UI responsibility. It never
+  // bypasses recovery (UNAVAILABLE / RECOVERING). Its interaction with a
+  // paused queue is an open decision.
+  rpc ForceStartJob(ForceStartJobRequest) returns (Job);
+
+  rpc PauseQueue(PauseQueueRequest) returns (BrokerStatus);
+  rpc ResumeQueue(ResumeQueueRequest) returns (BrokerStatus);
+
+  // Delete one terminal job's history. FAILED_PRECONDITION / JOB_NOT_TERMINAL
+  // or PROCESSES_UNRECONCILED when deletion is unsafe.
+  rpc DeleteJob(DeleteJobRequest) returns (DeleteJobResponse);
+
+  // Delete terminal job history finished before a cutoff. Non-terminal and
+  // unreconciled jobs are skipped and counted, never deleted.
+  rpc DeleteHistory(DeleteHistoryRequest) returns (DeleteHistoryResponse);
+
+  // Server-streaming broker event feed for monitors. Resumable by sequence.
+  rpc WatchEvents(WatchEventsRequest) returns (stream BrokerEvent);
 }
 
-message SubmitJobRequest {
-  string idempotency_key = 1;   // proposed UUIDv4 per logical submission
-  string command = 2;           // human-readable string, for recording only
-  string cwd = 3;
-  uint32 weight = 4;
-  ClientInfo client = 5;        // name, version
-  map<string, string> metadata = 6; // explicit attribution only
+// ---------------------------------------------------------------- enums
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_QUEUED = 1;    // waiting in FIFO order
+  JOB_STATE_RESERVED = 2;  // capacity durably reserved; grant issued
+  JOB_STATE_RUNNING = 3;   // runner reported the launched process
+  JOB_STATE_FINISHING = 4; // outcome reported; awaiting verified process exit
+  JOB_STATE_FINISHED = 5;  // terminal; see outcome
 }
+
+enum OutcomeKind {
+  OUTCOME_KIND_UNSPECIFIED = 0;
+  OUTCOME_KIND_EXITED = 1;                 // process exited; exit_code set
+  OUTCOME_KIND_SIGNALED = 2;               // POSIX signal termination
+  OUTCOME_KIND_CANCELLED_BEFORE_START = 3; // cancelled while queued, or reserved
+                                           // and the runner confirmed no launch
+  OUTCOME_KIND_REMOVED_DISCONNECTED = 4;   // grace period expired while queued
+  OUTCOME_KIND_LAUNCH_FAILED = 5;          // grant issued, launch failed
+  OUTCOME_KIND_LOST = 6;                   // recovery could not determine outcome
+}
+
+enum ClientOs {
+  CLIENT_OS_UNSPECIFIED = 0; // not reported; stored as NULL
+  CLIENT_OS_MACOS = 1;
+  CLIENT_OS_LINUX = 2;
+  CLIENT_OS_WINDOWS = 3;
+  CLIENT_OS_OTHER = 4;
+}
+
+enum ClientArchitecture {
+  CLIENT_ARCHITECTURE_UNSPECIFIED = 0; // not reported; stored as NULL
+  CLIENT_ARCHITECTURE_ARM64 = 1;
+  CLIENT_ARCHITECTURE_AMD64 = 2;
+  CLIENT_ARCHITECTURE_OTHER = 3;
+}
+
+enum MeasurementCompleteness {
+  MEASUREMENT_COMPLETENESS_UNSPECIFIED = 0;
+  MEASUREMENT_COMPLETENESS_COMPLETE = 1;
+  MEASUREMENT_COMPLETENESS_PARTIAL = 2;
+  MEASUREMENT_COMPLETENESS_UNAVAILABLE = 3;
+}
+
+enum ProcessRole {
+  PROCESS_ROLE_UNSPECIFIED = 0;
+  PROCESS_ROLE_RUNNER = 1;
+  PROCESS_ROLE_COMMAND = 2;
+  PROCESS_ROLE_DESCENDANT = 3;
+}
+
+enum BlockedReason {
+  BLOCKED_REASON_UNSPECIFIED = 0; // head is not blocked or queue is empty
+  BLOCKED_REASON_PAUSED = 1;
+  BLOCKED_REASON_INSUFFICIENT_SLOTS = 2;
+  BLOCKED_REASON_RESOURCE_CHECK = 3;
+  BLOCKED_REASON_RECOVERING = 4;
+  BLOCKED_REASON_RUNNER_DISCONNECTED = 5;
+}
+
+enum ErrorReason {
+  ERROR_REASON_UNSPECIFIED = 0;
+  RECOVERING = 1;                  // UNAVAILABLE
+  INVALID_ARGUMENT_FIELD = 2;      // INVALID_ARGUMENT; ErrorInfo.metadata["field"]
+  IDEMPOTENCY_KEY_REUSED = 3;      // ALREADY_EXISTS
+  JOB_NOT_FOUND = 4;               // NOT_FOUND
+  JOB_NOT_WAITING = 5;             // FAILED_PRECONDITION
+  JOB_TERMINAL = 6;                // FAILED_PRECONDITION
+  JOB_NOT_TERMINAL = 7;            // FAILED_PRECONDITION
+  GRANT_MISMATCH = 8;              // FAILED_PRECONDITION
+  PROCESSES_UNRECONCILED = 9;      // FAILED_PRECONDITION
+  WEIGHT_EXCEEDS_CAPACITY = 10;    // INVALID_ARGUMENT
+  RESERVED_METADATA_KEY = 11;      // INVALID_ARGUMENT
+  METADATA_TOO_LARGE = 12;         // RESOURCE_EXHAUSTED
+  EVENTS_EXPIRED = 13;             // OUT_OF_RANGE; resume with a fresh snapshot
+  INVALID_PAGE_TOKEN = 14;         // INVALID_ARGUMENT
+}
+
+// ---------------------------------------------------------------- shared
 
 message ClientInfo {
-  optional string name = 1;         // caller-supplied; absent means unknown
+  optional string name = 1;
   optional string version = 2;
-  optional string os = 3;           // explicitly reported, not inferred
-  optional string architecture = 4;
+  ClientOs os = 3;
+  ClientArchitecture architecture = 4;
 }
 
-message ListJobsRequest {
-  repeated string states = 1;       // empty means all states
-  optional string repository = 2;   // explicitly supplied metadata
-  optional uint32 page_size = 3;
-  optional string page_token = 4;
-}
-
-message ListJobsResponse {
-  repeated Job jobs = 1;
-  optional string next_page_token = 2;
-}
-
-message ReportStartedRequest {
-  string job_id = 1;
-  string grant_id = 2;          // must match the durable reservation
-  ProcessIdentity process = 3;  // PID plus a start-identity value
+message Attribution {
+  // Known keys stored in dedicated columns. Absent means unknown; an empty
+  // string is rejected (INVALID_ARGUMENT_FIELD).
+  optional string repository = 1;
+  optional string branch = 2;
+  optional string worklog = 3;
+  optional string agent_session = 4;
+  optional string purpose = 5;
+  optional string commit_sha = 6;
+  optional string build_target = 7;
+  optional string build_configuration = 8;
+  // Extra string metadata stored as validated JSON. Keys must match
+  // ^[a-z][a-z0-9_.-]{0,63}$, must not equal a known key or reserved field,
+  // values are at most 1024 bytes, and the encoded object at most 16 KiB.
+  map<string, string> extra = 9;
 }
 
 message ProcessIdentity {
   int64 pid = 1;
-  string start_identity = 2;    // e.g. platform process start time
+  // Platform process start time in UTC Unix microseconds; with pid it
+  // distinguishes PID reuse. Precision is platform-dependent, so identities
+  // are compared only with values derived by the same platform method.
+  int64 start_time_unix_us = 2;
+}
+
+message Grant {
+  string grant_id = 1;
+  uint32 weight = 2;
+  bool forced = 3;
+  int64 granted_at_unix_us = 4;
+  // The runner should call ReportStarted or ReportLaunchFailed before this
+  // monotonic deadline elapses. Expiry alone never releases capacity: the
+  // broker must verify that no command was launched under this grant.
+  int64 launch_timeout_ms = 5;
+}
+
+message Outcome {
+  OutcomeKind kind = 1;
+  // Native exit code: POSIX 0..255 or Windows unsigned 32-bit value.
+  optional int64 exit_code = 2;
+  optional int32 signal_number = 3;   // POSIX only
+  optional string signal_name = 4;    // POSIX only, e.g. "SIGKILL"
+  optional string detail = 5;         // human-readable broker explanation
+}
+
+message ResourceSummary {
+  optional int64 elapsed_ms = 1;
+  optional int64 cpu_time_ms = 2;
+  optional double peak_cpu_percent = 3;
+  optional int64 peak_combined_rss_bytes = 4;
+  uint32 sample_count = 5;
+  MeasurementCompleteness completeness = 6;
+  optional string incompleteness_reason = 7;
+}
+
+message Job {
+  string job_id = 1;
+  string idempotency_key = 2;
+  JobState state = 3;
+  string command = 4;
+  optional string cwd = 5;
+  uint32 weight = 6;
+  bool forced = 7;
+  ClientInfo client = 8;
+  Attribution attribution = 9;
+  string service_version = 10;
+
+  int64 queued_at_unix_us = 11;
+  optional int64 admitted_at_unix_us = 12;
+  optional int64 started_at_unix_us = 13;
+  optional int64 finished_at_unix_us = 14;
+  optional int64 cancel_requested_at_unix_us = 15;
+
+  // Present only while QUEUED; 0 is the head.
+  optional uint32 queue_position = 16;
+  bool runner_connected = 17;
+  optional int64 grace_remaining_ms = 18;
+
+  optional Grant grant = 19;
+  optional ProcessIdentity process = 20;
+  optional int64 free_memory_at_admission_bytes = 21;
+  optional Outcome outcome = 22;
+  optional ResourceSummary resources = 23;
+  optional string cancel_reason = 24;
+}
+
+// ---------------------------------------------------------------- runner
+
+message SubmitJobRequest {
+  string idempotency_key = 1;      // UUIDv4, stable across retries
+  string command = 2;              // full command line, recorded verbatim
+  optional string cwd = 3;
+  uint32 weight = 4;               // 1..capacity
+  ClientInfo client = 5;
+  Attribution attribution = 6;
+}
+
+message SubmitJobResponse {
+  Job job = 1;
+  bool created = 2;
+}
+
+message WatchJobRequest {
+  string job_id = 1;
+}
+
+message JobEvent {
+  // Broker-wide sequence of the last committed change reflected by this
+  // message. Per-job streams are filtered, so values are not contiguous.
+  // Snapshots and heartbeats reuse the current value rather than allocating.
+  int64 event_seq = 1;
+  int64 at_unix_us = 2;
+  oneof event {
+    Job snapshot = 10;             // always first on every call
+    QueuePositionChanged queue_position_changed = 11;
+    Grant granted = 12;
+    CancelRequested cancel_requested = 13;
+    Job finished = 14;             // terminal; the broker closes the stream after it
+    Heartbeat heartbeat = 15;
+  }
+}
+
+message QueuePositionChanged {
+  uint32 position = 1;
+  uint32 queue_length = 2;
+  BlockedReason head_blocked_reason = 3;
+}
+
+message CancelRequested {
+  // When true, the runner must terminate its process tree and then call
+  // ReportFinished with the observed outcome.
+  bool terminate_running = 1;
+  optional string reason = 2;
+}
+
+message Heartbeat {
+  int64 heartbeat_interval_ms = 1;
+}
+
+message ReportStartedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  ProcessIdentity process = 3;     // the command process
+  ProcessIdentity runner = 4;      // the runner process
+}
+
+message ReportLaunchFailedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  string error = 3;                // stored as outcome_detail
+  // True when the runner did not launch because cancellation was requested;
+  // the outcome is then CANCELLED_BEFORE_START instead of LAUNCH_FAILED.
+  bool cancelled = 4;
 }
 
 message ReportFinishedRequest {
   string job_id = 1;
   string grant_id = 2;
-  optional int64 exit_code = 3;       // preserves Windows unsigned32 codes
-  optional int32 termination_signal = 4;
-  optional string termination_signal_name = 5; // POSIX only, when available
+  Outcome outcome = 3;             // kind EXITED or SIGNALED
+}
+
+// ---------------------------------------------------------------- control
+
+message GetHealthRequest {}
+
+message Health {
+  bool live = 1;
+  bool ready = 2;                  // false while recovery runs
+  string service_version = 3;
+  int64 started_at_unix_us = 4;
+  int64 schema_version = 5;
+  optional string recovery_detail = 6;
+}
+
+message GetStatusRequest {}
+
+message BrokerStatus {
+  uint32 capacity = 1;
+  uint32 occupied = 2;             // may exceed capacity after force-start
+  bool paused = 3;
+  optional int64 paused_at_unix_us = 4;
+  bool recovering = 5;
+  uint32 queued_jobs = 6;
+  uint32 running_jobs = 7;
+  BlockedReason head_blocked_reason = 8;
+  optional int64 free_memory_bytes = 9;
+  optional double load_average_1m = 10;
+}
+
+message GetQueueRequest {}
+
+message Queue {
+  repeated Job jobs = 1;           // FIFO order; head first
+  BlockedReason head_blocked_reason = 2;
+}
+
+message ListJobsRequest {
+  repeated JobState states = 1;            // empty means all
+  optional string repository = 2;
+  optional string client_name = 3;
+  optional int64 queued_after_unix_us = 4; // inclusive
+  optional int64 queued_before_unix_us = 5; // exclusive
+  uint32 page_size = 6;                    // 0 means 50; maximum 500
+  string page_token = 7;
+}
+
+message ListJobsResponse {
+  // Newest first by (queued_at_unix_us, job_id). Keyset pagination: the
+  // token encodes the last key and filters, so pages are stable under
+  // concurrent inserts.
+  repeated Job jobs = 1;
+  string next_page_token = 2;              // empty when no more pages
+}
+
+message GetJobRequest {
+  string job_id = 1;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+  optional string reason = 2;
+}
+
+message MoveJobRequest {
+  string job_id = 1;
+  oneof target {
+    bool to_front = 2;
+    bool to_back = 3;
+    string before_job_id = 4;
+    string after_job_id = 5;
+  }
+}
+
+message ForceStartJobRequest {
+  string job_id = 1;
+}
+
+message PauseQueueRequest {}
+message ResumeQueueRequest {}
+
+message DeleteJobRequest {
+  string job_id = 1;
+}
+
+message DeleteJobResponse {}
+
+message DeleteHistoryRequest {
+  int64 finished_before_unix_us = 1;
+}
+
+message DeleteHistoryResponse {
+  uint32 deleted = 1;
+  uint32 skipped = 2;
+}
+
+message WatchEventsRequest {
+  // 0 means start with a snapshot. Otherwise resume after this sequence.
+  // OUT_OF_RANGE / EVENTS_EXPIRED if any event after it is no longer
+  // retained (the sequence is below the broker's event floor, raised by
+  // pruning and history deletion) or if it is beyond the last issued
+  // sequence (for example, a replaced database). The client then restarts
+  // from 0. Sequences are never reused.
+  int64 after_event_seq = 1;
+}
+
+message BrokerEvent {
+  // Equals the stored event's sequence; snapshots and heartbeats carry the
+  // last committed sequence they reflect.
+  int64 event_seq = 1;
+  int64 at_unix_us = 2;
+  oneof event {
+    BrokerSnapshot snapshot = 10;
+    Job job_changed = 11;
+    Queue queue_changed = 12;
+    BrokerStatus status_changed = 13;
+    string job_deleted = 14;       // job_id
+    Heartbeat heartbeat = 15;
+  }
+}
+
+message BrokerSnapshot {
+  BrokerStatus status = 1;
+  Queue queue = 2;
+  repeated Job active_jobs = 3;    // RESERVED, RUNNING and FINISHING
 }
 ```
 
-`GetJobRequest`, `WatchJobRequest`, `CancelWaitingJobRequest` (job ID),
-`Job` and `JobEvent` are omitted; they would carry job state,
-queue position, grant and cancellation details, and are equally
-illustrative.
+### 11.2 Monitor REST API
 
-**Recommendations, not user decisions.** Generate a UUIDv4 idempotency key
-for each logical submission and keep it stable across retries of the same
-payload. Reject reuse with a changed payload rather than replacing the
-original job. Payload-equivalence rules and key retention remain open.
-UUIDs are identifiers, not authentication.
+The REST API is JSON on the same loopback port. Each endpoint maps to
+exactly one `ControlService` RPC and calls the same broker domain logic,
+which gives the one-way parity the user approved. Runner lifecycle RPCs
+have no REST endpoints. The monitor needs these controls, and it uses
+REST, so REST exposes every `ControlService` control.
 
-`ClientInfo` may explicitly report OS and architecture; missing values
-remain unknown and the service does not infer them. Names and normalization
-rules remain open. Preserve the native process exit-code value when
-available, with optional POSIX signal name/number. The illustrated `int64`
-can hold Windows unsigned32 exit codes that exceed `int32`; SQLite `INTEGER`
-can also hold them. Do not synthesize POSIX signals for Windows. Keep
-cancellation intent separate from the observed outcome: a cancel request
-does not establish the exit code, signal or verified process termination.
+Request and response bodies are the RPC messages encoded with
+[protojson](https://protobuf.dev/programming-guides/json/):
+- Field names are lowerCamelCase.
+- Enums are encoded by name.
+- `int64` values, including every timestamp, are JSON strings.
+- Unset optional fields are omitted, which keeps unknown distinct from zero.
 
-**Proposed update delivery: push, not polling.** The runner opens one
-long-lived server-streaming `WatchJob` call after submission. The broker
-pushes queue-position changes, the admission grant, cancellation and other
-state changes on that stream; the runner does not repeatedly poll for
-status. `GetJob` is for on-demand snapshots, such as after reconnecting or
-when diagnosing state. Five-second resource sampling is a broker-side
-activity independent of this stream. Stream keepalive/heartbeat settings,
-reconnect behavior, missed-event recovery (for example a snapshot on
-re-open) and how a lost stream interacts with the grace period remain
-open. Monitor REST event delivery (polling, server-sent events, WebSocket
-or a gRPC stream) is also still open.
+Path parameters fill the matching request field, for example `{job_id}`
+fills `job_id`.
 
-**Proposed list behavior.** With no state filter, `ListJobs` and
-`GET /v1/jobs` include queued, running and completed jobs. Candidate
-filters include state and explicitly supplied repository; other possibilities
-are client name and queue-entry time. Pagination could use a page size and
-opaque next-page token. Exact filters, status mapping, ordering, token
-lifetime and consistency across pages remain open. The separate
-`GET /v1/queue` would show current queue order, including manual reorders;
-the general job listing need not preserve that order.
+| Method | Path | `ControlService` RPC | Notes |
+|---|---|---|---|
+| `GET` | `/v1/health` | `GetHealth` | Liveness, readiness, versions, recovery detail |
+| `GET` | `/v1/status` | `GetStatus` | Capacity, occupancy (may exceed capacity after force-start), pause, blocked-head reason, live readings |
+| `GET` | `/v1/queue` | `GetQueue` | Waiting jobs in FIFO order, head first |
+| `GET` | `/v1/jobs` | `ListJobs` | Query: `states` (repeatable), `repository`, `clientName`, `queuedAfterUnixUs`, `queuedBeforeUnixUs`, `pageSize`, `pageToken` |
+| `GET` | `/v1/jobs/{job_id}` | `GetJob` | Full job record |
+| `POST` | `/v1/jobs/{job_id}/cancel` | `CancelJob` | Body: optional `reason` |
+| `POST` | `/v1/jobs/{job_id}/move` | `MoveJob` | Body: one of `toFront`, `toBack`, `beforeJobId`, `afterJobId` |
+| `POST` | `/v1/jobs/{job_id}/force-start` | `ForceStartJob` | Confirmation is a monitor UI step, not enforced by the API |
+| `POST` | `/v1/queue/pause` | `PauseQueue` | Stops new normal admissions only |
+| `POST` | `/v1/queue/resume` | `ResumeQueue` | Resumes normal admissions |
+| `DELETE` | `/v1/jobs/{job_id}` | `DeleteJob` | Terminal, reconciled jobs only |
+| `DELETE` | `/v1/history?finishedBeforeUnixUs=…` | `DeleteHistory` | Skips and counts ineligible jobs |
+| `GET` | `/v1/events?afterEventSeq=…` | `WatchEvents` | Server-sent events; see below |
 
-The API is unauthenticated: any local client able to connect may list jobs
-or request cancellation of any waiting job it can identify. A job ID does
-not prove ownership.
+**Errors.** A non-OK RPC status becomes the standard HTTP equivalent, for
+example:
 
-Proposed invariants, still requiring agreement:
-
-- A start grant is sent only after its capacity reservation is durably
-  committed. A grant without a durable reservation must never exist.
-- `ReportFinished` records the outcome, but capacity is released only
-  after the broker is satisfied the job's processes have ended or verified
-  reconciliation says so. A heartbeat or stream loss alone never releases
-  a running job's slot.
-- A queued runner's disconnect starts the grace period (see section 4);
-  service downtime is excluded.
-- `idempotency_key` lets a runner safely repeat a submission whose
-  response was lost, using the same payload. Reuse with a different payload
-  is rejected under the recommendation above. This does not authorize
-  automatic retry when the service is unavailable; new submissions still
-  fail immediately.
-
-Open: the gap between receiving a grant and reporting the launched process
-(a crash there leaves an ambiguous reservation); a lost `ReportStarted` or
-`ReportFinished` response; reconnect versus grace expiry, cancellation or
-admission races; running-job disconnect; who terminates a running job on
-cancellation; error codes and API versioning.
-
-### 11.2 Monitor-to-broker REST (proposed)
-
-JSON over the same loopback port. The `/v1` prefix and exact paths are
-proposals.
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/v1/health` | Liveness/readiness, service version, recovery status |
-| `GET` | `/v1/status` | Capacity, occupied slots, pause state, live resource readings |
-| `GET` | `/v1/queue` | Ordered waiting jobs with blocked-head reason |
-| `GET` | `/v1/jobs` | Queued, running and completed jobs, filterable and paginated |
-| `GET` | `/v1/jobs/{id}` | Full job record, metadata, outcome and resource summary |
-| `POST` | `/v1/jobs/{id}/cancel` | Cancel a waiting or running job |
-| `POST` | `/v1/jobs/{id}/move-front` | Move a waiting job to the front |
-| `POST` | `/v1/jobs/{id}/move-back` | Move a waiting job to the back |
-| `POST` | `/v1/jobs/{id}/force-start` | Admit out of order, bypassing resource checks |
-| `POST` | `/v1/queue/pause` | Stop new normal admissions |
-| `POST` | `/v1/queue/resume` | Resume normal admissions |
-| `DELETE` | `/v1/jobs/{id}` | Delete one completed job's history |
-| `DELETE` | `/v1/history` | Delete completed history (e.g. older than a cutoff) |
-
-Notes:
-
-- Force-start confirmation is a monitor UI step. The API does not enforce
-  it, so direct clients such as `curl` can force-start without a prompt.
-- History deletion must refuse queued, reserved or running jobs and jobs
-  with live or unreconciled processes.
-- No endpoint authenticates. Any local process can read job details,
-  including full command arguments that may contain secrets, and use any
-  exposed control. Loopback is not user isolation.
-- Whether REST exposes all of these mutations (versus a read-only REST
-  API plus another control path), how the monitor receives updates
-  (polling, server-sent events, WebSocket or a gRPC stream), error format
-  and pagination remain open.
-
-#### Recommendation: REST-to-gRPC operation parity
-
-**Recommendation, not a user decision.** Give each REST-exposed broker
-business operation an equivalent gRPC operation, with both protocols using
-the same broker domain logic and consistent validation, state transitions
-and outcomes. This is **one-way** parity: runner-specific lifecycle RPCs
-such as submission, admission watching and start/finish reporting need not
-be exposed over REST.
-
-| Candidate REST business operations | Recommended gRPC capability |
+| gRPC status | HTTP status |
 |---|---|
-| Status | Read capacity, occupied slots, pause and recovery state |
-| Queue, job list and job detail | Read the ordered queue and list or inspect jobs; `ListJobs` and `GetJob` are illustrated above |
-| Cancel, reorder, force-start, pause and resume | Apply the same control and safety rules |
-| Completed-history deletion | Apply the same eligibility checks and guarded cleanup |
+| `INVALID_ARGUMENT`, `FAILED_PRECONDITION`, `OUT_OF_RANGE` | 400 |
+| `NOT_FOUND` | 404 |
+| `ALREADY_EXISTS` | 409 |
+| `RESOURCE_EXHAUSTED` | 429 |
+| `UNAVAILABLE` | 503 |
 
-The illustrative gRPC listing above does not yet define all these
-capabilities. Simple diagnostic or liveness endpoints need not map
-mechanically one-to-one, although business readiness and recovery state
-should be available to both clients. Force-start confirmation remains a
-monitor UI step, not a requirement enforced by either API.
+The body is the protojson `google.rpc.Status`, including its `ErrorInfo`
+reason, so REST and gRPC clients see the same `ErrorReason`.
 
-Parity makes behavior accessible to either client type and reduces policy
-drift, but expands the gRPC contract, documentation, tests and versioning
-surface. A gRPC-Gateway mapping could reduce handler duplication, at the
-cost of generation, runtime dependencies and shared-port routing
-complexity. Separately implemented handlers can instead call the same
-domain layer, but require additional mapping and consistency tests. No
-gateway has been selected.
+**Monitor event delivery (proposal).** `GET /v1/events` streams
+server-sent events (`text/event-stream`) backed by `WatchEvents`:
+- Each event's SSE `id` is its `event_seq`, and its `data` is the
+  protojson `BrokerEvent`.
+- Without a resume position, the stream begins with a `BrokerSnapshot`.
+- On reconnect, the browser-standard `Last-Event-ID` header (or
+  `afterEventSeq`) resumes after that sequence.
+- If the sequence has been pruned, the broker returns `EVENTS_EXPIRED` and
+  the monitor restarts from a snapshot.
+- `Heartbeat` events keep idle connections alive.
 
-Equivalent operations do not imply identical wire formats: JSON and
-Protobuf differ in field presence and representation, HTTP and gRPC use
-different error conventions, and gRPC streams do not automatically map
-to REST polling or event delivery. Both APIs remain unauthenticated on the
-same loopback port; equivalent gRPC controls also expose those actions to
-other local users and processes that can connect. Exact method names,
-mapping and streaming semantics, and REST mutation scope remain open.
+This SSE delivery is a proposal, not a user decision.
+SSE is one-way HTTP, works with `curl -N`, and avoids a WebSocket upgrade
+or a gRPC client in the Swift monitor.
 
-### 11.3 SQLite schema (illustrative)
+**Implementation choice (open).** A gRPC-Gateway mapping could generate
+these handlers from the proto. Separately written handlers calling the same
+domain layer are the alternative. No gateway or shared-port multiplexer has
+been selected.
 
-The schema shows the kinds of state the decisions require. Names, types,
-states and constraints are illustrative. `NULL` means unknown or not
-applicable and must stay distinct from zero. No raw resource time series
-is stored.
+The tradeoffs discussed:
+- Parity reduces policy drift between clients, but it expands the
+  contract, tests and versioning surface.
+- JSON and Protobuf differ in field presence, HTTP and gRPC use different
+  error conventions, and server streaming maps to SSE rather than a single
+  response.
+- Neither API authenticates. Every REST and gRPC control is available to
+  any local process that can connect.
 
-**User decision: STRICT tables.** All tables below use SQLite's
-[STRICT mode](https://www.sqlite.org/stricttables.html), requiring SQLite
-3.37.0 or later. Supported declared types are `INT`, `INTEGER`, `REAL`,
-`TEXT`, `BLOB` and `ANY`; there is no separate `JSON` type. STRICT permits
-lossless type coercion, so it does not mean that a numeric string is always
-rejected by an integer column. It does not replace `NOT NULL`, `CHECK`,
-enabled foreign keys or validation of JSON content. Exact business
-constraints and timestamp formats/units remain open.
+### 11.3 SQLite schema
+
+The schema uses SQLite STRICT tables (user decision) and requires SQLite
+3.38.0 or later, for STRICT and built-in JSON functions. Every `jobs`
+column carries a comment and, where useful, an `e.g.` example value, as the
+user requested. `NULL` means unknown or not applicable and is never a
+synonym for zero. No raw resource time series is stored.
+
+STRICT allows only the declared types `INT`, `INTEGER`, `REAL`, `TEXT`,
+`BLOB` and `ANY`, and it still performs lossless coercion. It does not
+replace `NOT NULL`, `CHECK`, enabled foreign keys or broker-side
+validation; the schema uses all of them.
 
 ```sql
--- Illustrative only; not an approved schema.
+-- heavy-lock v2 SQLite schema (schema version 1).
+--
+-- Requirements: SQLite 3.38.0 or later (STRICT tables and built-in JSON).
+-- Conventions:
+--   * All tables are STRICT.
+--   * Every *_at_us column is UTC Unix microseconds (Go int64,
+--     time.Now().UTC().UnixMicro()). Durations (*_us, *_ms) come from the
+--     broker's monotonic clock, never from subtracting wall-clock columns.
+--   * Wall-clock values are informational. The clock can move backwards, so
+--     no CHECK compares one timestamp with another.
+--   * IDs are lowercase canonical UUIDv4 TEXT.
+--   * Booleans are INTEGER 0/1 with CHECK constraints.
+--   * NULL means unknown or not applicable; it is never a synonym for 0.
+--   * Queue order comes from queue_entries.queue_seq, never from timestamps.
+--
+-- Database-level settings applied once, before any table is created:
+PRAGMA page_size = 4096;
+PRAGMA auto_vacuum = INCREMENTAL;
+PRAGMA journal_mode = WAL;
+
+-- Per-connection settings (also applied by the broker on every open):
 PRAGMA foreign_keys = ON;
+PRAGMA synchronous = FULL;    -- proposal; see the design record
+PRAGMA busy_timeout = 5000;
+PRAGMA temp_store = MEMORY;
+
+BEGIN IMMEDIATE;
+
+CREATE TABLE schema_migrations (
+  version        INTEGER PRIMARY KEY,   -- e.g. 1
+  applied_at_us  INTEGER NOT NULL,      -- e.g. 1764121200000000 (2025-11-26T01:40:00Z)
+  description    TEXT    NOT NULL       -- e.g. 'initial v2 schema'
+) STRICT;
+
+-- Single-row broker state.
+CREATE TABLE broker_state (
+  id                INTEGER PRIMARY KEY CHECK (id = 1),
+  paused            INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+  paused_at_us      INTEGER,              -- NULL when not paused
+  next_queue_seq    INTEGER NOT NULL DEFAULT 1, -- next back-of-queue sequence
+  last_event_seq    INTEGER NOT NULL DEFAULT 0, -- last issued events.seq; never decreases
+  event_floor_seq   INTEGER NOT NULL DEFAULT 0, -- resume after a lower seq is refused
+  CHECK (event_floor_seq BETWEEN 0 AND last_event_seq),
+  CHECK ((paused = 0 AND paused_at_us IS NULL) OR (paused = 1 AND paused_at_us IS NOT NULL))
+) STRICT;
+
+-- One row per broker process lifetime; used to exclude downtime from grace
+-- periods and to detect unclean shutdowns.
+CREATE TABLE service_runs (
+  id               INTEGER PRIMARY KEY,   -- rowid sequence
+  service_version  TEXT    NOT NULL,      -- e.g. '2.0.0'
+  pid              INTEGER NOT NULL,      -- e.g. 48213
+  started_at_us    INTEGER NOT NULL,
+  ready_at_us      INTEGER,               -- NULL until recovery completed
+  stopped_at_us    INTEGER,               -- NULL while running or after a crash
+  clean_shutdown   INTEGER NOT NULL DEFAULT 0 CHECK (clean_shutdown IN (0, 1))
+) STRICT;
 
 CREATE TABLE jobs (
-  id                 TEXT PRIMARY KEY,
-  idempotency_key    TEXT NOT NULL UNIQUE,
-  command            TEXT NOT NULL,       -- human-readable, may contain secrets
-  cwd                TEXT,
-  weight             INTEGER NOT NULL,
-  state              TEXT NOT NULL,       -- e.g. queued, reserved, running,
-                                          -- finished, cancelled, removed, unknown
-  forced             INTEGER NOT NULL DEFAULT 0,
-  client_name        TEXT,
-  client_version     TEXT,
-  client_os          TEXT,                -- proposed explicit client report
-  client_architecture TEXT,
-  service_version    TEXT,
-  queued_at          TEXT NOT NULL,
-  admitted_at        TEXT,                -- NULL if never admitted
-  started_at         TEXT,
-  finished_at        TEXT,
-  free_memory_at_admission_bytes INTEGER,
-  exit_code          INTEGER,             -- native code; NULL when unknown
-  termination_signal INTEGER,
-  termination_signal_name TEXT,           -- POSIX only, when available
-  -- Explicit client-supplied attribution only; NULL when not supplied.
-  repository         TEXT,
-  branch             TEXT,
-  worklog            TEXT,
-  agent_session      TEXT,
-  purpose            TEXT,
-  commit_sha         TEXT,
-  build_target       TEXT,
-  build_configuration TEXT
+  -- Identity -------------------------------------------------------------
+  id                  TEXT    PRIMARY KEY
+                      CHECK (length(id) = 36),
+                      -- broker-generated UUIDv4, e.g. '6f1c2a9e-3b7d-4c8e-9a41-2d5f0b7e8c13'
+  idempotency_key     TEXT    NOT NULL UNIQUE
+                      CHECK (length(idempotency_key) = 36),
+                      -- client UUIDv4, stable across retries,
+                      -- e.g. 'b0e4d7a2-91c3-4f5e-8d26-7a1c3e9f0b54'
+  request_sha256      BLOB    NOT NULL CHECK (length(request_sha256) = 32),
+                      -- SHA-256 of the canonical submit payload; detects key reuse
+                      -- with a different payload
+
+  -- What runs -----------------------------------------------------------
+  command             TEXT    NOT NULL CHECK (length(command) > 0),
+                      -- full command line, verbatim; may contain secrets,
+                      -- e.g. 'flutter build apk --release --flavor prod'
+  cwd                 TEXT,
+                      -- working directory, e.g. '/home/user/projects/example'
+  weight              INTEGER NOT NULL CHECK (weight >= 1),
+                      -- slots requested, e.g. 2
+
+  -- Lifecycle -----------------------------------------------------------
+  state               TEXT    NOT NULL
+                      CHECK (state IN ('queued', 'reserved', 'running', 'finishing', 'finished')),
+                      -- e.g. 'running'
+  forced              INTEGER NOT NULL DEFAULT 0 CHECK (forced IN (0, 1)),
+                      -- 1 when admitted by force-start, e.g. 0
+  queued_at_us        INTEGER NOT NULL,
+                      -- e.g. 1764121200000000 (2025-11-26T01:40:00.000000Z)
+  admitted_at_us      INTEGER,
+                      -- reservation committed; NULL if never admitted,
+                      -- e.g. 1764121230000000 (2025-11-26T01:40:30.000000Z)
+  started_at_us       INTEGER,
+                      -- ReportStarted received; NULL if never launched,
+                      -- e.g. 1764121230250000 (2025-11-26T01:40:30.250000Z)
+  finished_at_us      INTEGER,
+                      -- terminal transition; NULL until finished,
+                      -- e.g. 1764121815000000 (2025-11-26T01:50:15.000000Z)
+  cancel_requested_at_us INTEGER,
+                      -- NULL unless cancellation was requested,
+                      -- e.g. 1764121500000000 (2025-11-26T01:45:00.000000Z)
+  cancel_reason       TEXT,     -- e.g. 'cancelled from monitor'
+
+  -- Who submitted it (unauthenticated client claims) ------------------------
+  client_name         TEXT,     -- e.g. 'heavy-lock'
+  client_version      TEXT,     -- e.g. '2.0.0'
+  client_os           TEXT CHECK (client_os IN ('macos', 'linux', 'windows', 'other')),
+                      -- explicitly reported only, e.g. 'macos'
+  client_architecture TEXT CHECK (client_architecture IN ('arm64', 'amd64', 'other')),
+                      -- explicitly reported only, e.g. 'arm64'
+  service_version     TEXT    NOT NULL,  -- broker version at submission, e.g. '2.0.0'
+
+  -- Explicit attribution; NULL when not supplied, never inferred ----------
+  repository          TEXT,     -- e.g. 'example-org/example-repo'
+  branch              TEXT,     -- e.g. 'feature-example'
+  worklog             TEXT,     -- e.g. 'example-org/example-repo#3'
+  agent_session       TEXT,     -- e.g. 'f865bd2c-6671-4f3e-b23e-8e1026da4b91'
+  purpose             TEXT,     -- e.g. 'release APK build'
+  commit_sha          TEXT CHECK (commit_sha IS NULL OR length(commit_sha) BETWEEN 7 AND 64),
+                      -- e.g. '0123456789abcdef0123456789abcdef01234567'
+  build_target        TEXT,     -- e.g. 'apk'
+  build_configuration TEXT,     -- e.g. 'release'
+  metadata_json       TEXT    NOT NULL DEFAULT '{}'
+                      CHECK (json_valid(metadata_json)
+                             AND json_type(metadata_json) = 'object'
+                             AND length(metadata_json) <= 16384),
+                      -- validated string-valued extras,
+                      -- e.g. '{"ci.runner":"local","pr":"example-org/example-repo#42"}'
+
+  -- Admission measurements ------------------------------------------------
+  free_memory_at_admission_bytes INTEGER CHECK (free_memory_at_admission_bytes >= 0),
+                      -- e.g. 8589934592 (8 GiB)
+
+  -- Outcome ---------------------------------------------------------------
+  outcome_kind        TEXT CHECK (outcome_kind IN (
+                        'exited', 'signaled', 'cancelled_before_start',
+                        'removed_disconnected', 'launch_failed', 'lost')),
+                      -- e.g. 'exited'
+  exit_code           INTEGER CHECK (exit_code BETWEEN -2147483648 AND 4294967295),
+                      -- native code; POSIX e.g. 1, Windows e.g. 3221225477 (0xC0000005)
+  signal_number       INTEGER CHECK (signal_number >= 1),  -- POSIX only, e.g. 9
+  signal_name         TEXT,     -- POSIX only, e.g. 'SIGKILL'
+  outcome_detail      TEXT,     -- e.g. 'process tree not found during recovery'
+
+  -- State consistency (presence only; wall-clock values are not compared) --
+  CHECK (started_at_us IS NULL OR admitted_at_us IS NOT NULL),
+  CHECK ((state = 'finished') = (finished_at_us IS NOT NULL)),
+  -- ReportFinished stores the outcome while finishing (awaiting verified exit).
+  CHECK ((state IN ('finishing', 'finished')) = (outcome_kind IS NOT NULL)),
+  CHECK (state <> 'finishing' OR outcome_kind IN ('exited', 'signaled')),
+  CHECK (state NOT IN ('reserved', 'running', 'finishing') OR admitted_at_us IS NOT NULL),
+  CHECK (state NOT IN ('running', 'finishing') OR started_at_us IS NOT NULL),
+  CHECK (outcome_kind IS NOT 'exited' OR (exit_code IS NOT NULL AND signal_number IS NULL)),
+  CHECK (outcome_kind IS NOT 'signaled' OR signal_number IS NOT NULL),
+  CHECK (signal_name IS NULL OR signal_number IS NOT NULL)
 ) STRICT;
 
-CREATE TABLE job_tags (
-  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-  key    TEXT NOT NULL,
-  value  TEXT NOT NULL,
-  PRIMARY KEY (job_id, key)
-) STRICT;
+CREATE INDEX jobs_state_queued ON jobs (state, queued_at_us DESC, id);
+CREATE INDEX jobs_queued ON jobs (queued_at_us DESC, id);
+CREATE INDEX jobs_repository ON jobs (repository, queued_at_us DESC, id)
+  WHERE repository IS NOT NULL;
+CREATE INDEX jobs_client_name ON jobs (client_name, queued_at_us DESC, id)
+  WHERE client_name IS NOT NULL;
+CREATE INDEX jobs_finished ON jobs (finished_at_us)
+  WHERE state = 'finished';
 
--- Waiting jobs in strict FIFO order, including disconnect grace state.
+-- Waiting jobs only. Explicit order; reorder rewrites queue_seq. Because
+-- UNIQUE is checked per row, a renumbering UPDATE must avoid transient
+-- collisions (for example, move rows to negative values first).
 CREATE TABLE queue_entries (
-  job_id                TEXT PRIMARY KEY REFERENCES jobs(id),
-  position              INTEGER NOT NULL UNIQUE,
-  disconnected          INTEGER NOT NULL DEFAULT 0,
-  grace_elapsed_ms      INTEGER NOT NULL DEFAULT 0,
-  grace_started_at      TEXT    -- NULL when connected; may be stale after a crash
+  job_id              TEXT    PRIMARY KEY REFERENCES jobs (id),
+  queue_seq           INTEGER NOT NULL UNIQUE,  -- lower runs first; may be negative after move-front
+  runner_connected    INTEGER NOT NULL DEFAULT 1 CHECK (runner_connected IN (0, 1)),
+  grace_elapsed_us    INTEGER NOT NULL DEFAULT 0 CHECK (grace_elapsed_us >= 0),
+                      -- monotonic grace consumed, checkpointed
+  grace_started_at_us INTEGER,  -- wall time of current disconnect, informational
+  grace_service_run_id INTEGER REFERENCES service_runs (id),
+                      -- run in which grace was last counted; a different run
+                      -- means the start time is stale (downtime excluded)
+  CHECK (runner_connected = 1 OR grace_service_run_id IS NOT NULL),
+  CHECK (runner_connected = 0 OR (grace_started_at_us IS NULL AND grace_service_run_id IS NULL))
 ) STRICT;
 
--- Durable capacity reservation and start grant.
+-- Durable capacity reservations. A grant is sent only after this row commits.
 CREATE TABLE reservations (
-  job_id     TEXT PRIMARY KEY REFERENCES jobs(id),
-  grant_id   TEXT NOT NULL UNIQUE,
-  weight     INTEGER NOT NULL,
-  forced     INTEGER NOT NULL DEFAULT 0,
-  granted_at TEXT NOT NULL,
-  released_at TEXT                       -- NULL while capacity is held
+  job_id            TEXT    PRIMARY KEY REFERENCES jobs (id),
+  grant_id          TEXT    NOT NULL UNIQUE CHECK (length(grant_id) = 36),
+  weight            INTEGER NOT NULL CHECK (weight >= 1),
+  forced            INTEGER NOT NULL DEFAULT 0 CHECK (forced IN (0, 1)),
+  granted_at_us     INTEGER NOT NULL,
+  service_run_id    INTEGER NOT NULL REFERENCES service_runs (id),
+  released_at_us    INTEGER,  -- NULL while capacity is held
+  release_reason    TEXT CHECK (release_reason IN (
+                      'processes_exited', 'launch_failed', 'cancelled_before_start',
+                      'recovery_verified_gone')),
+  CHECK ((released_at_us IS NULL) = (release_reason IS NULL))
 ) STRICT;
+
+-- Occupied capacity = SUM(weight) over this index.
+CREATE INDEX reservations_active ON reservations (job_id, weight)
+  WHERE released_at_us IS NULL;
 
 -- Tracked processes for recovery and sampling.
 CREATE TABLE job_processes (
-  job_id         TEXT NOT NULL REFERENCES jobs(id),
-  pid            INTEGER NOT NULL,
-  start_identity TEXT NOT NULL,          -- distinguishes PID reuse
-  role           TEXT NOT NULL,          -- e.g. runner, command, descendant
-  first_seen_at  TEXT NOT NULL,
-  last_seen_at   TEXT,
-  PRIMARY KEY (job_id, pid, start_identity)
-) STRICT;
+  job_id              TEXT    NOT NULL REFERENCES jobs (id),
+  pid                 INTEGER NOT NULL CHECK (pid > 0),
+  start_time_us       INTEGER NOT NULL,  -- platform process start time; with pid
+                                         -- distinguishes PID reuse
+  role                TEXT    NOT NULL CHECK (role IN ('runner', 'command', 'descendant')),
+  first_seen_at_us    INTEGER NOT NULL,
+  last_seen_at_us     INTEGER,
+  exited_verified_at_us INTEGER,  -- NULL until the broker verified the process is gone
+  PRIMARY KEY (job_id, pid, start_time_us)
+) STRICT, WITHOUT ROWID;
 
--- One summary per job.
+CREATE INDEX job_processes_live ON job_processes (pid, start_time_us)
+  WHERE exited_verified_at_us IS NULL;
+
+-- One summary per job; updated in place from five-second samples.
 CREATE TABLE job_resource_summaries (
-  job_id                    TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
-  elapsed_ms                INTEGER,
-  cpu_time_ms               INTEGER,     -- NULL if not measurable
-  peak_cpu_percent          REAL,        -- sampled peak
-  peak_combined_rss_bytes   INTEGER,     -- sampled peak; may double-count
-  sample_count              INTEGER NOT NULL DEFAULT 0,
-  measurement_completeness  TEXT NOT NULL, -- e.g. complete, partial, unavailable
-  incompleteness_reason     TEXT
+  job_id                   TEXT    PRIMARY KEY REFERENCES jobs (id) ON DELETE CASCADE,
+  elapsed_ms               INTEGER CHECK (elapsed_ms >= 0),
+  cpu_time_ms              INTEGER CHECK (cpu_time_ms >= 0),
+  peak_cpu_percent         REAL    CHECK (peak_cpu_percent >= 0),
+  peak_combined_rss_bytes  INTEGER CHECK (peak_combined_rss_bytes >= 0),
+  sample_count             INTEGER NOT NULL DEFAULT 0 CHECK (sample_count >= 0),
+  measurement_completeness TEXT    NOT NULL
+                           CHECK (measurement_completeness IN ('complete', 'partial', 'unavailable')),
+  incompleteness_reason    TEXT,
+  updated_at_us            INTEGER NOT NULL
 ) STRICT;
 
--- Broker-wide state such as pause.
-CREATE TABLE broker_state (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
+-- Bounded log backing WatchEvents resume. seq is assigned from
+-- broker_state.last_event_seq + 1 in the same transaction as the change, so
+-- values are never reused after pruning or deletion. Deleting rows (pruning,
+-- or a job's events on history deletion) raises broker_state.event_floor_seq
+-- to the highest deleted seq, so a resume across the gap gets EVENTS_EXPIRED.
+-- job_id deliberately has no foreign key: a cascade would delete events
+-- without raising the floor. Payloads can contain command lines.
+CREATE TABLE events (
+  seq           INTEGER PRIMARY KEY CHECK (seq >= 1), -- event_seq on the wire
+  at_us         INTEGER NOT NULL,
+  job_id        TEXT,                  -- subject job, if any
+  kind          TEXT    NOT NULL CHECK (kind IN (
+                  'job_changed', 'queue_changed', 'status_changed', 'job_deleted')),
+  payload       BLOB    NOT NULL       -- protobuf-encoded BrokerEvent body
 ) STRICT;
+
+CREATE INDEX events_job ON events (job_id, seq) WHERE job_id IS NOT NULL;
+CREATE INDEX events_at ON events (at_us);
+
+INSERT INTO broker_state (id) VALUES (1);
+INSERT INTO schema_migrations (version, applied_at_us, description)
+  VALUES (1, CAST((julianday('now') - 2440587.5) * 86400000000 AS INTEGER), 'initial v2 schema');
+PRAGMA user_version = 1;
+
+COMMIT;
 ```
 
-#### Recommendation: columns plus validated JSON extras
-
-**Recommendation, not a user decision.** Use dedicated columns for known
-fields used in filtering, reporting or lifecycle logic, plus a validated
-`metadata_json` object for extensible caller metadata. Store each field
-once: reserved fields belong in columns, not duplicated in the JSON extras.
-This does not change the explicit-only attribution decision.
-
-The illustration above currently uses **columns plus `job_tags`** instead.
-That is another hybrid: one row per extra string key/value. It makes
-cross-job tag searches and indexes straightforward, but adds joins and
-rows, and its `TEXT` values do not provide typed nested metadata. Columns
-provide explicit names and constraints and ordinary indexes, at the cost
-of migrations when the known field set changes. SQLite column types alone
-are not a substitute for validation.
-
-A JSON extras object keeps extensions together and reduces tag-table joins,
-but arbitrary-key queries need JSON extraction, and frequently queried keys
-may need expression indexes or promotion to columns. Valid JSON is not
-necessarily valid metadata: validate allowed keys, value types and size
-limits as well. The current protobuf map carries strings only; JSON storage
-does not authorize converting them into inferred numbers, booleans or nested
-objects. A richer typed wire format would be a separate proposal.
-
-One illustrative alternative adds the following column to `jobs`:
-
-```sql
--- Alternative only; JSON extras would replace job_tags, not duplicate it.
-ALTER TABLE jobs ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'
-  CHECK (json_valid(metadata_json) AND json_type(metadata_json) = 'object');
-```
-
-This is not a migration plan: it does not move existing tag rows or remove
-`job_tags`. The SQL constraint checks JSON syntax and object shape only;
-the broker would still validate the metadata schema and string values.
-SQLite JSON-function availability, validation rules and indexes remain open.
-
-**Proposed wire-to-storage mapping:**
+**Wire-to-storage mapping.**
 
 | Input | Storage |
 |---|---|
-| `ClientInfo.name` and `.version` | `jobs.client_name` and `jobs.client_version`; absent values remain `NULL` |
-| Proposed `ClientInfo.os` and `.architecture` | `jobs.client_os` and `jobs.client_architecture`; explicit reports only |
-| Known `metadata` keys: `repository`, `branch`, `worklog`, `agent_session`, `purpose`, `commit_sha`, `build_target`, `build_configuration` | Corresponding `jobs` columns; absent keys remain `NULL` |
-| Other allowed `metadata` keys | JSON extras under the recommendation, or `job_tags` under the current illustration, but not both |
-| Broker version, lifecycle timestamps and admission measurements | Broker-populated columns, not client metadata |
+| `ClientInfo.name`, `.version` | `jobs.client_name`, `jobs.client_version`; absent stays `NULL` |
+| `ClientInfo.os`, `.architecture` | `jobs.client_os`, `jobs.client_architecture`; `UNSPECIFIED` stays `NULL`, never inferred |
+| `Attribution` known fields (`repository`, `branch`, `worklog`, `agent_session`, `purpose`, `commit_sha`, `build_target`, `build_configuration`) | The matching `jobs` columns; absent stays `NULL`; an empty string is rejected |
+| `Attribution.extra` | `jobs.metadata_json` as a string-valued object; keys colliding with known or reserved fields are rejected (`RESERVED_METADATA_KEY`); size limits enforced (`METADATA_TOO_LARGE`) |
+| `Outcome` | `outcome_kind`, `exit_code`, `signal_number`, `signal_name`, `outcome_detail` |
+| Service version, lifecycle timestamps, free memory at admission | Broker-populated columns, not client input |
 
-Reject caller metadata that attempts to override reserved client-info,
-command, outcome or broker-managed fields, rather than silently choosing
-between conflicting copies. Extract known attribution keys into their
-columns and exclude them from extras. Explicit empty strings and absent
-values need distinct validation semantics; do not infer missing attribution.
-Client name/version and all supplied attribution remain unauthenticated
-claims. Exact key names, reserved-key policy, storage choice and any later
-promotion of extras into columns still require agreement.
+Each value is stored once. Known fields live only in columns, and
+`metadata_json` holds only extras.
 
-Design notes:
+Why columns plus JSON was chosen:
+- Columns give explicit names, constraints and ordinary indexes, at the
+  cost of a migration when the known field set grows.
+- The validated JSON object keeps extensions together without a tag
+  table's joins and rows.
+- Querying an arbitrary extra key needs JSON extraction; a frequently
+  queried key can gain an expression index or be promoted to a column.
+- The superseded `job_tags` table made cross-job tag queries easy, but it
+  needed joins and could not hold typed or nested values.
 
-- **Transactions.** Each lifecycle transition (enqueue, reorder, reserve
-  and grant, start, finish, release, cancel, removal after grace) is one
-  transaction. A grant is acknowledged only after its reservation commits.
-  A single serialized scheduler writes these transitions.
-- **Foreign keys.** Enabled per connection. Queue entries, reservations and
-  processes reference `jobs`. They deliberately lack `ON DELETE CASCADE`,
-  so deleting a job that still has queue, reservation or process state
-  fails instead of silently dropping recovery state.
-- **Recovery reconciliation.** On restart, before admitting new work,
-  compare unreleased reservations and `job_processes` with verified live
-  processes (PID plus start identity) and reconnecting runners. Release
-  capacity only when processes are verified gone; fail closed when safety
-  cannot be established. A reservation with no reported process is the
-  ambiguous launch gap and needs an agreed rule.
-- **Grace and downtime.** Persist accumulated grace in
-  `grace_elapsed_ms`, and set `grace_started_at` only while the service
-  is accepting reconnections. A crash may leave `grace_started_at` non-NULL.
-  On recovery, treat it as stale and do not charge wall-clock time since it:
-  that interval may include service downtime. One conservative proposal is
-  to resume from the last persisted `grace_elapsed_ms` and establish a new
-  start time only when the service can accept reconnections. This may extend
-  grace by time not checkpointed before the crash. Checkpoint precision and
-  frequency, the exact recovery policy, and reconnect/expiry races remain open.
-- **History deletion.** In a serialized transaction, check that the job is
-  terminal, has no queue entry or active reservation, and has no live or
-  unreconciled process. Process liveness requires verification; a database
-  row alone is insufficient. Remove eligible released reservations and
-  process references first, then delete the `jobs` row and cascade to tags
-  and summaries. If safety cannot be established, retain the job and its
-  recovery state. This does not scrub WAL files, backups or freed pages.
-- **Unknown versus zero.** Missing exit codes, metrics or attribution
-  stay `NULL`; completeness is recorded explicitly.
-- **Limits.** The database records intent and observations; it does not
-  by itself solve process-launch races, PID reuse, reparented descendants
-  or lost replies. Those need the runner/broker protocol and process
-  verification above.
-- **Sensitivity.** `command` and `cwd` may contain secrets. The file is
-  user-only, but the unauthenticated loopback API can still expose them.
+All `Attribution` values are unauthenticated declarations.
 
-Open: exact states and transitions, schema migrations, required versus
-tag metadata, timestamp formats/units, indexes, SQLite driver and settings
-(WAL, synchronous level), and broker-instance exclusion.
+**Design notes.**
+
+- **Transactions.** Every lifecycle transition is one `BEGIN IMMEDIATE`
+  transaction on the single writer connection (section 11.4). This covers
+  enqueue, move, reserve and grant, start, launch failure, finish, release,
+  cancel, removal after grace and deletion. A grant is sent only after its
+  reservation commits. Occupied capacity is the sum of `weight` over
+  unreleased `reservations`.
+- **Foreign keys.** `queue_entries`, `reservations` and `job_processes`
+  reference `jobs` without `ON DELETE CASCADE`. Deleting a job that still
+  has recovery state therefore fails rather than silently dropping it.
+  `job_resource_summaries` cascades. `events.job_id` deliberately has no
+  foreign key, because a cascade would silently create a gap in the event
+  log.
+- **Wall-clock timestamps.** The system clock can move backwards, so the
+  schema checks only that timestamps are present for a state, never their
+  order. Monotonic durations, `queue_seq` and event sequences provide
+  ordering.
+- **Event sequences.** Each change allocates
+  `broker_state.last_event_seq + 1` in its own transaction, so a sequence
+  is never reused, even after its rows are pruned or deleted. Deleting
+  events raises `broker_state.event_floor_seq`; this happens when retention
+  prunes rows, and when history deletion removes a job's events because
+  their payloads can contain its command line.
+  - A `WatchEvents` resume below the floor or beyond `last_event_seq`
+    fails with `EVENTS_EXPIRED`, and the monitor resynchronizes from a
+    snapshot.
+  - Deletion therefore forces monitors that are behind to resynchronize,
+    rather than silently skipping events.
+- **Recovery.** Each broker lifetime inserts a `service_runs` row.
+  - At startup, before admitting new work:
+    1. Run `quick_check`.
+    2. Apply migrations.
+    3. Compare unreleased reservations and `job_processes` (PID plus start
+       time) with verified live processes and reconnecting runners.
+  - `RECOVERING` is reported until this completes.
+  - Capacity is released only when processes are verified gone
+    (`recovery_verified_gone`). If safety cannot be established, the
+    broker fails closed.
+- **Grace and downtime.** `grace_elapsed_us` checkpoints monotonic grace
+  consumed. `grace_service_run_id` records the broker run that last counted
+  it. A different current run means `grace_started_at_us` is stale and
+  wall-clock time since it, which may include downtime, is not charged.
+  Grace resumes from the persisted `grace_elapsed_us` once the broker
+  accepts reconnections. This can extend grace by time that was not
+  checkpointed before a crash.
+- **History deletion.** In one transaction:
+  1. Check that the job is `finished`, has no queue entry, no active
+     reservation, and no process lacking `exited_verified_at_us`.
+  2. Delete its released reservation and verified process rows. Delete its
+     events, and raise the event floor to the highest deleted sequence.
+  3. Delete the `jobs` row; its summary cascades.
+  4. Append a `job_deleted` event.
+
+  Ineligible jobs are retained (`DeleteHistory` counts them as skipped).
+  Freed pages are reclaimed later with `incremental_vacuum`. Deletion does
+  not scrub WAL contents or backups that already hold the data.
+- **Limits.** The database records intent and observations. On its own it
+  does not solve:
+  - the launch gap between grant and report
+  - PID reuse beyond the start-time check
+  - reparented descendants
+  - lost replies
+- **Sensitivity.** `command`, `cwd` and metadata may contain secrets. The
+  database is user-only, but the unauthenticated API exposes it to any
+  local client.
+
+### 11.4 SQLite connection, WAL and performance settings
+
+These settings follow the user's direction to use WAL and to consider
+performance options. WAL itself is a user decision. The cache and mmap
+sizes, the checkpoint cadence and the event-retention limits below are
+proposed defaults.
+
+#### Database-level settings
+
+Apply these once, before creating any table. They persist in the database file.
+
+| Setting | Value | Why |
+|---|---|---|
+| `page_size` | `4096` | Matches the OS page size. It cannot change after creation without `VACUUM`. |
+| `auto_vacuum` | `INCREMENTAL` | History deletion can return free pages with `PRAGMA incremental_vacuum` without a blocking full `VACUUM`. It must be set before tables exist. |
+| `journal_mode` | `WAL` | **User decision.** Readers, including monitor REST and gRPC reads, do not block the writer, and the writer does not block readers. Commits append to the WAL rather than rewriting pages. The mode persists in the file; the broker verifies that `PRAGMA journal_mode` returns `wal` on open and refuses to start otherwise. |
+
+WAL requires local storage. The database lives under the user’s local
+application-support or state directory and never on a network filesystem.
+The `-wal` and `-shm` files sit beside it and must not be deleted while the
+broker runs.
+
+#### Settings on every connection
+
+| PRAGMA | Value | Tradeoff |
+|---|---|---|
+| `foreign_keys` | `ON` | Off by default per connection. Required to enforce recovery-state references. |
+| `synchronous` | `FULL` (proposal) | In WAL mode, `NORMAL` stays consistent after an application crash, but an OS crash or power loss can roll back the most recently committed transactions. Those can include an acknowledged submission, a grant, a stored outcome or a history deletion. Do not assume a machine crash makes this harmless: a job can have effects outside the local process table, such as remote builds, attached devices or external services. A forgotten grant also loses the record of that work. `FULL` syncs the WAL on every commit. Its cost is one sync per lifecycle transaction, which is acceptable at this write rate (section “Write volume”). `NORMAL` remains the lower-latency alternative if the user accepts that loss window. |
+| `fullfsync` | `ON` on macOS (proposal) | On macOS, plain `fsync` does not force the drive’s write cache to stable storage. `F_FULLFSYNC` does, at a cost of milliseconds per sync. Measure the cost before adopting it. |
+| `busy_timeout` | `5000` ms | Readers rarely wait in WAL, but checkpoints and startup can briefly contend. Prefer waiting over failing with `SQLITE_BUSY`. |
+| `temp_store` | `MEMORY` | Sorts and temporary indexes for list queries stay off disk. |
+| `cache_size` | `-16384` (16 MiB per connection; proposal) | The working set (queue, active jobs, recent history) stays in memory. A negative value means KiB. |
+| `mmap_size` | `268435456` (256 MiB; proposal) | Reads use memory-mapped I/O rather than `read()` copies. The address-space reservation is not resident memory. |
+| `wal_autocheckpoint` | `1000` pages (default) | Bounds WAL growth to about 4 MiB between automatic checkpoints. |
+| `journal_size_limit` | `67108864` (64 MiB) | After a checkpoint, truncates a WAL that grew during a burst. |
+| `trusted_schema` | `OFF` | Defence in depth: schema-defined SQL functions cannot run with elevated trust. |
+| `optimize` | `0x10002` on open; `optimize` periodically and on close | Keeps query-planner statistics current without manual `ANALYZE`. |
+
+Read-only pool connections also set `PRAGMA query_only = ON`.
+
+#### Connection model
+
+- **One writer connection.** All lifecycle transitions are serialized
+  through the broker’s scheduler goroutine on a dedicated connection with
+  `SetMaxOpenConns(1)`. Every write uses `BEGIN IMMEDIATE`, so it takes the
+  write lock at the start rather than failing on upgrade with
+  `SQLITE_BUSY`. Each lifecycle transition is one transaction, and a grant
+  is sent only after its transaction commits.
+- **Read pool.** A separate pool of up to four `query_only` connections
+  serves REST and gRPC reads and snapshots. Under WAL, each read
+  transaction sees a consistent snapshot without blocking the writer.
+- **Prepared statements.** Prepare hot statements once per connection,
+  including enqueue, reserve, release, summary update, queue read and list
+  page.
+- **Short read transactions.** Long-lived read transactions keep
+  checkpoints from completing and let the WAL grow. List pagination
+  therefore uses keyset tokens rather than cursors held across requests.
+
+#### Checkpoints and maintenance
+
+- Automatic checkpoints handle normal load. Every five minutes, the broker
+  also runs `PRAGMA wal_checkpoint(PASSIVE)`.
+- On clean shutdown, run `PRAGMA wal_checkpoint(TRUNCATE)` and then
+  `PRAGMA optimize`.
+- After `DeleteHistory`, run `PRAGMA incremental_vacuum(1000)` in a later
+  idle period, outside the deletion transaction.
+- Run `PRAGMA quick_check` at startup before recovery. If it fails, the
+  broker refuses readiness rather than scheduling against a corrupt queue.
+- Proposed retention: prune `events` rows older than 24 hours or beyond
+  the newest 100,000, whichever removes more. Pruning raises
+  `event_floor_seq` in the same transaction. Clients resuming below the
+  floor receive `EVENTS_EXPIRED` and resynchronize from a snapshot.
+
+#### Write volume
+
+Resource sampling every five seconds aggregates in memory. Each job’s
+summary row is written at most every 60 seconds and once at finish, so
+sampling does not add a write transaction per job per sample. If the broker
+crashes, recovery reports a running job’s summary as `partial` because
+samples since the last checkpoint are lost.
+
+#### Versions and migrations
+
+The minimum SQLite version is 3.38.0, which provides `STRICT` and built-in
+JSON functions. Go-driver selection remains open: either `modernc.org/sqlite`
+(pure Go) or `mattn/go-sqlite3` (cgo) must bundle at least that version.
+`PRAGMA user_version` and `schema_migrations` both record the schema
+version. Migrations run in one `BEGIN IMMEDIATE` transaction before
+recovery, and the broker refuses to open a database whose schema version is
+newer than it supports.
 
 ## Open decisions before implementation
 
-1. Pause/force-start interaction, confirmation and audit semantics,
-   cancellation ownership/outcomes and control races.
-2. Queued grace duration, reconnect-ready timing, downtime accounting,
-   persisted grace and reconnect/expiry races; running disconnect behavior.
-3. Durable execution/recovery state machine, broker-instance exclusion,
-   process identity and descendant accounting, corruption/disk-full behavior.
-4. Default broker port, identity/version checks, shared-listener routing,
-   API contracts/versioning, operation parity, REST controls and event
-   delivery (candidate contracts and schema are in section 11).
-5. Exact job metrics, completeness/error reporting, sampler choice,
-   platform parity and overhead.
-6. Metadata schema, required fields/tags, command rendering, history
-   deletion/storage handling and any optional redaction.
-7. SQLite driver, Go/protobuf tooling, distribution, supervision and
-   supported platforms.
-8. Admission option compatibility, oversized weights, capacity changes,
-   no-wait behavior and v1/nesting rollout.
+1. Pause/force-start interaction; confirmation and audit semantics for
+   other controls; who terminates a running job on cancellation;
+   concurrent control races.
+2. Concrete defaults, which are currently proposals or unset:
+   - queued grace duration
+   - launch timeout
+   - heartbeat interval
+   - event retention (proposed 24 hours or 100,000 events)
+   - page size (proposed 50, maximum 500)
+   - SQLite cache and mmap sizes (proposed 16 MiB and 256 MiB)
+3. Recovery when a launch timeout expires without `ReportStarted` or
+   `ReportLaunchFailed`. Capacity must not be released without process
+   verification.
+4. Reconnect races against grace expiry, cancellation or admission;
+   whether accumulated grace resets on reconnect.
+5. Running-runner disconnect behavior.
+6. Broker-instance exclusion; descendant and reparented-process
+   accounting; platform precision of process start-time identities;
+   corruption and disk-full handling.
+7. Default broker port, identity/version checks, shared-listener
+   routing/multiplexer, and gRPC-Gateway versus hand-written REST handlers.
+   The monitor event delivery proposal (SSE over `WatchEvents`) needs the
+   user's confirmation.
+8. Exact job metric definitions, sampler choice, platform parity and
+   overhead.
+9. Command rendering, the payload-equivalence rule and retention for
+   idempotency keys, and any optional redaction.
+10. SQLite durability: `synchronous = FULL` (proposed) versus `NORMAL`,
+    and `fullfsync` on macOS, after measuring commit latency.
+11. SQLite Go driver (`modernc.org/sqlite` or `mattn/go-sqlite3`, bundling
+    3.38.0 or later), Go/protobuf tooling, distribution, supervision and
+    supported platforms.
+12. Admission option compatibility, oversized weights, capacity changes,
+    no-wait behavior and v1/nesting rollout.
 
 Resolve these with explicit decisions and update this record before
 treating a proposal as implementation policy.
