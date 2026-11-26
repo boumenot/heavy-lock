@@ -429,6 +429,14 @@ builds the executable from the flake; its `vendorHash` pins the Go module
 dependencies and must be updated when the vendored package set changes,
 even if `apps/tuna/go.sum` does not.
 
+The v2 [transactional storage library](docs/v2-storage.md) implements jobs,
+queue/reservations, launch/cancellation evidence, retries, key-only tombstones
+and replayable events without scheduler policy or process signaling.
+`flake.nix` defines the `modernc.org/sqlite` pin and checks it against
+`apps/tuna/go.mod`; keep `go.sum` and `vendorHash` synchronized. The configured
+WAL/FULL and macOS fullfsync settings are not a claim of physically verified
+flush or power-loss durability (#6 remains deferred).
+
 The shell deliberately uses `mkShellNoCC` and does not provide Swift: on
 macOS the monitor builds with the system Xcode `swift` (`xcode-select
 --install`), which Nix leaves untouched. Nix's Dart is used only for

@@ -307,6 +307,34 @@ class RetryLineageTests(unittest.TestCase):
         self.assertFalse(thread.is_alive(), "competing transaction did not finish")
         return results.get_nowait()
 
+    def test_definite_no_launch_outcome_is_visible_while_capacity_is_held(self):
+        job = new_id()
+        self.insert_job(self.db, job, new_id(), state="queued")
+        self.db.execute(
+            "UPDATE jobs SET state = 'reserved', admitted_at_ns = 2, "
+            "outcome_kind = 'launch_failed', outcome_detail = 'spawn failed' "
+            "WHERE id = ?", (job,),
+        )
+        self.db.execute(
+            """
+            INSERT INTO reservations(job_id, grant_id, weight, granted_at_ns,
+              service_run_id, runner_incarnation_id, runner_pid, runner_start_time_ns)
+            VALUES (?, ?, 1, 2, 1, ?, 1, 1)
+            """, (job, new_id(), new_id()),
+        )
+        self.assertEqual(("reserved", "launch_failed", None), self.db.execute(
+            "SELECT state, outcome_kind, finished_at_ns FROM jobs WHERE id = ?",
+            (job,),
+        ).fetchone())
+        self.assertEqual((1,), self.db.execute(
+            "SELECT sum(weight) FROM reservations WHERE released_at_ns IS NULL"
+        ).fetchone())
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "UPDATE jobs SET state = 'running', started_at_ns = 3 WHERE id = ?",
+                (job,),
+            )
+
     def test_delete_predecessor_preserves_a_queued_retry(self):
         child = new_id()
         self.insert_job(
