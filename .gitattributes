@@ -1,0 +1,2 @@
+apps/tuna/gen/**/*.pb.go linguist-generated=true
+packages/heavylock-v2-swift/Sources/HeavyLockV2/heavylock.*.swift linguist-generated=true

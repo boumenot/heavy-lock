@@ -15,9 +15,12 @@ repository development uses the [Nix dev shell](#development-with-nix).
 apps/
   heavy-lock/      Dart runner and status CLI (bin, lib, test, pubspec)
   monitor-macos/   Swift Dock/menu status monitor (Swift package, tests)
+  tuna/            v2 Go runner/broker prototype; runs no work yet
+packages/
+  heavylock-v2-swift/  Generated Swift bindings for the v2 contract (library)
 tool/              Build/test/install orchestration; not shipped
-build/             Outputs: build/heavy-lock/, build/monitor-macos/
-docs/              Lifecycle and technical decisions
+build/             Outputs: build/heavy-lock/, build/monitor-macos/, build/tuna/
+docs/              Lifecycle, technical decisions and v2 design/plan
 skills/            Portable consumer skills
 ```
 
@@ -45,8 +48,10 @@ targets:
 | `dart tool/dev.dart install <app\|all> [dir]` | Install an existing build; `dir` only for a single app |
 | `dart tool/dev.dart version` | Print the runner's version stamp |
 
-`all` means the applications implemented for this host (both on macOS;
+`all` means the applications implemented for this host (all four on macOS;
 `heavy-lock` on Linux and Windows), never future targets or cross-compiles.
+`tuna` and `heavylock-v2-swift` are built and tested but not installable:
+`install all` skips them and installing either directly exits 69.
 Unknown targets exit 64; future or host-unsupported targets exit 69. A
 failed build or install keeps the previous artifact.
 
@@ -54,6 +59,8 @@ failed build or install keeps the previous artifact.
 |---|---|---|---|
 | `heavy-lock` | `build/heavy-lock/heavy-lock`, `heavy-lock-status` | `~/.local/bin/heavy-lock` | Atomic replace via `tool/install.sh` (macOS/Linux) |
 | `monitor-macos` | `build/monitor-macos/Heavy Lock Status.app` | `~/Applications/Heavy Lock Status.app` | Copied beside the target, then swapped in; the old bundle is restored on failure |
+| `tuna` | `build/tuna/tuna` | — | Not installable (v2 prototype) |
+| `heavylock-v2-swift` | SwiftPM `.build/` only | — | Not installable (library) |
 
 The orchestrator does not acquire the lock itself. Wrap builds and test
 suites in the shared runner:
@@ -344,19 +351,64 @@ reusable development skills.
 ### Development with Nix
 
 Repository development uses the [flake](flake.nix) dev shell. It requires
-Nix with the `nix-command` and `flakes` features enabled and provides Dart
-(from pinned `nixpkgs-unstable`, see [flake.lock](flake.lock)), Python 3, git,
-`gh`, `jq` and TLA+ 1.8 (`tlc`, `tlasany`, with a bundled Java runtime).
-It also sets `HEAVY_LOCK_MONITOR_DART` to the shell's Dart.
+Nix with the `nix-command` and `flakes` features enabled and provides Dart,
+Go, the Protocol Buffers compiler (`protoc`) and the Go protobuf/gRPC plugins
+(from pinned `nixpkgs-unstable`, see [flake.lock](flake.lock)), Python 3,
+git, `gh`, `jq` and TLA+ 1.8 (`tlc`, `tlasany`, with a bundled Java
+runtime). It also sets `HEAVY_LOCK_MONITOR_DART` to the shell's Dart.
 
 ```bash
 nix develop            # interactive shell
 nix develop -c dart --version
 ```
 
-Optionally, with [direnv](https://direnv.net), `echo 'use flake' > .envrc &&
-direnv allow` enters it automatically. Update the pinned toolchain with
-`nix flake update`, then rerun all gates.
+Optionally, with [direnv](https://direnv.net), run `direnv allow` once to
+enter the shell automatically using the repository's tracked `.envrc` (a
+single `use flake` line). Trust is your explicit, per-checkout choice; nothing
+in the repository grants it. Update the pinned toolchain with `nix flake
+update`, then rerun all gates.
+
+### v2 prototype and contract bindings
+
+The [v2 implementation plan](docs/v2-implementation-plan.md) is in progress.
+`apps/tuna` holds the single Go executable for the planned job-runner and
+`tuna service` broker modes. It currently only prints help or explicit
+not-implemented errors (exit 70) and never launches a command, so continue
+using the v1 `heavy-lock` runner for all workloads. The v2 target is macOS
+26+ on Apple Silicon, exercised on macOS 26.7.3/arm64 with Xcode 27.2
+(Swift 6.4.2), Go 1.27.3 and `protoc` 36.2.
+
+Bindings for the canonical contract, [docs/v2/heavylock.proto](docs/v2/heavylock.proto),
+are generated and committed; do not edit them by hand:
+
+- Go: `apps/tuna/gen/heavylock/v2/` (`protoc-gen-go` 1.36.12,
+  `protoc-gen-go-grpc` 1.6.2 from the flake; runtime modules pinned in
+  `apps/tuna/go.mod`).
+- Swift: `packages/heavylock-v2-swift/Sources/HeavyLockV2/` (messages plus
+  gRPC clients only), the library the future v2 monitor will use. Its
+  dependencies (grpc-swift-2 2.4.4, grpc-swift-protobuf 2.5.0, swift-protobuf
+  1.41.0 and transitive swift-collections 1.7.6) are pinned as non-flake
+  inputs in `flake.nix`, with their commits in `flake.lock`. SwiftPM still
+  needs `Package.swift` (exact requirements) and the committed
+  `Package.resolved`; evaluating the flake (`nix develop`, `nix flake check`)
+  fails if either differs from the flake pins, and `tool/dev.dart` and the
+  generator build with `--only-use-versions-from-resolved-file`. To update a
+  pin, change its tag in `flake.nix` and `Package.swift`, run `nix flake lock`
+  and `swift package resolve`, and commit all three. The `protoc-gen-swift`
+  and `protoc-gen-grpc-swift-2` plugins are built from those same
+  dependencies, so generated code always matches the runtime.
+
+Regenerate after changing the contract, or verify the committed files:
+
+```bash
+heavy-lock -- nix develop -c tool/generate_v2.sh          # regenerate
+heavy-lock -- nix develop -c tool/generate_v2.sh --check  # exit 1 if stale
+```
+
+Both binding tests assert the same golden wire encoding, so a cross-language
+mismatch fails `dart tool/dev.dart check all`. `nix build .#tuna` builds the
+executable from the flake; its `vendorHash` pins the Go module dependencies
+and must be updated whenever `apps/tuna/go.sum` changes.
 
 The shell deliberately uses `mkShellNoCC` and does not provide Swift: on
 macOS the monitor builds with the system Xcode `swift` (`xcode-select

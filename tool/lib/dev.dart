@@ -17,6 +17,8 @@ Commands:
   check <app|all>              Build, then test; reports both results.
   install <app|all> [dir]      Install a built application. A destination
                                directory is only accepted for a single app.
+                               `all` skips applications that are not
+                               installable.
 
 `all` selects the applications implemented for this host.''';
 
@@ -124,6 +126,10 @@ abstract class App {
   String get description;
   Support get support => Support.implemented;
 
+  /// Whether `install` applies. Prototypes and libraries are built and
+  /// tested but never installed.
+  bool get installable => true;
+
   /// Hosts on which this application can be built, tested and installed.
   Set<String> get hosts;
 
@@ -135,6 +141,8 @@ abstract class App {
 final List<App> apps = [
   const HeavyLockApp(),
   const MacMonitorApp(),
+  const TunaApp(),
+  const SwiftContractApp(),
   const FutureApp('monitor-windows', 'Windows status monitor', 'windows'),
   const FutureApp('monitor-linux', 'Linux status monitor', 'linux'),
 ];
@@ -204,7 +212,8 @@ Future<int> _forTargets(
     selected = [
       for (final app in apps)
         if (app.support == Support.implemented &&
-            app.hosts.contains(context.os))
+            app.hosts.contains(context.os) &&
+            (command != 'install' || app.installable))
           app,
     ];
   } else {
@@ -226,6 +235,10 @@ Future<int> _forTargets(
         '${app.name} is not supported on ${context.os} '
         '(${app.hosts.join(', ')} only).',
       );
+      return unavailableExitCode;
+    }
+    if (command == 'install' && !app.installable) {
+      context.err.writeln('${app.name} is not installable.');
       return unavailableExitCode;
     }
     selected = [app];
@@ -495,6 +508,102 @@ class MacMonitorApp extends App {
     );
     return 0;
   }
+}
+
+/// The v2 runner/broker executable. Until the v2 cutover it is a prototype
+/// that refuses to run work, so it is never installed.
+class TunaApp extends App {
+  const TunaApp();
+
+  @override
+  String get name => 'tuna';
+  @override
+  String get description => 'v2 runner/broker prototype (Go; runs no work)';
+  @override
+  Set<String> get hosts => const {'macos'};
+  @override
+  bool get installable => false;
+
+  String _package(DevContext context) => '${context.root}/apps/tuna';
+
+  @override
+  Future<int> build(DevContext context) async {
+    final output = Directory('${context.buildRoot}/tuna');
+    await output.create(recursive: true);
+    final temporary = File('${output.path}/.tuna.$pid.tmp');
+    try {
+      final code = await context.shell.run('go', [
+        'build',
+        '-trimpath',
+        '-o',
+        temporary.path,
+        '.',
+      ], workingDirectory: this._package(context));
+      if (code != 0 || !await temporary.exists()) {
+        context.err.writeln(
+          'Build failed; existing executable was not replaced.',
+        );
+        return code == 0 ? 1 : code;
+      }
+      await temporary.rename('${output.path}/tuna');
+    } finally {
+      if (await temporary.exists()) await temporary.delete();
+    }
+    context.out.writeln('Built: ${output.path}/tuna');
+    return 0;
+  }
+
+  @override
+  Future<int> test(DevContext context) => context.shell.run('go', [
+    'test',
+    './...',
+  ], workingDirectory: this._package(context));
+
+  @override
+  Future<int> install(DevContext context, String? destination) async =>
+      unavailableExitCode;
+}
+
+/// Generated Swift bindings for the v2 contract, consumed by the future v2
+/// monitor. A library, so it is never installed.
+class SwiftContractApp extends App {
+  const SwiftContractApp();
+
+  @override
+  String get name => 'heavylock-v2-swift';
+  @override
+  String get description => 'v2 contract Swift bindings (library)';
+  @override
+  Set<String> get hosts => const {'macos'};
+  @override
+  bool get installable => false;
+
+  String _package(DevContext context) =>
+      '${context.root}/packages/heavylock-v2-swift';
+
+  @override
+  Future<int> build(DevContext context) => context.shell.run('swift', [
+    'build',
+    resolvedOnly,
+    '--package-path',
+    this._package(context),
+  ]);
+
+  @override
+  Future<int> test(DevContext context) => context.shell.run('swift', [
+    'test',
+    resolvedOnly,
+    '--package-path',
+    this._package(context),
+  ]);
+
+  @override
+  Future<int> install(DevContext context, String? destination) async =>
+      unavailableExitCode;
+
+  /// Builds only the dependency versions in Package.resolved, which flake.nix
+  /// verifies against its Swift pins.
+  static const resolvedOnly = '--only-use-versions-from-resolved-file';
 }
 
 /// Moves [source] to [target], replacing an existing directory so a failure
