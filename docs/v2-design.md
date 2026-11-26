@@ -170,6 +170,13 @@ the v2 target. It is a candidate for the monitor, not yet a validated
 toolchain selection: the chosen versions, their dependencies and generation
 still need to be exercised with the actual Swift/Xcode toolchain.
 
+**User direction: dependencies.** The user requested that "dependencies
+should be defined in flake.nix." Declare and pin v2 third-party build tools,
+generators and library inputs through the flake. Go and Swift may also need
+their native manifests; keep those in sync with Nix rather than relying on
+ad hoc global installations. Apple's Swift compiler remains a system Xcode
+prerequisite. The exact Nix provisioning for Swift gRPC is not yet verified.
+
 **Alternatives and recommendations.** The assistant initially recommended
 retaining Dart to reuse the runner and avoid a rewrite. Dart isolates can
 run in parallel but communicate by messages rather than sharing memory.

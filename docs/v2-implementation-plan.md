@@ -94,10 +94,15 @@ following the [development lifecycle](development-lifecycle.md).
 
 **Deliverables**
 
+- Declare and pin v2 third-party build tools, generators and library inputs
+  through `flake.nix`, using `flake.lock` and fixed-output hashes as
+  appropriate. Keep required Go/Swift manifests and Nix inputs in sync;
+  do not rely on ad hoc global installations. Apple's Swift compiler remains
+  a system Xcode prerequisite.
 - Pin the Go toolchain, protobuf compiler and Go plugins, and select
-  compatible gRPC-Swift/compiler versions. Update `flake.nix`, the lockfile
-  as needed, and development documentation; keep Dart available for v1.
-  Verify Swift/Xcode requirements on the user's current Mac.
+  compatible gRPC-Swift/compiler versions. Update development documentation
+  and keep Dart available for v1. Verify Swift/Xcode requirements on the
+  user's current Mac.
 - Establish a buildable single Go executable with explicit client and broker
   roles, generated Go/Swift contract bindings, and an isolated Swift monitor
   integration path. Keep generated artifacts and their regeneration procedure
@@ -115,6 +120,9 @@ following the [development lifecycle](development-lifecycle.md).
   and Swift bindings through a compatible shared gate when available;
   otherwise record the checks as not run in #7. Record the tools and
   supported deployment targets actually exercised.
+- Verify that the flake supplies the declared v2 dependencies and that
+  required language manifests match the pinned Nix inputs; document the
+  system Xcode prerequisite and any unavailable checks.
 - Resolve contract changes against the design first. Keep
   `docs/v2/heavylock.proto`, `docs/v2/schema.sql`, their embedded copies in
   `v2-design.md` and the model consistent when any are changed.
