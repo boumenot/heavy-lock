@@ -27,6 +27,7 @@
             pkgs.git
             pkgs.gh
             pkgs.jq
+            pkgs.tlaplus18
           ];
           shellHook = ''
             export HEAVY_LOCK_MONITOR_DART="$(command -v dart)"

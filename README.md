@@ -309,7 +309,8 @@ reusable development skills.
 Repository development uses the [flake](flake.nix) dev shell. It requires
 Nix with the `nix-command` and `flakes` features enabled and provides Dart
 (from pinned `nixpkgs-unstable`, see [flake.lock](flake.lock)), Python 3, git,
-`gh` and `jq`. It also sets `HEAVY_LOCK_MONITOR_DART` to the shell's Dart.
+`gh`, `jq` and TLA+ 1.8 (`tlc`, `tlasany`, with a bundled Java runtime).
+It also sets `HEAVY_LOCK_MONITOR_DART` to the shell's Dart.
 
 ```bash
 nix develop            # interactive shell
@@ -370,6 +371,8 @@ Monitor integration takes a plain Dart path, not FVM.
 Current behavior is documented in [technical decisions](docs/technical-decisions.md).
 The [v2 design and decision record](docs/v2-design.md) captures future
 choices, tradeoffs, recommendations and open questions; v2 is not implemented.
+The [TLA+ model and bounded checks](docs/v2/model/README.md) review its
+concurrency and recovery assumptions; they are not implementation verification.
 
 ## License
 

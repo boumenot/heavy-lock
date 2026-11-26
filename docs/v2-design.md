@@ -1628,6 +1628,37 @@ version. Migrations run in one `BEGIN IMMEDIATE` transaction before
 recovery, and the broker refuses to open a database whose schema version is
 newer than it supports.
 
+## 12. TLA+ concurrency and recovery review
+
+The user requested TLA+ in the repository's flake and a runnable specification.
+The pinned dev shell now includes `pkgs.tlaplus18` (TLA+ 1.8.0/TLC 2.18).
+The [model and verification notes](v2/model/README.md) describe separate
+database, message, runner and OS-process boundaries, finite TLC configurations,
+assumptions, counterexamples and reproduction commands.
+
+This is design verification, not authorization to implement v2. In particular,
+the model's crash-surviving launch fence, stable no-future-launch verification,
+complete process tracking and recovery-only RPC handling are **proposals or
+abstractions**, not new approved decisions. Unsafe alternatives remain runnable:
+volatile launch memory permits duplicate execution; unfenced absence or
+incomplete descendant accounting permits premature release. The intentional
+force-start overload witness prevents mistaking a total-capacity bound for
+the user's actual admission policy.
+
+The review also identifies an unresolved recovery contract: section 11 refuses
+RPCs while recovering, yet recovery may need a runner's unrecorded process
+identity. Likewise, early `ReportFinished` requires a defined start-report
+ordering or reconciliation rule. Passing a bounded strengthened model cannot
+resolve these choices on the user's behalf.
+
+TLC completed the strengthened two-job lifecycle profile (7,095,636 distinct
+states), one-job crash/recovery profile (581,008) and three-job scheduler-only
+profile (636), with no checked invariant violation. Six small witness cases
+reproduce unsafe alternatives or intentional policy exceptions. The wider
+combined two-job crash profile was stopped for exploration cost and is
+explicitly **not verified**. Bounds, measured results, fingerprint limitations
+and the one-time shared-lock exception are documented with the model.
+
 ## Open decisions before implementation
 
 1. Pause/force-start interaction; confirmation and audit semantics for
@@ -1665,6 +1696,10 @@ newer than it supports.
     supported platforms.
 12. Admission option compatibility, oversized weights, capacity changes,
     no-wait behavior and v1/nesting rollout.
+13. The [formal review gaps](v2/model/README.md#outcomes-and-actionable-gaps):
+    restart-safe grant consumption; no-future-launch fencing before release;
+    a recovery-only report/rejoin path; early-finish report ordering; and
+    safety versus progress when process identity cannot be recovered.
 
 Resolve these with explicit decisions and update this record before
 treating a proposal as implementation policy.
