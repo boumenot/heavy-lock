@@ -15,11 +15,12 @@ are retained below for their rationale, not as active policy.
 
 **Delegated decision** means a choice the assistant made under the user's
 explicit delegation, "accept your recommendations for the questions, only
-focus on the ones that require me", applying the recommendations from the
-published design review. Delegated decisions are adopted policy for this
-design, but they are the assistant's choices, not choices the user made
-individually; the user can revisit any of them. Each records the user
-decision it supersedes, if any, and its alternatives and tradeoffs.
+focus on the ones that require me", and the later direction to select
+recommendations automatically and record them without asking. Delegated
+decisions are adopted policy for this design, but they are the assistant's
+choices, not choices the user made individually; the user can revisit any
+of them. Each records the user decision it supersedes, if any, and its
+alternatives and tradeoffs.
 
 No v2 code, Go toolchain migration, deployment, protocol change or machine
 configuration is part of this documentation work. The user authorized
@@ -67,6 +68,7 @@ other row is an explicit user decision.
 | No-wait | One registered-stream normal-admission decision; a definite refusal exits 75 without queueing, while an ambiguous result is an error, not 75 *(delegated)* |
 | Pause | Pause normal admissions until explicitly resumed, including across broker restarts; running jobs continue and confirmed force-start remains allowed |
 | Force-start | Bypass resource checks, including while paused; count toward occupied capacity, with monitor confirmation |
+| Forced-job visibility | Show force-started jobs distinctly in the monitor and CLI *(delegated)* |
 | New submission while service unavailable | Fail immediately and clearly; do not auto-start, retry until restart, or run unscheduled |
 | Recovery | Persist valid existing-job rejoin/reports; become ready once trusted storage gives complete accounting, keeping each unreconciled reservation held and counted while normal scheduling continues *(delegated; supersedes global fail-closed blocking)*; never release or replay on uncertainty |
 | Runner death | After OS-verified death of the assigned runner incarnation, the broker force-stops the job's verified processes *(delegated; supersedes leaving them running)*; never on disconnect or timeout alone; reservation held until release checks pass |
@@ -77,6 +79,7 @@ other row is an explicit user decision.
 | Database typing | SQLite STRICT tables |
 | SQLite journal | WAL with `synchronous = FULL` everywhere and `fullfsync = ON` on macOS; measure commit latency |
 | SQLite driver | Start with `modernc.org/sqlite`; pin and validate a version before implementation relies on it |
+| Initial query/storage tuning | `ListJobs` page size 50, maximum 500; SQLite cache 16 MiB per connection and mmap up to 256 MiB *(delegated; unmeasured)* |
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
 | Backup policy | Deferred until active development; do not automatically replace a corrupt database |
 | Blocked cancel takeover | On deadline expiry with a live runner blocking safe coordination, broker tries to terminate that verified runner; takes over only after its exact incarnation is verified dead and coordination is safe; otherwise waits holding the reservation. Explicit cancel only; the broker never kills a runner for runner-death cleanup |
@@ -471,9 +474,14 @@ pause a stronger, more predictable global stop. Allowing a confirmed
 exception keeps emergency/manual control available, but an operator can
 deliberately increase load while normal admission remains paused.
 
-**Recommendation.** Mark forced jobs visibly. Job history retains relevant
-force and cancellation state, including the cancellation request time and
-any supplied reason; claimed client attribution is not authenticated.
+**Delegated decision: forced-job visibility.** Mark force-started jobs
+distinctly in monitor and CLI job views, including retained history. Job
+history retains relevant force and cancellation state, including the
+cancellation request time and any supplied reason; claimed client
+attribution is not authenticated. This adopts the assistant's
+recommendation so an exceptional admission is visible rather than easily
+mistaken for a normal one. It adds presentation work but is not a separate
+control activity log.
 
 **User decision: no separate control activity log.** Keep the durable state
 required for scheduling and job history, and the bounded event-replay log,
@@ -1045,9 +1053,10 @@ The cost is that a runner must open its stream promptly after submitting.
 A slow first registration can block the head for up to the grace period,
 just as a disconnect does.
 
-**Open.** Definition of reconnect-ready, persistence of
-partially elapsed grace, repeated restarts, reconnect credentials/identity,
-and ordering when reconnect races cancellation or admission.
+**Open.** Definition of reconnect-ready, grace-checkpoint precision and
+reconstruction across repeated restarts, reconnect credentials/identity,
+and ordering when reconnect races cancellation or admission. The
+partially elapsed grace checkpoint policy is described in section 11.3.
 Running-runner disconnect handling must not treat disconnection as death.
 
 **User decision (superseded): runner death.** The broker left a running
@@ -1470,9 +1479,13 @@ management and less convenient `curl` use; the user chose no authentication.
 Separate REST/gRPC ports simplify independent serving but require multiple
 endpoint settings; the shared-port choice requires protocol routing.
 
-**Recommendations.** Route both APIs through the same broker domain
-layer, not independent schedulers. The monitor must not read SQLite
-directly. Evaluate a Go REST implementation versus a gRPC-Gateway
+**Delegated decision: shared domain logic.** Route both APIs through the
+same broker domain layer, not independent schedulers. The monitor uses
+gRPC and must not read SQLite directly. This adopts the assistant's
+recommendation: a single authority avoids divergent admission and recovery
+behavior, at the cost of routing all client operations through the broker.
+
+**Recommendations.** Evaluate a Go REST implementation versus a gRPC-Gateway
 translation layer; the latter reduces contract duplication but adds
 generation/runtime machinery. Plaintext gRPC on loopback requires
 HTTP/2 cleartext support and deliberate shared-listener routing.
@@ -1492,10 +1505,9 @@ discovery or a security boundary.
 - health and readiness
 - error mapping
 
-Apart from the selected REST query/control scope and polling,
-REST-to-gRPC mapping, and gRPC streams for runner and monitor, these
-contract details remain unapproved proposals. CLI control spelling and
-coverage beyond the delegated queue controls, port-argument spelling,
+Except where this record identifies a user or delegated decision, concrete
+wire-format and endpoint details remain proposals. CLI control spelling
+and coverage beyond the delegated queue controls, port-argument spelling,
 IPv4/IPv6 binding behavior, Swift gRPC dependency/version choices, browser
 CORS/preflight interoperability and service identity verification also
 remain open.
@@ -1638,11 +1650,13 @@ The tools discussed solve different problems:
 | `gopsutil` | Convenient cross-platform OS/process API wrappers | Per-platform coverage and error behavior need verification; wrappers do not guarantee complete descendant accounting |
 | Direct OS sampling | Explicit control over process identity, errors and platform metrics | More native adapters, permissions and platform-specific maintenance/testing |
 
-**Recommendation.** Keep job sampling behind platform-specific adapters;
-evaluate a library only after verifying identities, error propagation and
-measurement definitions. Revisit service telemetry when there is a
-concrete diagnostic need, rather than treating it as a prerequisite for
-job history. No option in this table has been selected as the sampler.
+**Delegated decision: sampling adapters.** Keep job sampling behind
+platform-specific adapters, following the assistant's recommendation.
+Evaluate a library only after verifying identities, error propagation and
+measurement definitions. This isolates platform-specific limitations but
+requires adapter design and testing. Revisit service telemetry when there
+is a concrete diagnostic need, rather than treating it as a prerequisite
+for job history. No option in this table has been selected as the sampler.
 
 Two specific source caveats informed the discussion:
 
@@ -1774,7 +1788,8 @@ detail. Remaining proposals include:
 queued-disconnect grace, 5 seconds for broker-to-runner heartbeats, and 30
 seconds for launch investigation from the durable reservation commit.
 Event replay limits are user-selected initial defaults (section 6). The
-`ListJobs` page size and SQLite cache and mmap sizes remain proposed defaults.
+`ListJobs` page size and SQLite cache and mmap sizes are unmeasured
+delegated starting defaults, not user-selected values.
 
 | Area | User decision |
 |---|---|
@@ -1959,10 +1974,15 @@ required; storage failure is never reported as absence. A later in-flight
 submission can still commit after an absent lookup, so absence does not
 authorize an automatic new-key retry.
 
-**Listing.** `ListJobs` covers queued, running and finished jobs, newest
-first by `(queued_at_unix_ns, job_id)`. It filters by state, repository,
-client name and a queue-time range. It uses keyset pagination with opaque
-tokens; the proposed default page size is 50 and the maximum 500.
+**Delegated decision: listing size.** `ListJobs` covers queued, running
+and finished jobs, newest first by `(queued_at_unix_ns, job_id)`. It filters
+by state, repository, client name and a queue-time range. It uses keyset
+pagination with opaque tokens; the initial default page size is 50 and the
+maximum is 500. These follow the assistant's proposed defaults: smaller
+pages limit individual response size but require more round trips, while
+larger pages can reduce round trips at the cost of memory and response
+latency. Measure actual usage before tuning; handling of a request above the
+maximum remains open.
 `GetQueue` separately returns current queue order, including manual moves.
 
 **Unauthenticated.** Any local process that can connect may submit, list,
@@ -3480,8 +3500,9 @@ All `Attribution` values are unauthenticated declarations.
 
 These settings follow the user's decisions to use WAL, `synchronous = FULL`
 on all platforms, `fullfsync` on macOS, and to measure commit latency. The
-cache and mmap sizes and checkpoint cadence below are proposed defaults.
-The event-retention limits are user-selected initial defaults.
+cache and mmap sizes are delegated, unmeasured starting defaults; the
+checkpoint cadence remains proposed. The event-retention limits are
+user-selected initial defaults.
 
 #### Database-level settings
 
@@ -3507,14 +3528,20 @@ broker runs.
 | `fullfsync` | `ON` on macOS (**user decision**) | macOS `F_FULLFSYNC` requests a stronger flush than ordinary `fsync`, at additional latency; measure that cost. Its effectiveness depends on the storage stack. This platform-specific choice does not assert equivalent behavior on other OSes. |
 | `busy_timeout` | `5000` ms | Readers rarely wait in WAL, but checkpoints and startup can briefly contend. Prefer waiting over failing with `SQLITE_BUSY`. |
 | `temp_store` | `MEMORY` | Sorts and temporary indexes for list queries stay off disk. |
-| `cache_size` | `-16384` (16 MiB per connection; proposal) | The working set (queue, active jobs, recent history) stays in memory. A negative value means KiB. |
-| `mmap_size` | `268435456` (256 MiB; proposal) | Reads use memory-mapped I/O rather than `read()` copies. The address-space reservation is not resident memory. |
+| `cache_size` | `-16384` (16 MiB per connection; delegated) | A negative value means KiB. A larger cache may reduce disk reads but consumes more memory; this is a suggested limit, not a guarantee that the working set fits. |
+| `mmap_size` | `268435456` (up to 256 MiB; delegated) | Mapping may reduce read-copy overhead but uses address space and depends on SQLite/platform support. The requested maximum does not guarantee mapping or resident-memory use. |
 | `wal_autocheckpoint` | `1000` pages (default) | Triggers an automatic checkpoint at about 4 MiB; long-lived readers can prevent completion and allow the WAL to grow. |
 | `journal_size_limit` | `67108864` (64 MiB) | Limits retained WAL size when it can be reset; it is not a hard limit on active WAL growth. |
 | `trusted_schema` | `OFF` | Defence in depth: schema-defined SQL functions cannot run with elevated trust. |
 | `optimize` | `0x10002` on open; `optimize` periodically and on close | Keeps query-planner statistics current without manual `ANALYZE`. |
 
 Read-only pool connections also set `PRAGMA query_only = ON`.
+
+The assistant recommended these cache and mmap values as starting points.
+They are tuning, not recovery or durability guarantees, and must be
+validated with the selected driver and representative workloads. Smaller
+values reduce memory/address-space pressure but may increase read overhead;
+larger values may help some workloads at additional resource cost.
 
 #### Connection model
 
@@ -3656,9 +3683,9 @@ current results from historical runs and list bounds and unchecked cases.
    runner and takes over only after its exact incarnation is verified dead,
    otherwise waiting; detection of blocking coordination, kill/escalation
    mechanisms and cleanup of stopped descendants remain open.
-2. Concrete defaults still proposed or unset:
-   - page size (proposed 50, maximum 500)
-   - SQLite cache and mmap sizes (proposed 16 MiB and 256 MiB)
+2. Verify and measure the delegated initial `ListJobs` pagination and
+   SQLite cache/mmap defaults; decide how requests above the page maximum
+   are handled (sections 11.1 and 11.4).
 3. Platform mechanisms for proving runner termination, serialized sealing,
    root exit and absence of known descendants; how to present and investigate
    an unverifiable reservation and obtain valid evidence without an unsafe
