@@ -10,6 +10,14 @@ proposals below are **not additional approved product decisions**.
 The repository's pinned Nix shell includes `pkgs.tlaplus18` (TLA+ 1.8.0,
 TLC 2.18) and its Java runtime. It has been realized locally; entering the
 shell makes `tlc` and `tlasany` available without a global installation.
+The wrappers embed their own Nix JDK (Zulu 21); the shell does not put
+`java` on `PATH`, so a system `java` stub is irrelevant.
+
+Realization check (2026-11-25, macOS aarch64, unchanged `flake.lock`):
+`nix develop -c command -v tlc` resolved to
+`/nix/store/…-tlaplus-1.8.0/bin/tlc`, TLC reported `Version 2.18`, SANY
+parsed `BrokerRunner.tla`, and `check.py Scheduling Recovery` plus the six
+witness cases reproduced the outcomes tabulated below.
 
 ```bash
 nix develop -c tlc -help
