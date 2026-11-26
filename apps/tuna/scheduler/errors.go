@@ -25,6 +25,7 @@ func ContractError(err error) error {
 		{ErrStopped, codes.Unavailable, pb.ErrorReason_RECOVERING},
 		{storage.ErrUnavailable, codes.Unavailable, pb.ErrorReason_STORAGE_UNAVAILABLE},
 		{ErrWeightExceedsCapacity, codes.FailedPrecondition, pb.ErrorReason_WEIGHT_EXCEEDS_CAPACITY},
+		{ErrGrantFenced, codes.FailedPrecondition, pb.ErrorReason_GRANT_FENCED},
 		{ErrNotWaiting, codes.FailedPrecondition, pb.ErrorReason_JOB_NOT_WAITING},
 		{storage.ErrAdmissionBusy, codes.FailedPrecondition, pb.ErrorReason_ADMISSION_BUSY},
 		{storage.ErrKeyReused, codes.AlreadyExists, pb.ErrorReason_IDEMPOTENCY_KEY_REUSED},

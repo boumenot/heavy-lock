@@ -44,6 +44,14 @@ type Options struct {
 	PID            int64
 	Clock          Clock
 	Sampler        Sampler
+	// Publish, when set, receives every committed event batch in commit
+	// order, under the scheduler mutex. It must not block or call back into
+	// the scheduler.
+	Publish func([]*pb.BrokerEvent)
+	// Processes verifies that tracked processes have exited before a
+	// release. Without it no process is ever verified, so capacity held by
+	// a launched command stays held (fail closed).
+	Processes ProcessProbe
 }
 
 // Registration is one accepted job stream. Only the latest registration of
@@ -79,6 +87,8 @@ type Scheduler struct {
 	grace         map[string]disconnected
 	lastSample    *Sample
 	lastSharing   *Sharing
+	publish       func([]*pb.BrokerEvent)
+	processes     ProcessProbe
 }
 
 // Start records a new broker run with capacity fixed for that run. Every
@@ -98,11 +108,12 @@ func Start(ctx context.Context, store *storage.Store, o Options) (*Scheduler, []
 		o.Clock = MonotonicClock()
 	}
 	s := &Scheduler{store: store, cfg: o.Config, version: o.ServiceVersion, clock: o.Clock,
-		sampler: o.Sampler, streams: map[string]*Registration{}, grace: map[string]disconnected{}}
+		sampler: o.Sampler, streams: map[string]*Registration{}, grace: map[string]disconnected{},
+		publish: o.Publish, processes: o.Processes}
 	now := s.clock()
 	// The previous admission time is unknown after a restart; settle from now.
 	s.lastAdmission = now
-	events, err := store.Write(durable(ctx), func(tx *storage.Tx) error {
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(false)
 		clear(s.grace)
 		var err error
@@ -146,7 +157,7 @@ func (s *Scheduler) MarkReady(ctx context.Context) ([]*pb.BrokerEvent, error) {
 	if s.stopped {
 		return nil, ErrStopped
 	}
-	events, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(true)
 		return tx.ReadyService(s.run)
 	})
@@ -167,7 +178,7 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 		return nil
 	}
 	now := s.clock()
-	_, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+	_, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(false)
 		for _, id := range s.graceIDs() {
 			j, err := tx.Job(id)
@@ -194,6 +205,25 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 
 func (s *Scheduler) ServiceRunID() int64 { return s.run }
 
+// Ready reports whether normal admission is open (MarkReady committed and
+// the scheduler is not stopped).
+func (s *Scheduler) Ready() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ready && !s.stopped
+}
+
+// write is the only path to a storage write: it detaches the commit from
+// caller cancellation and publishes the committed events exactly once, in
+// commit order. Callers hold the mutex (Start runs before any other use).
+func (s *Scheduler) write(ctx context.Context, mutate func(*storage.Tx) error) ([]*pb.BrokerEvent, error) {
+	events, err := s.store.Write(durable(ctx), mutate)
+	if err == nil && s.publish != nil {
+		s.publish(events)
+	}
+	return events, err
+}
+
 func (s *Scheduler) usable(needReady bool) error {
 	if s.stopped {
 		return ErrStopped
@@ -215,7 +245,7 @@ func (s *Scheduler) Submit(ctx context.Context, req *pb.SubmitJobRequest) (stora
 		return result, nil, err
 	}
 	now := s.clock()
-	events, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(true)
 		if _, err := s.fresh(tx, req); err != nil {
 			return err
@@ -273,7 +303,7 @@ func (s *Scheduler) TrySubmitAndWatch(ctx context.Context, req *pb.SubmitJobRequ
 	}
 	var result storage.SubmissionResult
 	p := &probe{s: s, ctx: durable(ctx)}
-	events, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(true)
 		fresh, err := s.fresh(tx, req)
 		if err != nil {
@@ -372,7 +402,7 @@ func (s *Scheduler) Watch(ctx context.Context, id string, runner *pb.RunnerIncar
 	}
 	var job *pb.Job
 	queued := false
-	events, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(s.ready)
 		j, err := tx.Job(id)
 		if err != nil {
@@ -425,7 +455,7 @@ func (s *Scheduler) Disconnect(ctx context.Context, r *Registration) ([]*pb.Brok
 	}
 	now := s.clock()
 	disconnectedQueued := false
-	events, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(s.ready)
 		var err error
 		disconnectedQueued, err = s.disconnectQueued(tx, r.JobID, now)
@@ -505,7 +535,7 @@ func (s *Scheduler) Tick(ctx context.Context) ([]*pb.BrokerEvent, error) {
 	}
 	now := s.clock()
 	var drop, started []string
-	events, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(s.ready)
 		drop, started = drop[:0], started[:0]
 		for _, id := range s.graceIDs() {
@@ -583,7 +613,7 @@ func (s *Scheduler) ForceStart(ctx context.Context, id string) (*pb.Job, []*pb.B
 	}
 	var job *pb.Job
 	p := &probe{s: s, ctx: durable(ctx)}
-	events, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(true)
 		j, err := tx.Job(id)
 		if err != nil {
@@ -616,7 +646,7 @@ func (s *Scheduler) Pause(ctx context.Context, paused bool) ([]*pb.BrokerEvent, 
 	if err := s.usable(false); err != nil {
 		return nil, err
 	}
-	events, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(s.ready)
 		return tx.Pause(paused)
 	})
@@ -649,8 +679,11 @@ func (s *Scheduler) move(ctx context.Context, id string, target func(*storage.Tx
 	if err := s.usable(false); err != nil {
 		return nil, err
 	}
-	events, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(s.ready)
+		if _, err := tx.Job(id); err != nil {
+			return err
+		}
 		before, err := target(tx)
 		if err != nil {
 			return err
@@ -677,7 +710,7 @@ func (s *Scheduler) admitLocked(ctx context.Context) ([]*pb.BrokerEvent, error) 
 	for s.ready && !s.stopped {
 		admitted := false
 		p := &probe{s: s, ctx: durable(ctx)}
-		events, err := s.store.Write(durable(ctx), func(tx *storage.Tx) error {
+		events, err := s.write(ctx, func(tx *storage.Tx) error {
 			tx.ProjectEvent = s.project(true)
 			admitted = false
 			state, err := s.state(&tx.Reader, true, p.sharing)
