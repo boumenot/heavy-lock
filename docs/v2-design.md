@@ -52,7 +52,7 @@ users' jobs or machines.
 | Recovery | SQLite persists queue and active state; reconcile verified live jobs and occupied slots before admitting new work |
 | Database typing | SQLite STRICT tables |
 | SQLite journal | WAL |
-| Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes, API parity and push updates; see [section 11](#11-interface-and-schema-design) |
+| Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes and API parity; see [section 11](#11-interface-and-schema-design) |
 | Queued-runner disconnect | Preserve place during a grace period, then remove if still disconnected; service downtime does not count |
 | Job history | Sample every five seconds, retain summaries rather than raw timestamped samples, keep indefinitely until explicitly deleted |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
@@ -315,9 +315,11 @@ or a security boundary.
 - every control over REST
 - SSE event delivery for the monitor
 
-The user has not approved these beyond the one-way parity and push-update
-recommendations. CLI control equivalents, port-argument spelling, IPv4/IPv6
-binding behavior and service identity verification also remain open.
+Apart from the one-way REST-to-gRPC parity decision, these contract details
+remain unapproved proposals. The runner's `WatchJob` push stream is also a
+recommendation, not a user decision. CLI control equivalents, port-argument
+spelling, IPv4/IPv6 binding behavior and service identity verification also
+remain open.
 
 ## 7. Resource history and attribution
 
@@ -474,11 +476,11 @@ This is a design specification, not authorization to implement. The table
 below lists recommendations made earlier in the discussion that the user
 approved, plus WAL, which the user specified directly. Everything else in
 these files is a **new proposal**. It was drafted during the design
-discussion and then revised in this record for consistency and safety. It is a complete baseline, but the
-user has not separately approved it. Proposals introduced or changed during
-that revision include:
+discussion and then revised in this record for consistency and safety. It
+is a complete baseline, but the user has not separately approved it.
+These proposals include:
 - `synchronous = FULL`, and on macOS `fullfsync` (section 11.4)
-- `WatchJob` snapshot-on-every-call reconnect semantics
+- the `WatchJob` push stream and snapshot-on-every-call reconnect semantics
 - cancelling a reserved job through the runner
 - storing the outcome while a job is `FINISHING`
 - never-reused event sequences with a resume floor
@@ -502,7 +504,6 @@ that revision include:
 | Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected |
 | Outcome | Native `int64` exit code, optional POSIX signal number and name, and `outcome_kind` |
 | API parity | One-way REST-to-gRPC parity: every REST endpoint maps to a `ControlService` RPC |
-| Runner updates | `WatchJob` is a push stream, not polling |
 | SQLite journal | WAL (direct user instruction, with performance-oriented options considered) |
 
 ### 11.1 gRPC contract
@@ -516,7 +517,14 @@ The proto defines two services on the shared loopback port:
 
 The runner executes the command; the broker never launches it.
 
-**Push, not polling.** After submitting, the runner opens one long-lived
+**Runner-update recommendation: push, not polling.** The user asked whether
+the client/server interface polls. The proposed `WatchJob` stream pushes
+updates promptly without repeated status requests. Polling would avoid a
+long-lived stream but trade request volume against update latency. Streaming
+requires connection, heartbeat and reconnection handling. The user has not
+approved either approach.
+
+Under this proposal, after submitting, the runner opens one long-lived
 server-streaming `WatchJob` call.
 - The broker pushes queue-position changes, the `Grant`, cancellation
   requests and the terminal `finished` event.
@@ -1606,7 +1614,8 @@ newer than it supports.
 3. Recovery when a launch timeout expires without `ReportStarted` or
    `ReportLaunchFailed`. Capacity must not be released without process
    verification.
-4. Reconnect races against grace expiry, cancellation or admission;
+4. Runner-update delivery: the proposed `WatchJob` push stream versus
+   polling; reconnect races against grace expiry, cancellation or admission;
    whether accumulated grace resets on reconnect.
 5. Running-runner disconnect behavior.
 6. Broker-instance exclusion; descendant and reparented-process
