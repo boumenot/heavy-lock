@@ -468,6 +468,30 @@ public nonisolated enum Heavylock_V2_ErrorReason: SwiftProtobuf.Enum, Swift.Case
 
   /// FAILED_PRECONDITION; durable no-wait refusal
   case admissionBusy // = 22
+
+  /// NOT_FOUND; no REST route matches
+  case httpRouteNotFound // = 23
+
+  /// UNIMPLEMENTED; method is not supported on the REST route
+  case httpMethodNotAllowed // = 24
+
+  /// INVALID_ARGUMENT; REST body is not JSON
+  case httpUnsupportedMediaType // = 25
+
+  /// RESOURCE_EXHAUSTED; REST request body exceeds the limit
+  case httpRequestTooLarge // = 26
+
+  /// UNIMPLEMENTED
+  case operationNotImplemented // = 27
+
+  /// INTERNAL; non-contract broker error
+  case internalError // = 28
+
+  /// CANCELLED
+  case requestCancelled // = 29
+
+  /// DEADLINE_EXCEEDED
+  case deadlineExceeded // = 30
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -499,6 +523,14 @@ public nonisolated enum Heavylock_V2_ErrorReason: SwiftProtobuf.Enum, Swift.Case
     case 20: self = .retryNotEligible
     case 21: self = .idempotencyKeyDeleted
     case 22: self = .admissionBusy
+    case 23: self = .httpRouteNotFound
+    case 24: self = .httpMethodNotAllowed
+    case 25: self = .httpUnsupportedMediaType
+    case 26: self = .httpRequestTooLarge
+    case 27: self = .operationNotImplemented
+    case 28: self = .internalError
+    case 29: self = .requestCancelled
+    case 30: self = .deadlineExceeded
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -528,6 +560,14 @@ public nonisolated enum Heavylock_V2_ErrorReason: SwiftProtobuf.Enum, Swift.Case
     case .retryNotEligible: return 20
     case .idempotencyKeyDeleted: return 21
     case .admissionBusy: return 22
+    case .httpRouteNotFound: return 23
+    case .httpMethodNotAllowed: return 24
+    case .httpUnsupportedMediaType: return 25
+    case .httpRequestTooLarge: return 26
+    case .operationNotImplemented: return 27
+    case .internalError: return 28
+    case .requestCancelled: return 29
+    case .deadlineExceeded: return 30
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -557,6 +597,14 @@ public nonisolated enum Heavylock_V2_ErrorReason: SwiftProtobuf.Enum, Swift.Case
     .retryNotEligible,
     .idempotencyKeyDeleted,
     .admissionBusy,
+    .httpRouteNotFound,
+    .httpMethodNotAllowed,
+    .httpUnsupportedMediaType,
+    .httpRequestTooLarge,
+    .operationNotImplemented,
+    .internalError,
+    .requestCancelled,
+    .deadlineExceeded,
   ]
 
 }
@@ -1792,6 +1840,15 @@ public nonisolated struct Heavylock_V2_Health: Sendable {
   /// Clears the value of `storageDetail`. Subsequent reads from it will return its default value.
   public mutating func clearStorageDetail() {self._storageDetail = nil}
 
+  /// "heavylock.v2"; not authentication
+  public var serviceIdentity: String = String()
+
+  /// 2; incompatible changes require a new major
+  public var apiMajor: UInt32 = 0
+
+  /// additive, backwards-compatible changes
+  public var apiMinor: UInt32 = 0
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -2336,7 +2393,7 @@ nonisolated extension Heavylock_V2_BlockedReason: SwiftProtobuf._ProtoNameProvid
 }
 
 nonisolated extension Heavylock_V2_ErrorReason: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ERROR_REASON_UNSPECIFIED\0\u{1}RECOVERING\0\u{1}INVALID_ARGUMENT_FIELD\0\u{1}IDEMPOTENCY_KEY_REUSED\0\u{1}JOB_NOT_FOUND\0\u{1}JOB_NOT_WAITING\0\u{1}JOB_TERMINAL\0\u{1}JOB_NOT_TERMINAL\0\u{1}GRANT_MISMATCH\0\u{1}PROCESSES_UNRECONCILED\0\u{1}WEIGHT_EXCEEDS_CAPACITY\0\u{1}RESERVED_METADATA_KEY\0\u{1}METADATA_TOO_LARGE\0\u{1}EVENTS_EXPIRED\0\u{1}INVALID_PAGE_TOKEN\0\u{1}CLAIM_MISMATCH\0\u{1}GRANT_FENCED\0\u{1}REPORT_CONFLICT\0\u{1}STORAGE_UNAVAILABLE\0\u{1}STORAGE_CORRUPT\0\u{1}RETRY_NOT_ELIGIBLE\0\u{1}IDEMPOTENCY_KEY_DELETED\0\u{1}ADMISSION_BUSY\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ERROR_REASON_UNSPECIFIED\0\u{1}RECOVERING\0\u{1}INVALID_ARGUMENT_FIELD\0\u{1}IDEMPOTENCY_KEY_REUSED\0\u{1}JOB_NOT_FOUND\0\u{1}JOB_NOT_WAITING\0\u{1}JOB_TERMINAL\0\u{1}JOB_NOT_TERMINAL\0\u{1}GRANT_MISMATCH\0\u{1}PROCESSES_UNRECONCILED\0\u{1}WEIGHT_EXCEEDS_CAPACITY\0\u{1}RESERVED_METADATA_KEY\0\u{1}METADATA_TOO_LARGE\0\u{1}EVENTS_EXPIRED\0\u{1}INVALID_PAGE_TOKEN\0\u{1}CLAIM_MISMATCH\0\u{1}GRANT_FENCED\0\u{1}REPORT_CONFLICT\0\u{1}STORAGE_UNAVAILABLE\0\u{1}STORAGE_CORRUPT\0\u{1}RETRY_NOT_ELIGIBLE\0\u{1}IDEMPOTENCY_KEY_DELETED\0\u{1}ADMISSION_BUSY\0\u{1}HTTP_ROUTE_NOT_FOUND\0\u{1}HTTP_METHOD_NOT_ALLOWED\0\u{1}HTTP_UNSUPPORTED_MEDIA_TYPE\0\u{1}HTTP_REQUEST_TOO_LARGE\0\u{1}OPERATION_NOT_IMPLEMENTED\0\u{1}INTERNAL_ERROR\0\u{1}REQUEST_CANCELLED\0\u{1}DEADLINE_EXCEEDED\0")
 }
 
 nonisolated extension Heavylock_V2_ClientInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
@@ -3932,7 +3989,7 @@ nonisolated extension Heavylock_V2_GetHealthRequest: SwiftProtobuf.Message, Swif
 
 nonisolated extension Heavylock_V2_Health: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Health"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}live\0\u{1}ready\0\u{3}service_version\0\u{3}started_at_unix_ns\0\u{3}schema_version\0\u{3}recovery_detail\0\u{3}storage_detail\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}live\0\u{1}ready\0\u{3}service_version\0\u{3}started_at_unix_ns\0\u{3}schema_version\0\u{3}recovery_detail\0\u{3}storage_detail\0\u{3}service_identity\0\u{3}api_major\0\u{3}api_minor\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3947,6 +4004,9 @@ nonisolated extension Heavylock_V2_Health: SwiftProtobuf.Message, SwiftProtobuf.
       case 5: try { try decoder.decodeSingularInt64Field(value: &self.schemaVersion) }()
       case 6: try { try decoder.decodeSingularStringField(value: &self._recoveryDetail) }()
       case 7: try { try decoder.decodeSingularStringField(value: &self._storageDetail) }()
+      case 8: try { try decoder.decodeSingularStringField(value: &self.serviceIdentity) }()
+      case 9: try { try decoder.decodeSingularUInt32Field(value: &self.apiMajor) }()
+      case 10: try { try decoder.decodeSingularUInt32Field(value: &self.apiMinor) }()
       default: break
       }
     }
@@ -3978,6 +4038,15 @@ nonisolated extension Heavylock_V2_Health: SwiftProtobuf.Message, SwiftProtobuf.
     try { if let v = self._storageDetail {
       try visitor.visitSingularStringField(value: v, fieldNumber: 7)
     } }()
+    if !self.serviceIdentity.isEmpty {
+      try visitor.visitSingularStringField(value: self.serviceIdentity, fieldNumber: 8)
+    }
+    if self.apiMajor != 0 {
+      try visitor.visitSingularUInt32Field(value: self.apiMajor, fieldNumber: 9)
+    }
+    if self.apiMinor != 0 {
+      try visitor.visitSingularUInt32Field(value: self.apiMinor, fieldNumber: 10)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -3989,6 +4058,9 @@ nonisolated extension Heavylock_V2_Health: SwiftProtobuf.Message, SwiftProtobuf.
     if lhs.schemaVersion != rhs.schemaVersion {return false}
     if lhs._recoveryDetail != rhs._recoveryDetail {return false}
     if lhs._storageDetail != rhs._storageDetail {return false}
+    if lhs.serviceIdentity != rhs.serviceIdentity {return false}
+    if lhs.apiMajor != rhs.apiMajor {return false}
+    if lhs.apiMinor != rhs.apiMinor {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

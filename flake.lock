@@ -17,6 +17,23 @@
         "type": "github"
       }
     },
+    "grpc-swift-nio-transport": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1795518438,
+        "narHash": "sha256-xYqoiC8Bo5tBgzdXU4BPHb7OfC2Iu83wWOLGDHbCt54=",
+        "owner": "grpc",
+        "repo": "grpc-swift-nio-transport",
+        "rev": "0895a88fdaaa549548ebab9c6a0571d5d499df5d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "grpc",
+        "ref": "2.13.3",
+        "repo": "grpc-swift-nio-transport",
+        "type": "github"
+      }
+    },
     "grpc-swift-protobuf": {
       "flake": false,
       "locked": {
@@ -53,10 +70,113 @@
     "root": {
       "inputs": {
         "grpc-swift-2": "grpc-swift-2",
+        "grpc-swift-nio-transport": "grpc-swift-nio-transport",
         "grpc-swift-protobuf": "grpc-swift-protobuf",
         "nixpkgs": "nixpkgs",
+        "swift-algorithms": "swift-algorithms",
+        "swift-asn1": "swift-asn1",
+        "swift-async-algorithms": "swift-async-algorithms",
+        "swift-atomics": "swift-atomics",
+        "swift-certificates": "swift-certificates",
         "swift-collections": "swift-collections",
-        "swift-protobuf": "swift-protobuf"
+        "swift-crypto": "swift-crypto",
+        "swift-http-structured-headers": "swift-http-structured-headers",
+        "swift-http-types": "swift-http-types",
+        "swift-log": "swift-log",
+        "swift-nio": "swift-nio",
+        "swift-nio-extras": "swift-nio-extras",
+        "swift-nio-http2": "swift-nio-http2",
+        "swift-nio-ssl": "swift-nio-ssl",
+        "swift-nio-transport-services": "swift-nio-transport-services",
+        "swift-numerics": "swift-numerics",
+        "swift-protobuf": "swift-protobuf",
+        "swift-service-lifecycle": "swift-service-lifecycle",
+        "swift-system": "swift-system"
+      }
+    },
+    "swift-algorithms": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1739220232,
+        "narHash": "sha256-cJfOxBB74V7ZE4g6OehYIdtmqYnSFIkJLpkxPo9jiUo=",
+        "owner": "apple",
+        "repo": "swift-algorithms",
+        "rev": "87e50f483c54e6efd60e885f7f5aa946cee68023",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.2.1",
+        "repo": "swift-algorithms",
+        "type": "github"
+      }
+    },
+    "swift-asn1": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1795169845,
+        "narHash": "sha256-zSCZMP7uJq4M1IuM+lzUmyXHtBQms2UoaeWIUgnbVLA=",
+        "owner": "apple",
+        "repo": "swift-asn1",
+        "rev": "97fd57437fc94cfa6b62f2b8f84c50f433534e17",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.7.5",
+        "repo": "swift-asn1",
+        "type": "github"
+      }
+    },
+    "swift-async-algorithms": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790681635,
+        "narHash": "sha256-Kt1wmMrxoaTLxr7uF+Ll6pHCc3nh2ayR1sp7yIm6Yms=",
+        "owner": "apple",
+        "repo": "swift-async-algorithms",
+        "rev": "13713a4ffdee8abd929f92568ee9462a46ae26e0",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.1.7",
+        "repo": "swift-async-algorithms",
+        "type": "github"
+      }
+    },
+    "swift-atomics": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1782248489,
+        "narHash": "sha256-ltWzlf0+XxMCR9xiFVGnQ35DueAp22mPRLadbTfnEPA=",
+        "owner": "apple",
+        "repo": "swift-atomics",
+        "rev": "0442cb5a3f98ab802acb777929fdb446bda11a34",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.3.1",
+        "repo": "swift-atomics",
+        "type": "github"
+      }
+    },
+    "swift-certificates": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1795201327,
+        "narHash": "sha256-hMJhooe5sEd6i3Uw3DsM9c5oDTkj+JitzKdOYjR590Y=",
+        "owner": "apple",
+        "repo": "swift-certificates",
+        "rev": "ac5e08be49ab662815859ef1029b757fa857ae2c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.21.2",
+        "repo": "swift-certificates",
+        "type": "github"
       }
     },
     "swift-collections": {
@@ -76,6 +196,176 @@
         "type": "github"
       }
     },
+    "swift-crypto": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1795457124,
+        "narHash": "sha256-6uA1VeapQMeIve7dDmcdFoYR0alGAKCDOb8ldQyDVu4=",
+        "owner": "apple",
+        "repo": "swift-crypto",
+        "rev": "b0b1963823fe828065ef49c09c8c9489f43cf7be",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "5.2.0",
+        "repo": "swift-crypto",
+        "type": "github"
+      }
+    },
+    "swift-http-structured-headers": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1775074772,
+        "narHash": "sha256-mNMRXKnT/w6a12W3eHTzl4yEGNxJnnYzb7XvCfKsv3w=",
+        "owner": "apple",
+        "repo": "swift-http-structured-headers",
+        "rev": "933538faa42c432d385f02e07df0ace7c5ecfc47",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.7.0",
+        "repo": "swift-http-structured-headers",
+        "type": "github"
+      }
+    },
+    "swift-http-types": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1788767803,
+        "narHash": "sha256-OZGGDaUAhfhx5V6OpVn7HSfDE/FWJs9MO6c/FNELYdI=",
+        "owner": "apple",
+        "repo": "swift-http-types",
+        "rev": "bff4b6903cdc99dda49649dd52f46c11cfd3ed50",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.8.0",
+        "repo": "swift-http-types",
+        "type": "github"
+      }
+    },
+    "swift-log": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794921882,
+        "narHash": "sha256-BjBDbVx6vcaIlF5NQgsS/jMx0KzpF259q+bylRg9QUU=",
+        "owner": "apple",
+        "repo": "swift-log",
+        "rev": "c7413d967b97aae67c46452bf7645bdb7b200e8e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.17.2",
+        "repo": "swift-log",
+        "type": "github"
+      }
+    },
+    "swift-nio": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1795516733,
+        "narHash": "sha256-eQE5laSeqiThDNZw7nQ0fRE+pBLhGYtQv1geAkQPdbQ=",
+        "owner": "apple",
+        "repo": "swift-nio",
+        "rev": "b003027fc38b649a43e9aad77c3d4e4a2c5b6997",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "2.105.2",
+        "repo": "swift-nio",
+        "type": "github"
+      }
+    },
+    "swift-nio-extras": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793953961,
+        "narHash": "sha256-hWVXdDPPSJYEHbEAIssWFC+9J5wQuG7Q0cFxOInX8zg=",
+        "owner": "apple",
+        "repo": "swift-nio-extras",
+        "rev": "4858e3120f71175373f835181b437116021c4c6e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.35.3",
+        "repo": "swift-nio-extras",
+        "type": "github"
+      }
+    },
+    "swift-nio-http2": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794910241,
+        "narHash": "sha256-D4q4Ob1a63oLvhVdgzGLkhk5Lf9ASYkIrjPGziT2ge4=",
+        "owner": "apple",
+        "repo": "swift-nio-http2",
+        "rev": "bf446775a1683f5dc13240f56de2f9c55c299431",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.46.1",
+        "repo": "swift-nio-http2",
+        "type": "github"
+      }
+    },
+    "swift-nio-ssl": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794215877,
+        "narHash": "sha256-DuaGyYh2T7PrsVdRlODUCuO5r02yOXKcBJWj5SdZgZc=",
+        "owner": "apple",
+        "repo": "swift-nio-ssl",
+        "rev": "2a439aff650ba63077cf7bed86677c739f76d782",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "2.37.7",
+        "repo": "swift-nio-ssl",
+        "type": "github"
+      }
+    },
+    "swift-nio-transport-services": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1776856977,
+        "narHash": "sha256-BknmarVnZXK22UBJifB4uVWw0rZMNQiQSaZhsyrEO2c=",
+        "owner": "apple",
+        "repo": "swift-nio-transport-services",
+        "rev": "67787bb645a5e67d2edcdfbe48a216cc549222d5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.28.0",
+        "repo": "swift-nio-transport-services",
+        "type": "github"
+      }
+    },
+    "swift-numerics": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1758813736,
+        "narHash": "sha256-bRkiRuxb4O3SmpsGZ5YaUR4cV3IQoES+u3xZTCzaQ+c=",
+        "owner": "apple",
+        "repo": "swift-numerics",
+        "rev": "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.1.1",
+        "repo": "swift-numerics",
+        "type": "github"
+      }
+    },
     "swift-protobuf": {
       "flake": false,
       "locked": {
@@ -90,6 +380,40 @@
         "owner": "apple",
         "ref": "1.41.0",
         "repo": "swift-protobuf",
+        "type": "github"
+      }
+    },
+    "swift-service-lifecycle": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791809397,
+        "narHash": "sha256-7nwFDeUFAGhasnJ0GKELTsu/i9spWBwuG8nVzG7znT4=",
+        "owner": "swift-server",
+        "repo": "swift-service-lifecycle",
+        "rev": "a18ee16b8039866fd919bdb4e8e906882d4ecc75",
+        "type": "github"
+      },
+      "original": {
+        "owner": "swift-server",
+        "ref": "2.13.0",
+        "repo": "swift-service-lifecycle",
+        "type": "github"
+      }
+    },
+    "swift-system": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794507763,
+        "narHash": "sha256-ms3jDtQ0fYT1LQ/1KIx78wmn/FsnW7QviVlfltzlzj0=",
+        "owner": "apple",
+        "repo": "swift-system",
+        "rev": "640e5755b5826f4437eaeedd366fd776737db62c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.9.0",
+        "repo": "swift-system",
         "type": "github"
       }
     }

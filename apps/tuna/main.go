@@ -3,12 +3,14 @@ package main
 import (
 	"io"
 	"os"
+	"strconv"
+	"strings"
 )
 
 const (
 	usageExitCode    = 64
 	softwareExitCode = 70
-	usage            = "Usage: tuna [runner options] -- <command> [arguments...]\n" +
+	usage            = "Usage: tuna --port <port> [runner options] -- <command> [arguments...]\n" +
 		"       tuna service\n\n" +
 		"The v2 runner and service are not implemented yet.\n"
 )
@@ -29,10 +31,38 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	for i, arg := range args {
 		if arg == "--" && i+1 < len(args) {
+			if !hasExplicitPort(args[:i]) {
+				return writeResult(stderr, "tuna: runner requires one --port between 1 and 65535\n", usageExitCode)
+			}
 			return writeResult(stderr, "tuna: runner mode is not implemented\n", softwareExitCode)
 		}
 	}
 	return writeResult(stderr, usage, usageExitCode)
+}
+
+func hasExplicitPort(args []string) bool {
+	found := false
+	for i := 0; i < len(args); i++ {
+		var value string
+		switch {
+		case args[i] == "--port":
+			i++
+			if i == len(args) {
+				return false
+			}
+			value = args[i]
+		case strings.HasPrefix(args[i], "--port="):
+			value = strings.TrimPrefix(args[i], "--port=")
+		default:
+			continue
+		}
+		port, err := strconv.Atoi(value)
+		if found || err != nil || port < 1 || port > 65535 {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 func main() {

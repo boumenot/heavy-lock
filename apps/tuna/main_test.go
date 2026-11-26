@@ -22,7 +22,7 @@ func TestPrototypeDispatch(t *testing.T) {
 		{name: "missing command", code: 64, wantError: "Usage: tuna"},
 		{name: "empty command", args: []string{"--"}, code: 64, wantError: "Usage: tuna"},
 		{name: "service", args: []string{"service"}, code: 70, wantError: "tuna: service mode is not implemented"},
-		{name: "runner", args: []string{"--", "echo", "hello"}, code: 70, wantError: "tuna: runner mode is not implemented"},
+		{name: "runner", args: []string{"--port", "49783", "--", "echo", "hello"}, code: 70, wantError: "tuna: runner mode is not implemented"},
 	}
 
 	for _, tt := range tests {
@@ -63,10 +63,33 @@ func TestHelpReportsWriteFailure(t *testing.T) {
 func TestRunnerPrototypeDoesNotLaunchCommand(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
 	var stdout, stderr bytes.Buffer
-	if got := run([]string{"--", "/usr/bin/touch", marker}, &stdout, &stderr); got != 70 {
+	if got := run([]string{"--port", "49783", "--", "/usr/bin/touch", marker}, &stdout, &stderr); got != 70 {
 		t.Fatalf("exit code = %d, want 70", got)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("prototype must not launch commands; marker stat error = %v", err)
+	}
+}
+
+func TestRunnerRequiresExplicitPort(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		code int
+	}{
+		{name: "missing", args: []string{"--", "echo"}, code: 64},
+		{name: "not a number", args: []string{"--port", "abc", "--", "echo"}, code: 64},
+		{name: "zero", args: []string{"--port", "0", "--", "echo"}, code: 64},
+		{name: "too large", args: []string{"--port", "65536", "--", "echo"}, code: 64},
+		{name: "duplicate", args: []string{"--port", "49783", "--port", "49784", "--", "echo"}, code: 64},
+		{name: "valid", args: []string{"--port", "49783", "--", "echo"}, code: 70},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if got := run(tt.args, &stdout, &stderr); got != tt.code {
+				t.Fatalf("exit code = %d, want %d; stderr = %q", got, tt.code, stderr.String())
+			}
+		})
 	}
 }

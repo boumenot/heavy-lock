@@ -342,6 +342,14 @@ enum ErrorReason {
   RETRY_NOT_ELIGIBLE = 20;         // FAILED_PRECONDITION
   IDEMPOTENCY_KEY_DELETED = 21;    // FAILED_PRECONDITION; that job's history was deleted
   ADMISSION_BUSY = 22;             // FAILED_PRECONDITION; durable no-wait refusal
+  HTTP_ROUTE_NOT_FOUND = 23;       // NOT_FOUND; no REST route matches
+  HTTP_METHOD_NOT_ALLOWED = 24;    // UNIMPLEMENTED; method is not supported on the REST route
+  HTTP_UNSUPPORTED_MEDIA_TYPE = 25; // INVALID_ARGUMENT; REST body is not JSON
+  HTTP_REQUEST_TOO_LARGE = 26;     // RESOURCE_EXHAUSTED; REST request body exceeds the limit
+  OPERATION_NOT_IMPLEMENTED = 27;  // UNIMPLEMENTED
+  INTERNAL_ERROR = 28;             // INTERNAL; non-contract broker error
+  REQUEST_CANCELLED = 29;          // CANCELLED
+  DEADLINE_EXCEEDED = 30;          // DEADLINE_EXCEEDED
 }
 
 // ---------------------------------------------------------------- shared
@@ -615,6 +623,9 @@ message Health {
   int64 schema_version = 5;
   optional string recovery_detail = 6;
   optional string storage_detail = 7; // untrusted/unavailable durable state
+  string service_identity = 8;     // "heavylock.v2"; not authentication
+  uint32 api_major = 9;            // 2; incompatible changes require a new major
+  uint32 api_minor = 10;           // additive, backwards-compatible changes
 }
 
 message GetStatusRequest {}

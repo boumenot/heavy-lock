@@ -40,3 +40,38 @@ private func hex(_ data: Data) -> String {
     #expect(Heavylock_V2_ErrorReason.jobNotWaiting.rawValue == 5)
     #expect(HeavyLockV2.errorDomain == "heavylock.v2")
 }
+
+@Test func serviceIdentityAndVersion() throws {
+    var health = Heavylock_V2_Health()
+    health.live = true
+    health.ready = false
+    health.serviceIdentity = "heavylock.v2"
+    health.serviceVersion = "0.1.0"
+    health.apiMajor = 2
+    health.apiMinor = 0
+    try HeavyLockV2.checkService(health)
+
+    var wrong = health
+    wrong.serviceIdentity = "unrelated"
+    #expect(throws: HeavyLockV2.ServiceCompatibilityError.identityMismatch) {
+        try HeavyLockV2.checkService(wrong)
+    }
+    wrong = health
+    wrong.apiMajor = 3
+    #expect(throws: HeavyLockV2.ServiceCompatibilityError.incompatibleVersion) {
+        try HeavyLockV2.checkService(wrong)
+    }
+    #expect(throws: HeavyLockV2.ServiceCompatibilityError.incompatibleVersion) {
+        try HeavyLockV2.checkService(health, minimumMinor: 1)
+    }
+    wrong = health
+    wrong.serviceVersion = ""
+    #expect(throws: HeavyLockV2.ServiceCompatibilityError.missingServiceVersion) {
+        try HeavyLockV2.checkService(wrong)
+    }
+    wrong = health
+    wrong.live = false
+    #expect(throws: HeavyLockV2.ServiceCompatibilityError.notLive) {
+        try HeavyLockV2.checkService(wrong)
+    }
+}

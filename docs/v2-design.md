@@ -1509,32 +1509,38 @@ gRPC and must not read SQLite directly. This adopts the assistant's
 recommendation: a single authority avoids divergent admission and recovery
 behavior, at the cost of routing all client operations through the broker.
 
-**Recommendations.** Evaluate a Go REST implementation versus a gRPC-Gateway
-translation layer; the latter reduces contract duplication but adds
-generation/runtime machinery. Plaintext gRPC on loopback requires
-HTTP/2 cleartext support and deliberate shared-listener routing.
-No gateway or multiplexer has been selected.
+**Delegated decision: shared-port probe.** Use Go's `net/http` server with
+HTTP/1.1 and cleartext HTTP/2 enabled, dispatching HTTP/2 gRPC content types
+to `grpc.Server.ServeHTTP` and other requests to hand-written REST handlers.
+This keeps routing small and avoids gRPC-Gateway generation while both
+paths call the same broker interface. `ServeHTTP` is experimental in gRPC-Go;
+streaming, status details and client interoperability require continued
+regression checks on upgrades. The probe binds IPv4 `127.0.0.1` only, not
+`::1`, and rejects port zero; an occupied requested port returns
+`ErrPortInUse`, never an automatically chosen port. The runner requires
+exactly one explicit `--port` in 1–65535. Neither CLI mode starts a broker
+or runs work yet.
 
-Validate HTTP Host/authority against permitted loopback values. This does
-not block the explicitly permitted cross-origin requests. A wildcard
-`Access-Control-Allow-Origin` response is a proposed way to support
-unauthenticated browser clients; exact preflight behavior and browser
-network-permission requirements need verification. Browser rules are
-**not authentication**. An identity/version handshake can detect an
-unrelated service or stale broker at the configured port; it is not port
-discovery or a security boundary.
+Validate HTTP Host and gRPC `:authority` as `localhost` (case-insensitive)
+or `127.0.0.1`, with no port or the listener's actual port. REST sends
+`Access-Control-Allow-Origin: *`; route-specific preflights permit supported
+methods and `Accept`/`Content-Type`, including requested private-network
+preflight. Native HTTP preflight tests passed; a real browser check was
+**not run because browser access approval was denied**. Browser rules and
+Host checks are **not authentication** and do not block the intentionally
+permitted cross-origin access.
 
-**Open.** Section 11 proposes complete gRPC and REST contracts:
-- versioned `/v1` paths and a `heavylock.v2` package
-- health and readiness
-- error mapping
+**Delegated decision: service compatibility.** The `GetHealth` contract reports
+`service_identity = "heavylock.v2"`, API major/minor `2.0`, and a nonempty
+service version. Go and Swift compatibility helpers require the identity,
+major 2, at least the minor they need, a nonblank service version and
+`live = true`.
+`ready = false` is a recognized but not-ready service, not an identity
+failure. The check detects some unrelated or incompatible services; it is
+neither authentication nor port discovery.
 
-Except where this record identifies a user or delegated decision, concrete
-wire-format and endpoint details remain proposals. CLI control spelling
-and coverage beyond the delegated queue controls, port-argument spelling,
-IPv4/IPv6 binding behavior, Swift gRPC dependency/version choices, browser
-CORS/preflight interoperability and service identity verification also
-remain open.
+CLI controls and production startup, readiness and browser interoperability
+remain to be implemented or verified in their respective later phases.
 
 ## 7. Resource history and attribution
 
@@ -1784,9 +1790,9 @@ platform-specific behavior rather than extrapolating from macOS.
 **Status.** The user asked for a complete RPC design and a complete SQLite
 schema, using WAL and SQLite options that help performance. The canonical
 files are [`docs/v2/heavylock.proto`](v2/heavylock.proto) and
-[`docs/v2/schema.sql`](v2/schema.sql), embedded verbatim below. An earlier
-proto draft compiled with `protoc` 31.1; the updated draft still needs a
-locked compilation after machine-wide runner migration. On 2026-11-25,
+[`docs/v2/schema.sql`](v2/schema.sql), embedded verbatim below. The current
+proto and generated Go/Swift bindings were compiled on the current Mac using
+the shared gate. On 2026-11-25,
 an earlier SQLite schema passed focused constraint checks for grace reset,
 unknown outcomes, claim/fence evidence and finish-first storage. The current
 schema has also passed focused retry-lineage and deletion-race examples
@@ -1797,11 +1803,9 @@ cross-table release, confirming the broker must enforce the release
 conditions transactionally. If the embedded copies and files ever differ,
 the files are authoritative.
 
-This is a design specification, not authorization to implement. The tables
-and decisions elsewhere in this document distinguish the user's choices
-from proposed concrete RPC names, field layouts and implementation mechanisms.
-The files are a baseline, not an assertion that the user approved every
-detail. Remaining proposals include:
+This document is not authorization to implement. The tables and decisions
+elsewhere distinguish the user's choices from delegated wire details and
+remaining proposals. Remaining proposals include:
 - an initial `WatchJob` snapshot on every call, beyond the chosen reconnect snapshot
 - cancelling a reserved job through the runner
 - storing the outcome while a job is `FINISHING`
@@ -2359,6 +2363,14 @@ enum ErrorReason {
   RETRY_NOT_ELIGIBLE = 20;         // FAILED_PRECONDITION
   IDEMPOTENCY_KEY_DELETED = 21;    // FAILED_PRECONDITION; that job's history was deleted
   ADMISSION_BUSY = 22;             // FAILED_PRECONDITION; durable no-wait refusal
+  HTTP_ROUTE_NOT_FOUND = 23;       // NOT_FOUND; no REST route matches
+  HTTP_METHOD_NOT_ALLOWED = 24;    // UNIMPLEMENTED; method is not supported on the REST route
+  HTTP_UNSUPPORTED_MEDIA_TYPE = 25; // INVALID_ARGUMENT; REST body is not JSON
+  HTTP_REQUEST_TOO_LARGE = 26;     // RESOURCE_EXHAUSTED; REST request body exceeds the limit
+  OPERATION_NOT_IMPLEMENTED = 27;  // UNIMPLEMENTED
+  INTERNAL_ERROR = 28;             // INTERNAL; non-contract broker error
+  REQUEST_CANCELLED = 29;          // CANCELLED
+  DEADLINE_EXCEEDED = 30;          // DEADLINE_EXCEEDED
 }
 
 // ---------------------------------------------------------------- shared
@@ -2632,6 +2644,9 @@ message Health {
   int64 schema_version = 5;
   optional string recovery_detail = 6;
   optional string storage_detail = 7; // untrusted/unavailable durable state
+  string service_identity = 8;     // "heavylock.v2"; not authentication
+  uint32 api_major = 9;            // 2; incompatible changes require a new major
+  uint32 api_minor = 10;           // additive, backwards-compatible changes
 }
 
 message GetStatusRequest {}
@@ -2764,9 +2779,9 @@ The REST API is JSON on the same loopback port. Each functional endpoint maps
 to exactly one `ControlService` RPC and calls the same broker domain logic,
 and all unary `ControlService` queries and controls have REST endpoints, as
 the user chose. CORS preflight is transport handling, not a separate RPC.
-Runner lifecycle RPCs have no REST endpoints. The exact paths, JSON encoding
-and error mapping below remain proposals. REST clients poll; live event
-streaming is available through gRPC only.
+Runner lifecycle RPCs have no REST endpoints. The paths, JSON encoding and
+error mapping below are the delegated prototype contract. REST clients poll;
+live event streaming is available through gRPC only.
 
 Request and response bodies are the RPC messages encoded with
 [protojson](https://protobuf.dev/programming-guides/json/):
@@ -2776,7 +2791,14 @@ Request and response bodies are the RPC messages encoded with
 - Unset optional fields are omitted, which keeps unknown distinct from zero.
 
 Path parameters fill the matching request field, for example `{job_id}`
-fills `job_id`.
+fills `job_id`; that field cannot also appear in a body. GET and DELETE
+requests reject bodies. POST accepts an empty body or a JSON object with
+only the fields shown; a nonempty body requires `application/json`.
+Bodies are limited to 1 MiB. Unknown or duplicate scalar query parameters,
+unknown body fields and conflicting oneof fields are rejected. `states`
+accepts repeated protobuf enum names, and integer query values use decimal.
+For multiple unknown or duplicated query keys, or unknown body keys, the
+lexically first such key is reported.
 
 | Method | Path | `ControlService` RPC | Notes |
 |---|---|---|---|
@@ -2804,18 +2826,19 @@ example:
 | `ALREADY_EXISTS` | 409 |
 | `RESOURCE_EXHAUSTED` | 429 |
 | `UNAVAILABLE` | 503 |
+| `CANCELLED`, `DEADLINE_EXCEEDED` | 408, 504 respectively |
 | `DATA_LOSS` | 500 |
 
 The body is the protojson `google.rpc.Status`, including its `ErrorInfo`
-reason, so REST and gRPC clients see the same `ErrorReason`.
+reason and domain `heavylock.v2`, so REST and gRPC clients see the same
+`ErrorReason`. Unknown routes and unsupported methods return 404 and 405;
+unsupported media types and oversized bodies return 415 and 413 with
+transport-specific reasons. Unstructured broker errors become `INTERNAL`
+with `INTERNAL_ERROR`; context cancellation/deadline and unimplemented
+operations receive explicit corresponding reasons.
 
 **REST event delivery.** Poll the status, queue and job query endpoints.
 The user chose not to expose the gRPC `WatchEvents` stream through REST.
-
-**Implementation choice (open).** A gRPC-Gateway mapping could generate
-these handlers from the proto. Separately written handlers calling the same
-domain layer are the alternative. No gateway or shared-port multiplexer has
-been selected.
 
 The tradeoffs discussed:
 - Parity reduces policy drift between clients, but it expands the
@@ -2824,6 +2847,37 @@ The tradeoffs discussed:
   clients poll and may miss transient changes between responses.
 - Neither API authenticates. Every REST and gRPC control is available to
   any local process that can connect.
+
+### 11.2.1 Submission equivalence and command display
+
+The lookup key is `idempotency_key`; it is excluded from the canonical
+payload hash. The SHA-256 input begins with ASCII
+`heavylock.v2.submit.canonical-v1` and a NUL byte, followed by one admission
+byte (1 queued, 2 no-wait). Strings are UTF-8 bytes prefixed by an unsigned
+64-bit big-endian byte length; optional strings have a leading 0 for absent
+or 1 before the length and bytes for present, so absent differs from empty.
+Integers are big-endian: 32 bits for weight and enum values, 64-bit two's
+complement for process identity values.
+
+In order, encode command, optional cwd, weight; client name/version
+optionals and OS/architecture enums; attribution's eight optional strings
+in proto field order; an unsigned 64-bit extra-map count and each key/value
+string sorted by key's UTF-8 bytes; a runner-presence byte, its incarnation
+ID and a process-presence byte followed by PID/start time when present;
+then optional `retry_of_job_id`. Missing client/attribution messages are
+equivalent to empty ones; missing runner/process messages are distinct from
+present empty messages. Reject unknown protobuf fields and populated newer
+fields not explicitly covered by this encoding. Evolve the encoding and
+persisted-hash comparison deliberately if the submission contract changes;
+never silently omit new semantics. Key-only deleted/no-wait tombstones and
+the transaction rules remain as selected in section 11.3.
+
+For display, render argv with POSIX-style single-quote escaping: leave
+nonempty ASCII alphanumerics and `_@%+=:,./-` unquoted, otherwise enclose
+the argument in single quotes and encode an embedded quote as `'\''`.
+Join arguments with spaces. Reject an empty argv and arguments containing
+NUL or invalid UTF-8. This is a deterministic record, not a command to
+execute via a shell; the real runner must execute the original argv.
 
 ### 11.3 SQLite schema
 
@@ -3724,18 +3778,17 @@ current results from historical runs and list bounds and unchecked cases.
    reparented-process discovery; precision and boot identity for process IDs;
    database-failure detection, explicit error mapping and repair workflows.
    Backup policy is deferred until active development (section 5).
-7. Identity/version checks, browser CORS/preflight interoperability,
-   shared-listener routing/multiplexer, gRPC-Swift/runtime and code-generation
-   versions, and gRPC-Gateway versus hand-written REST handlers. The broker
-   port default and REST polling rather than event streaming are decided
-   (section 6).
+7. Verify real-browser CORS/private-network behavior when browser access is
+   authorized, and recheck gRPC-Swift and shared-listener interoperability
+   on dependency upgrades. Routing, identity and REST choices are recorded
+   in section 6.
 8. Reliable monotonic root-runtime measurement across delayed reports and
    restarts, CPU-time accounting, sampler choice, measurement completeness,
    platform parity and overhead (section 7). The elapsed interval, CPU
    percentage scale and combined RSS metric are decided.
-9. Command rendering and the payload-equivalence rule. Key-only
-   tombstones after history deletion are a delegated decision
-   (section 11.3).
+9. Integrate the decided command rendering and payload-equivalence rule
+   (section 11.2) with durable key-only tombstones and transactional
+   idempotency (section 11.3).
 10. Select and pin the initial `modernc.org/sqlite` version; validate SQLite
     features and actual platform sync behavior, and measure `FULL`/macOS
     `fullfsync` commit latency. The driver and settings are decided, but
@@ -3746,7 +3799,7 @@ current results from historical runs and list bounds and unchecked cases.
     architecture is delegated and macOS 26+ is user-confirmed (section 1);
     later platform plans are outside current scope. macOS login startup is
     delegated (section 4).
-12. The v2 nesting marker, retry delay, port-option spelling and other CLI
+12. The v2 nesting marker, retry delay and other CLI
     configuration, including CLI control details. The simple v1/v2 switch
     and lack of legacy status compatibility are decided, and common runner
     options and CLI queue controls are retained by delegation (section 9);

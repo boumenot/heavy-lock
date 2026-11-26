@@ -1,7 +1,8 @@
 # Development lifecycle
 
 This lifecycle covers the Dart CLI (`apps/heavy-lock`), the standalone
-Swift monitor (`apps/monitor-macos`) and the `tool/` orchestrator.
+Swift monitor (`apps/monitor-macos`), the v2 Go prototype (`apps/tuna`),
+the Swift v2 contract library and the `tool/` orchestrator.
 
 ## Ready, implementation and done
 
@@ -53,9 +54,13 @@ build/heavy-lock/heavy-lock-status --json
 ```
 
 `check all` builds and tests every application implemented for the host
-(on macOS, the runner and the monitor); use `build`, `test` or `check` with
-`heavy-lock` or `monitor-macos` for one application. Focused tests run
-directly, e.g. `cd tool && dart test` for the orchestrator.
+(on macOS, the runner, monitor, `tuna` and Swift v2 library); use `build`,
+`test` or `check` with a target name for one application. Focused tests run
+directly, e.g. `cd tool && dart test` for the orchestrator. Regenerate v2
+bindings with `heavy-lock -- nix develop -c tool/generate_v2.sh`, or add
+`--check` to verify them. The opt-in Swift gRPC interoperability probe in
+the [README](../README.md#v2-prototype-and-contract-bindings) is an
+integration test and also uses the shared lock.
 
 If the installed runner is unavailable, replace `heavy-lock` with
 `dart apps/heavy-lock/lib/heavy_lock.dart` after all invokers on the machine
