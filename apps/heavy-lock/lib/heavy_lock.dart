@@ -40,7 +40,17 @@ const lightWeight = 1;
 const _usage =
     'Usage: heavy-lock [--weight heavy|light|<n>] [--no-wait] '
     '[--worklog <n>] '
-    '-- <command> [arguments...]';
+    '-- <command> [arguments...]\n'
+    '       heavy-lock --version';
+
+/// Stamped by `tool/build.sh` with `-Dheavy_lock.version=...` and
+/// `-Dheavy_lock.build=...`; empty when run from source.
+const _stampedVersion = String.fromEnvironment('heavy_lock.version');
+const _stampedBuild = String.fromEnvironment('heavy_lock.build');
+
+String versionLine() => _stampedVersion.isEmpty
+    ? 'heavy-lock unknown (unstamped development build)'
+    : 'heavy-lock $_stampedVersion ($_stampedBuild)';
 
 /// The gate shared by every heavy run on this machine. An exclusive holder
 /// blocks this runner, which holds it shared while admitted.
@@ -942,6 +952,10 @@ Future<int> run(List<String> arguments) async {
   if (arguments.length == 1 &&
       (arguments.single == '--help' || arguments.single == '-h')) {
     stdout.writeln(_usage);
+    return 0;
+  }
+  if (arguments.length == 1 && arguments.single == '--version') {
+    stdout.writeln(versionLine());
     return 0;
   }
   var noWait = false;

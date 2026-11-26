@@ -9,35 +9,79 @@ the optional native Dock monitor requires macOS 13+. No Flutter, FVM, Nix,
 server or repository-specific runtime configuration is required to run it;
 repository development uses the [Nix dev shell](#development-with-nix).
 
+## Repository layout
+
+```text
+apps/
+  heavy-lock/      Dart runner and status CLI (bin, lib, test, pubspec)
+  monitor-macos/   Swift Dock/menu status monitor (Swift package, tests)
+tool/              Build/test/install orchestration; not shipped
+build/             Outputs: build/heavy-lock/, build/monitor-macos/
+docs/              Lifecycle and technical decisions
+skills/            Portable consumer skills
+```
+
+Windows and Linux monitors are planned but **not implemented**: they appear
+as `future` targets and every command on them fails with exit code 69. Any
+future monitor must read the same version-1 status records and observe the
+gate with that platform's lock semantics (see
+[technical decisions](docs/technical-decisions.md)).
+
 ## Build and install
 
 **Upgrading?** Read the [migration warning](#migration) before compiling or
 running heavy work with this version.
 
-On macOS, install [Nix](https://nixos.org/download/) with flakes enabled and
-build natively on each machine. The build script uses the pinned Nix dev
-shell and `dart compile exe`; the installed executable needs neither Dart,
-Nix nor this checkout at runtime.
+Builds use the pinned [Nix dev shell](#development-with-nix) and a small
+SDK-only Dart orchestrator, `tool/dev.dart`, with explicit application
+targets:
+
+| Command | Effect |
+|---|---|
+| `dart tool/dev.dart list` | Applications and whether this host supports them |
+| `dart tool/dev.dart build <app\|all>` | Compile into `build/<app>/`; runs no tests |
+| `dart tool/dev.dart test <app\|all>` | Run the application's tests; builds nothing |
+| `dart tool/dev.dart check <app\|all>` | Build, then test; reports every failure |
+| `dart tool/dev.dart install <app\|all> [dir]` | Install an existing build; `dir` only for a single app |
+| `dart tool/dev.dart version` | Print the runner's version stamp |
+
+`all` means the applications implemented for this host (both on macOS;
+`heavy-lock` on Linux and Windows), never future targets or cross-compiles.
+Unknown targets exit 64; future or host-unsupported targets exit 69. A
+failed build or install keeps the previous artifact.
+
+| App | Build output | Default install | Install behavior |
+|---|---|---|---|
+| `heavy-lock` | `build/heavy-lock/heavy-lock`, `heavy-lock-status` | `~/.local/bin/heavy-lock` | Atomic replace via `tool/install.sh` (macOS/Linux) |
+| `monitor-macos` | `build/monitor-macos/Heavy Lock Status.app` | `~/Applications/Heavy Lock Status.app` | Copied beside the target, then swapped in; the old bundle is restored on failure |
+
+The orchestrator does not acquire the lock itself. Wrap builds and test
+suites in the shared runner:
 
 ```bash
 git clone https://github.com/boumenot/heavy-lock.git
 cd heavy-lock
+nix develop
 
 # After all machine invokers have migrated, bootstrap the shared lock:
-nix develop -c dart lib/heavy_lock.dart -- bash tool/build.sh
-bash tool/install.sh
+dart pub get
+dart apps/heavy-lock/lib/heavy_lock.dart -- dart tool/dev.dart build heavy-lock
+dart tool/dev.dart install heavy-lock
 ```
 
-If an installed `heavy-lock` is already available and all invokers use this
-version, use `heavy-lock -- bash tool/build.sh` instead. Until migration,
-run the build under the machine's existing shared runner; do not mix old and
-new runners in actual workloads. The build script does not acquire a lock
-itself. It writes `build/heavy-lock` only after a successful compile.
+Once an installed `heavy-lock` uses this version, use
+`heavy-lock -- dart tool/dev.dart check all`. Until migration, run builds
+under the machine's existing shared runner; do not mix old and new runners
+in actual workloads.
 
-The install script atomically replaces `~/.local/bin/heavy-lock`, creating
-the directory if needed. To install into another directory, pass it as the
-sole argument: `bash tool/install.sh /path/to/bin`. Use one installed binary
-across repositories, not separate copies in each checkout.
+`tool/install.sh [dir]` is the Dart- and Nix-free runner installer (the
+orchestrator calls it); it copies `build/heavy-lock/heavy-lock` to
+`~/.local/bin` or `dir`, creating the directory if needed. `tool/build.sh`
+remains as a compatibility wrapper for
+`nix develop -c dart tool/dev.dart build heavy-lock`. The status CLI is
+built alongside the runner; to install it, copy
+`build/heavy-lock/heavy-lock-status` onto PATH the same way. Use one
+installed binary across repositories, not separate copies per checkout.
 
 Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` on macOS,
 `~/.bashrc` on Linux, or the startup file for your shell, then restart the
@@ -45,53 +89,45 @@ shell and agent/app so they inherit it. Verify from each repository:
 
 ```bash
 command -v heavy-lock
+heavy-lock --version
 heavy-lock --help
 heavy-lock -- sh -c 'printf "admitted\n"'
 ```
 
-For a source-only run after `dart pub get`, use
-`dart run bin/heavy_lock.dart -- <command>` and
-`dart run bin/heavy_lock_status.dart [--json]`. The bootstrap
-`dart lib/heavy_lock.dart` also works without `pub get`.
+On Windows, `build heavy-lock` produces `build\heavy-lock\heavy-lock.exe`
+and `heavy-lock-status.exe`; `install` is not automated there yet (exit 69).
+Copy the `.exe` files to a user-owned directory on PATH, stopping that
+executable's active runs before replacing it.
+
+From source, `dart apps/heavy-lock/lib/heavy_lock.dart -- <command>` runs
+without `pub get`; after `dart pub get`,
+`dart run apps/heavy-lock/bin/heavy_lock_status.dart [--json]` reads status.
 
 **Upgrade:** update your checkout with `git pull --ff-only`, then repeat the
 locked build and installation above. An installed binary or a copied skill
 does not update itself. Symlinked skills reflect checkout updates, but the
 binary still needs recompilation. Never delete lock files to upgrade. To
-uninstall, remove only the installed executables and the skill you installed;
-leave the shared lock files alone.
+uninstall, remove only the installed executables, app and skill you
+installed; leave the shared lock files alone.
 
-The optional status CLI is separate. To build and install it on macOS or
-Linux, use a compatible [Dart SDK](https://dart.dev/get-dart) (Dart 3.13+)
-or `nix develop`, then run:
+### Version
 
-```bash
-dart pub get
-heavy-lock -- dart compile exe bin/heavy_lock_status.dart -o build/heavy-lock-status
-install -m 755 build/heavy-lock-status "$HOME/.local/bin/heavy-lock-status.next"
-mv -f "$HOME/.local/bin/heavy-lock-status.next" "$HOME/.local/bin/heavy-lock-status"
+`heavy-lock --version` prints the version stamped at compile time by
+`dart tool/dev.dart build heavy-lock`:
+
+```text
+heavy-lock 1.0.4+2ee717aad155 (master build)
+heavy-lock 1.0.4-dirty+5c1d0e9a7b21 (non-master build: commit not on master (branch topic); uncommitted changes)
 ```
 
-For manual installation without the scripts on macOS or Linux, use a
-compatible Dart SDK or enter `nix develop`, then after migration run:
-
-```bash
-dart pub get
-mkdir -p build "$HOME/.local/bin"
-dart lib/heavy_lock.dart -- dart compile exe bin/heavy_lock.dart -o build/heavy-lock
-install -m 755 build/heavy-lock "$HOME/.local/bin/heavy-lock.next"
-mv -f "$HOME/.local/bin/heavy-lock.next" "$HOME/.local/bin/heavy-lock"
-```
-
-On Windows, after `dart pub get`, compile in PowerShell:
-
-```powershell
-New-Item -ItemType Directory -Force build | Out-Null
-dart lib\heavy_lock.dart -- powershell -NoProfile -Command 'dart compile exe bin/heavy_lock.dart -o build/heavy-lock.exe; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; dart compile exe bin/heavy_lock_status.dart -o build/heavy-lock-status.exe; exit $LASTEXITCODE'
-```
-
-Put the `.exe` files in a user-owned directory on PATH. Stop that executable's
-active runs before replacing it on Windows.
+- `<major>.<minor>` comes from `apps/heavy-lock/pubspec.yaml`; the patch is
+  the number of commits reachable from `HEAD`, so every commit bumps it.
+- The build metadata after `+` is the 12-character commit hash.
+- A *master build* is a clean checkout whose commit is on `master` or
+  `origin/master`. Anything else (a commit not on master, uncommitted or
+  untracked changes, or no Git checkout) gets `-dirty` and the reason.
+  Fetch first so a merged commit is recognized as on `origin/master`.
+- Running from source reports `unknown (unstamped development build)`.
 
 ## Usage
 
@@ -236,20 +272,21 @@ seconds. POSIX restricts the directory to its owner. Avoid secrets in command
 arguments. Status failures are logged but do not alter admission; a later
 runner prunes confirmed dead/reused process records.
 
-The optional [macOS monitor](tool/heavy_lock_monitor/) is a standalone Swift
+The optional [macOS monitor](apps/monitor-macos/) is a standalone Swift
 package, requiring macOS 13+ and Xcode Command Line Tools (Swift 5.9+):
 
 ```bash
-heavy-lock -- bash tool/heavy_lock_monitor/build.sh build
-heavy-lock -- bash tool/heavy_lock_monitor/build.sh install
-# Or build and launch without installing:
-heavy-lock -- bash tool/heavy_lock_monitor/build.sh launch
+heavy-lock -- dart tool/dev.dart build monitor-macos
+dart tool/dev.dart install monitor-macos     # ~/Applications, or pass a directory
+open "$HOME/Applications/Heavy Lock Status.app"
+# Or launch the build without installing:
+open "build/monitor-macos/Heavy Lock Status.app"
 ```
 
-`build` assembles an ad-hoc signed
-`tool/heavy_lock_monitor/.build/Heavy Lock Status.app`; `install` copies it
-to `~/Applications`, refusing to overwrite an existing app. To upgrade,
-quit the old app and replace only that app bundle after building the new one.
+`build` assembles an ad-hoc signed bundle. `install` upgrades an existing
+bundle in place; quit and reopen a running monitor afterwards. The former
+`tool/heavy_lock_monitor/build.sh build|install|launch` is replaced by these
+commands.
 It is not started at login and has no lock-control actions.
 
 The Dock tile, secondary-click menu and status window show holders, waiters
@@ -334,15 +371,14 @@ runner, with the new runner confined to isolated test gates:
 ```bash
 dart pub get
 dart analyze
-dart format --output=none --set-exit-if-changed bin lib test
-dart lib/heavy_lock.dart -- dart test
-dart lib/heavy_lock.dart -- swift test --package-path tool/heavy_lock_monitor
+dart format --output=none --set-exit-if-changed apps/heavy-lock tool
+heavy-lock -- dart tool/dev.dart check all
 ```
 
-Or non-interactively, for example
-`nix develop -c dart lib/heavy_lock.dart -- dart test`. Outside the dev
-shell, set `HEAVY_LOCK_MONITOR_DART` to an absolute Dart path before
-`swift test`.
+The root `pubspec.yaml` is a pub workspace over `apps/heavy-lock` and
+`tool`; one `dart pub get` resolves both. `dart tool/dev.dart test
+monitor-macos` sets `HEAVY_LOCK_MONITOR_DART` to the running Dart; when
+calling `swift test` directly outside the dev shell, set it yourself.
 
 The Dart tests use `package:test`, isolated temporary gates, and the current
 SDK executable. POSIX integration cases need Python 3 and normal system
@@ -361,8 +397,8 @@ Monitor integration takes a plain Dart path, not FVM.
 - **Jobs overlap:** confirm every entrypoint wraps its heavy command, uses
   the same gate/settings, and has not forged the held marker; check the Linux
   flock limitation and externally reused daemons.
-- **Status app install refuses:** an existing app is protected. Quit it and
-  explicitly replace that bundle; do not delete the shared cache.
+- **Status app install fails:** the previous bundle is kept. Check that
+  the destination is writable and holds an app bundle, not a file.
 - **SDK mismatch:** use a newer compatible SDK for development dependencies;
   installed compiled binaries are independent of SDK upgrades.
 

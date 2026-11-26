@@ -164,3 +164,41 @@ Nix is a development dependency only: compiled binaries are self-contained,
 the runner stays SDK-only, and the gate/protocol is unchanged regardless of
 which Dart built or runs it. Toolchain updates are explicit `nix flake
 update` changes that must pass all gates.
+
+## Application layout and build orchestration
+
+**Decision.** Shipped applications live under `apps/` (`heavy-lock`, the
+Dart runner and status CLI; `monitor-macos`, the Swift monitor). Development
+tooling lives in `tool/`: an SDK-only Dart orchestrator (`dart tool/dev.dart`)
+with one adapter per application and the commands `list`, `version`,
+`build`, `test`, `check` and `install`. `build` never runs tests, `test`
+never builds, and `check` runs both and reports each failure. `all` selects
+the applications implemented for the host. Unknown targets exit 64; future
+or host-unsupported targets exit 69 and never report success. Outputs go to
+`build/<app>/`. The root `pubspec.yaml` is a pub workspace over
+`apps/heavy-lock` and `tool`.
+
+The runner's version is derived from Git at build time and stamped with
+`-D` defines: `<major>.<minor>.<commit count>+<hash>` for a clean commit on
+master, otherwise `-dirty` with the reasons. Every commit bumps the patch
+without manual edits.
+
+Installation stays Dart-free for the runner: `tool/install.sh` atomically
+replaces `~/.local/bin/heavy-lock`, and the orchestrator delegates to it.
+The monitor bundle is copied next to its destination and swapped in by
+rename, restoring the previous bundle if the swap fails. Launching is left
+to `open`, separate from build and install.
+
+Windows and Linux monitors are future applications. No empty projects are
+created for them. When implemented, each must read the version-1 status
+records and observe the gate without acquiring it, using that platform's
+lock semantics (POSIX record locks on Linux, which are independent of
+`flock(2)`; Windows byte-range locks), and must keep unknown state unknown.
+Add a shared code package only once real code is shared.
+
+**Alternatives/limits.** A shell dispatcher with a PowerShell counterpart
+risks drift between two implementations; a task runner such as `just` adds a
+dependency and still needs platform adapters. The orchestrator requires Dart
+(provided by the Nix shell). `tool/build.sh` remains as a compatibility
+wrapper; the monitor's former `build.sh` was removed. A running monitor keeps
+its old code until it is quit and reopened.

@@ -27,7 +27,7 @@ final class CommandSummaryTests: XCTestCase {
             (["python3", "tool/run_checks.py", "--suite", "abc"], "run_checks.py"),
             (["/usr/bin/python", "-u", "tool/run_checks.py"], "run_checks.py"),
             (["python3", "-uW", "ignore", "tool/run_checks.py"], "run_checks.py"),
-            (["bash", "tool/heavy_lock_monitor/build.sh", "launch"], "build.sh"),
+            (["bash", "tool/build.sh"], "build.sh"),
             (["dart", "bin/heavy_lock.dart", "--worklog", "123"], "heavy_lock.dart"),
             (["fvm", "dart", "bin/heavy_lock.dart", "--worklog", "123"], "heavy_lock.dart"),
             (["node", "tool/check.js", "--option"], "check.js"),
@@ -109,13 +109,13 @@ final class CommandSummaryTests: XCTestCase {
 
     func testShellOptionsWithValuesDoNotBecomeScriptNames() {
         let cases = [
-            ["bash", "-o", "pipefail", "tool/heavy_lock_monitor/build.sh", "launch"],
-            ["bash", "-O", "extglob", "tool/heavy_lock_monitor/build.sh"],
-            ["bash", "-euo", "pipefail", "tool/heavy_lock_monitor/build.sh"],
-            ["bash", "+o", "pipefail", "tool/heavy_lock_monitor/build.sh"],
-            ["bash", "-r", "tool/heavy_lock_monitor/build.sh"],
-            ["bash", "-", "tool/heavy_lock_monitor/build.sh"],
-            ["sh", "-o", "errexit", "tool/heavy_lock_monitor/build.sh"],
+            ["bash", "-o", "pipefail", "tool/build.sh", "launch"],
+            ["bash", "-O", "extglob", "tool/build.sh"],
+            ["bash", "-euo", "pipefail", "tool/build.sh"],
+            ["bash", "+o", "pipefail", "tool/build.sh"],
+            ["bash", "-r", "tool/build.sh"],
+            ["bash", "-", "tool/build.sh"],
+            ["sh", "-o", "errexit", "tool/build.sh"],
         ]
         for command in cases {
             XCTAssertEqual(summarizeCommand(command), "build.sh", "\(command)")

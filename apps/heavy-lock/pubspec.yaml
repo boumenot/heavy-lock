@@ -1,0 +1,12 @@
+name: heavy_lock
+description: Machine-wide weighted admission for heavy development commands.
+version: 1.0.0
+publish_to: none
+resolution: workspace
+environment:
+  sdk: '>=3.13.0 <4.0.0'
+executables:
+  heavy-lock: heavy_lock
+  heavy-lock-status: heavy_lock_status
+dev_dependencies:
+  test: ^1.26.0

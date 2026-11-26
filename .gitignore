@@ -1,7 +1,7 @@
 .dart_tool/
 build/
-tool/heavy_lock_monitor/.build/
-tool/heavy_lock_monitor/.swiftpm/
+apps/monitor-macos/.build/
+apps/monitor-macos/.swiftpm/
 .DS_Store
 .direnv/
 .envrc

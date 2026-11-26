@@ -1,0 +1,8 @@
+name: heavy_lock_tool
+description: Build, test and install orchestration for this repository.
+publish_to: none
+resolution: workspace
+environment:
+  sdk: '>=3.13.0 <4.0.0'
+dev_dependencies:
+  test: ^1.26.0

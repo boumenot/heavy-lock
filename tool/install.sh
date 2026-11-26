@@ -7,9 +7,10 @@ if [[ $# -gt 1 || ( $# -eq 1 && -z "$1" ) ]]; then
 fi
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-artifact="$root/build/heavy-lock"
+artifact="$root/build/heavy-lock/heavy-lock"
 if [[ ! -s "$artifact" || ! -f "$artifact" ]]; then
-  echo "Built executable not found: $artifact; run tool/build.sh first." >&2
+  echo "Built executable not found: $artifact" >&2
+  echo "Run 'dart tool/dev.dart build heavy-lock' first." >&2
   exit 1
 fi
 

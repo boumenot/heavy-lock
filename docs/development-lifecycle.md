@@ -1,6 +1,7 @@
 # Development lifecycle
 
-This lifecycle covers the Dart CLI and standalone Swift monitor.
+This lifecycle covers the Dart CLI (`apps/heavy-lock`), the standalone
+Swift monitor (`apps/monitor-macos`) and the `tool/` orchestrator.
 
 ## Ready, implementation and done
 
@@ -44,33 +45,28 @@ the system Xcode toolchain on macOS.
 ```bash
 dart pub get
 dart analyze
-dart format --output=none --set-exit-if-changed bin lib test
-heavy-lock -- dart test
-heavy-lock -- bash -c \
-  'mkdir -p build &&
-   dart compile exe bin/heavy_lock.dart -o build/heavy-lock &&
-   dart compile exe bin/heavy_lock_status.dart -o build/heavy-lock-status'
-build/heavy-lock --help
-build/heavy-lock -- sh -c 'exit 0'
-build/heavy-lock-status --json
+dart format --output=none --set-exit-if-changed apps/heavy-lock tool
+heavy-lock -- dart tool/dev.dart check all
+build/heavy-lock/heavy-lock --version
+build/heavy-lock/heavy-lock -- sh -c 'exit 0'
+build/heavy-lock/heavy-lock-status --json
 ```
+
+`check all` builds and tests every application implemented for the host
+(on macOS, the runner and the monitor); use `build`, `test` or `check` with
+`heavy-lock` or `monitor-macos` for one application. Focused tests run
+directly, e.g. `cd tool && dart test` for the orchestrator.
 
 If the installed runner is unavailable, replace `heavy-lock` with
-`dart lib/heavy_lock.dart` after all invokers on the machine have migrated;
-see the [migration warning](../README.md#migration). Do not use source in
-another checkout or mix runner versions in actual workloads. Until migration,
-wrap validation in the host's existing runner; new runners may use temporary
-gates only in isolated tests. Full/coverage suites, monitor suites and all
-compiles run through the machine-wide lock. Focused tests, analyzers and
-formatting run directly. Targeted checks can precede the full release gates.
-
-For native monitor changes, on macOS:
-
-```bash
-heavy-lock -- bash -c \
-  'swift test --package-path tool/heavy_lock_monitor &&
-   bash tool/heavy_lock_monitor/build.sh build'
-```
+`dart apps/heavy-lock/lib/heavy_lock.dart` after all invokers on the machine
+have migrated; see the [migration warning](../README.md#migration). Do not
+use source in another checkout or mix runner versions in actual workloads.
+Until migration, wrap validation in the host's existing runner; new runners
+may use temporary gates only in isolated tests. Full/coverage suites,
+monitor suites and all compiles run through the machine-wide lock.
+Analyzers and formatting run directly. Targeted checks can precede the full
+release gates. Monitor UI changes also need a manual launch check
+(`open "build/monitor-macos/Heavy Lock Status.app"`).
 
 Check CLI exit propagation, admission/no-wait, nesting, cancellation and the
 same default gate when changing runner behavior. Use temporary gates only
