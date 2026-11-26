@@ -140,28 +140,31 @@
           direct = false;
         };
       }
-      // lib.genAttrs [
-        "swift-algorithms"
-        "swift-asn1"
-        "swift-async-algorithms"
-        "swift-atomics"
-        "swift-certificates"
-        "swift-collections"
-        "swift-crypto"
-        "swift-http-structured-headers"
-        "swift-http-types"
-        "swift-log"
-        "swift-nio"
-        "swift-nio-extras"
-        "swift-nio-http2"
-        "swift-nio-ssl"
-        "swift-nio-transport-services"
-        "swift-numerics"
-        "swift-system"
-      ] (_: {
-        owner = "apple";
-        direct = false;
-      });
+      //
+        lib.genAttrs
+          [
+            "swift-algorithms"
+            "swift-asn1"
+            "swift-async-algorithms"
+            "swift-atomics"
+            "swift-certificates"
+            "swift-collections"
+            "swift-crypto"
+            "swift-http-structured-headers"
+            "swift-http-types"
+            "swift-log"
+            "swift-nio"
+            "swift-nio-extras"
+            "swift-nio-http2"
+            "swift-nio-ssl"
+            "swift-nio-transport-services"
+            "swift-numerics"
+            "swift-system"
+          ]
+          (_: {
+            owner = "apple";
+            direct = false;
+          });
       lock = lib.importJSON ./flake.lock;
       swiftPins = lib.mapAttrs (
         name: dependency:
@@ -211,29 +214,40 @@
           throw ''
             packages/heavylock-v2-swift does not match the Swift pins in flake.nix:
               ${lib.concatStringsSep "\n  " swiftPinErrors}'';
+      # The runtime SQLite driver is defined here; Go's manifests carry the
+      # same pin for ordinary Go tooling and buildGoModule vendoring.
+      sqliteVersion = "v1.63.0";
+      checkGoPins =
+        value:
+        if lib.hasInfix "modernc.org/sqlite ${sqliteVersion}" (builtins.readFile ./apps/tuna/go.mod) then
+          value
+        else
+          throw "apps/tuna/go.mod must match modernc.org/sqlite ${sqliteVersion} in flake.nix";
     in
     {
       devShells = forAllSystems (pkgs: {
         # mkShellNoCC avoids injecting a Nix C toolchain/SDK, so the macOS
         # monitor keeps using the system Xcode `swift`.
-        default = checkSwiftPins (
-          pkgs.mkShellNoCC {
-            packages = [
-              pkgs.dart
-              pkgs.go
-              pkgs.protobuf
-              pkgs.protoc-gen-go
-              pkgs.protoc-gen-go-grpc
-              pkgs.python3
-              pkgs.git
-              pkgs.gh
-              pkgs.jq
-              pkgs.tlaplus18
-            ];
-            shellHook = ''
-              export HEAVY_LOCK_MONITOR_DART="$(command -v dart)"
-            '';
-          }
+        default = checkGoPins (
+          checkSwiftPins (
+            pkgs.mkShellNoCC {
+              packages = [
+                pkgs.dart
+                pkgs.go
+                pkgs.protobuf
+                pkgs.protoc-gen-go
+                pkgs.protoc-gen-go-grpc
+                pkgs.python3
+                pkgs.git
+                pkgs.gh
+                pkgs.jq
+                pkgs.tlaplus18
+              ];
+              shellHook = ''
+                export HEAVY_LOCK_MONITOR_DART="$(command -v dart)"
+              '';
+            }
+          )
         );
       });
 
@@ -241,20 +255,25 @@
       # module dependencies used by apps/tuna. Update it when the vendored
       # package set changes, even if go.sum does not.
       packages = forAllSystems (pkgs: {
-        tuna = pkgs.buildGoModule {
-          pname = "tuna";
-          version = "0.0.0";
-          src = ./apps/tuna;
-          vendorHash = "sha256-mRUkpyioEqY/CIEFXN/XIjRRZwFwi62W6rxhsEen+yM=";
-          env.CGO_ENABLED = 0;
-          # Tests run through `dart tool/dev.dart test tuna`.
-          doCheck = false;
-        };
+        tuna = checkGoPins (
+          pkgs.buildGoModule {
+            pname = "tuna";
+            version = "0.0.0";
+            src = ./apps/tuna;
+            vendorHash = "sha256-pqR/LhyPj9V2QKtFOTC+p4TQsjaKcU5Ls1NZj4v7mjg=";
+            env.CGO_ENABLED = 0;
+            # Tests run through `dart tool/dev.dart test tuna`.
+            doCheck = false;
+          }
+        );
       });
 
       # `nix flake check` also reports Swift pin drift.
       checks = forAllSystems (
-        pkgs: checkSwiftPins { swift-pins = pkgs.runCommand "swift-pins" { } "touch $out"; }
+        pkgs:
+        checkGoPins (checkSwiftPins {
+          swift-pins = pkgs.runCommand "swift-pins" { } "touch $out";
+        })
       );
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);

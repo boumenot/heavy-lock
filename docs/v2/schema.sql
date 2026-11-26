@@ -180,6 +180,9 @@ CREATE TABLE jobs (
   CHECK ((state = 'finished') = (finished_at_ns IS NOT NULL)),
   -- Unknown may be visible while the reservation remains held.
   CHECK ((state = 'queued' AND outcome_kind IS NULL)
+      OR (state = 'reserved'
+          AND outcome_kind IN ('launch_failed', 'cancelled_before_start')
+          AND started_at_ns IS NULL)
       OR (state IN ('reserved', 'running')
           AND (outcome_kind IS NULL OR outcome_kind = 'unknown'))
       OR (state = 'finishing' AND outcome_kind IS NOT NULL
