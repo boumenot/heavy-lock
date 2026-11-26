@@ -52,7 +52,7 @@ other row is an explicit user decision.
 | Area | Decision |
 |---|---|
 | Language and packaging | Go runner and broker; one executable with a service mode |
-| Initial platforms | macOS first; Linux and Windows are later targets |
+| Initial platforms | Apple Silicon macOS first; Intel macOS is not required initially; Linux and Windows are later targets |
 | V1 switch | Stop using v1 and switch to v2; no mixed v1/v2 admission or nesting, migration plan, or legacy compatibility requirement |
 | APIs | gRPC for runner, Swift monitor and other clients; REST queries and controls for `curl`, with polling rather than REST streaming |
 | Runner updates | Push over `WatchJob`, with a current-state snapshot on reconnect |
@@ -112,8 +112,8 @@ not replace the separately discussed build orchestrator.
 **User decision: platform rollout.** The first stable v2 release targets
 macOS; Linux and Windows are later targets, not prerequisites for that
 release. The existing v1 runner remains available on those other platforms
-until v2 supports them. Dates, minimum OS versions and architectures are
-not yet decided. This choice does not establish that the required macOS
+until v2 supports them. Dates and the minimum macOS version are not yet
+decided. This choice does not establish that the required macOS
 process-safety mechanisms have been implemented or verified.
 
 The assistant recommended supporting all three platforms before the first
@@ -123,6 +123,18 @@ macOS and Linux, deferring only Windows, would be an intermediate option.
 The chosen macOS-first rollout narrows the initial verification effort and
 can ship sooner, while Linux and Windows remain on v1 longer and must still
 receive their own process-safety and durability validation before v2 support.
+
+**User decision: initial macOS architecture.** Target Apple Silicon
+(`arm64`) only for the first release; Intel macOS (`x86_64`) is not an
+initial-release prerequisite. This follows the assistant's recommendation
+and narrows the initial process-safety and packaging verification matrix to
+the user's current architecture.
+
+Supporting both architectures initially would preserve access for Intel
+Macs, but requires verifying the process identity, lifecycle and
+termination mechanisms on both before claiming support. Cross-compilation
+alone is not that verification. Whether or when to support Intel later
+remains undecided.
 
 **Alternatives and recommendations.** The assistant initially recommended
 retaining Dart to reuse the runner and avoid a rewrite. Dart isolates can
@@ -3602,9 +3614,10 @@ current results from historical runs and list bounds and unchecked cases.
     features and actual platform sync behavior, and measure `FULL`/macOS
     `fullfsync` commit latency. The driver and settings are decided, but
     their validation is pending.
-11. Go/protobuf tooling, distribution, supervision, supported macOS versions
-    and architectures, later Linux/Windows release plans, and monotonic
-    launch-timeout reconstruction across broker restarts.
+11. Go/protobuf tooling, distribution, supervision, supported macOS versions,
+    later Intel macOS/Linux/Windows release plans, and monotonic launch-timeout
+    reconstruction across broker restarts. Initial Apple Silicon support is
+    decided (section 1).
 12. The v2 nesting marker, retry delay and CLI option spelling. The simple
     v1/v2 switch and lack of legacy status compatibility are decided
     (section 9); no-wait, oversized weights and capacity fixed per broker
