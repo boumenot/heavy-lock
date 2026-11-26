@@ -443,6 +443,263 @@ shared-port APIs, process identity/cancellation, lost replies, disconnects,
 broker crashes, restart reconciliation and database failures. Verify
 platform-specific behavior rather than extrapolating from macOS.
 
+## 11. Proposed interfaces and schema (illustrative)
+
+**Status: proposal only.** Everything in this section is a candidate
+starting point for discussion. Method names, paths, message fields, table
+and column names, and state values are **not approved decisions**. They
+apply the decisions above (gRPC for the runner, REST for the monitor,
+SQLite, no authentication, strict FIFO, runner-executed commands) but
+do not settle any open question listed elsewhere.
+
+### 11.1 Runner-to-broker gRPC (proposed)
+
+The runner executes the command; the broker never launches it. The broker
+admits work by durably reserving capacity and granting a start.
+
+```protobuf
+// Illustrative only; package, names and fields are not approved.
+syntax = "proto3";
+package heavylock.v2;
+
+service Runner {
+  // Enqueue a job. Repeating the same idempotency_key returns the
+  // existing job rather than creating a duplicate.
+  rpc SubmitJob(SubmitJobRequest) returns (Job);
+  rpc GetJob(GetJobRequest) returns (Job);
+  // Stream current state, queue position, admission grant and
+  // cancellation. The runner re-opens it after a disconnect.
+  rpc WatchJob(WatchJobRequest) returns (stream JobEvent);
+  // Confirm the command started under a grant, with process identity.
+  rpc ReportStarted(ReportStartedRequest) returns (Job);
+  // Report the outcome. Does not by itself release capacity.
+  rpc ReportFinished(ReportFinishedRequest) returns (Job);
+  // Cancel this runner's own waiting job.
+  rpc CancelWaitingJob(CancelWaitingJobRequest) returns (Job);
+}
+
+message SubmitJobRequest {
+  string idempotency_key = 1;   // client-generated, stable across retries
+  string command = 2;           // human-readable string, for recording only
+  string cwd = 3;
+  uint32 weight = 4;
+  ClientInfo client = 5;        // name, version
+  map<string, string> metadata = 6; // explicit attribution only
+}
+
+message ReportStartedRequest {
+  string job_id = 1;
+  string grant_id = 2;          // must match the durable reservation
+  ProcessIdentity process = 3;  // PID plus a start-identity value
+}
+
+message ProcessIdentity {
+  int64 pid = 1;
+  string start_identity = 2;    // e.g. platform process start time
+}
+
+message ReportFinishedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  optional int32 exit_code = 3;       // absent when unknown
+  optional int32 termination_signal = 4;
+}
+```
+
+`GetJobRequest`, `WatchJobRequest`, `CancelWaitingJobRequest` (job ID),
+`Job`, `JobEvent` and `ClientInfo` are omitted; they would carry job state,
+queue position, grant and cancellation details, and are equally
+illustrative.
+
+Proposed invariants, still requiring agreement:
+
+- A start grant is sent only after its capacity reservation is durably
+  committed. A grant without a durable reservation must never exist.
+- `ReportFinished` records the outcome, but capacity is released only
+  after the broker is satisfied the job's processes have ended or verified
+  reconciliation says so. A heartbeat or stream loss alone never releases
+  a running job's slot.
+- A queued runner's disconnect starts the grace period (see section 4);
+  service downtime is excluded.
+- `idempotency_key` lets a runner safely repeat a submission whose
+  response was lost. This does not authorize automatic retry when the
+  service is unavailable; new submissions still fail immediately.
+
+Open: the gap between receiving a grant and reporting the launched process
+(a crash there leaves an ambiguous reservation); a lost `ReportStarted` or
+`ReportFinished` response; reconnect versus grace expiry, cancellation or
+admission races; running-job disconnect; who terminates a running job on
+cancellation; error codes and API versioning.
+
+### 11.2 Monitor-to-broker REST (proposed)
+
+JSON over the same loopback port. The `/v1` prefix and exact paths are
+proposals.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/health` | Liveness/readiness, service version, recovery status |
+| `GET` | `/v1/status` | Capacity, occupied slots, pause state, live resource readings |
+| `GET` | `/v1/queue` | Ordered waiting jobs with blocked-head reason |
+| `GET` | `/v1/jobs` | Running and completed jobs, filterable and paginated |
+| `GET` | `/v1/jobs/{id}` | Full job record, metadata, outcome and resource summary |
+| `POST` | `/v1/jobs/{id}/cancel` | Cancel a waiting or running job |
+| `POST` | `/v1/jobs/{id}/move-front` | Move a waiting job to the front |
+| `POST` | `/v1/jobs/{id}/move-back` | Move a waiting job to the back |
+| `POST` | `/v1/jobs/{id}/force-start` | Admit out of order, bypassing resource checks |
+| `POST` | `/v1/queue/pause` | Stop new normal admissions |
+| `POST` | `/v1/queue/resume` | Resume normal admissions |
+| `DELETE` | `/v1/jobs/{id}` | Delete one completed job's history |
+| `DELETE` | `/v1/history` | Delete completed history (e.g. older than a cutoff) |
+
+Notes:
+
+- Force-start confirmation is a monitor UI step. The API does not enforce
+  it, so direct clients such as `curl` can force-start without a prompt.
+- History deletion must refuse queued, reserved or running jobs.
+- No endpoint authenticates. Any local process can read job details,
+  including full command arguments that may contain secrets, and use any
+  exposed control. Loopback is not user isolation.
+- Whether REST exposes all of these mutations (versus a read-only REST
+  API plus another control path), how the monitor receives updates
+  (polling, server-sent events, WebSocket or a gRPC stream), error format
+  and pagination remain open.
+
+### 11.3 SQLite schema (illustrative)
+
+The schema shows the kinds of state the decisions require. Names, types,
+states and constraints are illustrative. `NULL` means unknown or not
+applicable and must stay distinct from zero. No raw resource time series
+is stored.
+
+```sql
+-- Illustrative only; not an approved schema.
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE jobs (
+  id                 TEXT PRIMARY KEY,
+  idempotency_key    TEXT NOT NULL UNIQUE,
+  command            TEXT NOT NULL,       -- human-readable, may contain secrets
+  cwd                TEXT,
+  weight             INTEGER NOT NULL,
+  state              TEXT NOT NULL,       -- e.g. queued, reserved, running,
+                                          -- finished, cancelled, removed, unknown
+  forced             INTEGER NOT NULL DEFAULT 0,
+  client_name        TEXT,
+  client_version     TEXT,
+  service_version    TEXT,
+  queued_at          TEXT NOT NULL,
+  admitted_at        TEXT,                -- NULL if never admitted
+  started_at         TEXT,
+  finished_at        TEXT,
+  free_memory_at_admission_bytes INTEGER,
+  exit_code          INTEGER,             -- NULL when unknown
+  termination_signal INTEGER,
+  -- Explicit client-supplied attribution only; NULL when not supplied.
+  repository         TEXT,
+  branch             TEXT,
+  worklog            TEXT,
+  agent_session      TEXT,
+  purpose            TEXT,
+  commit_sha         TEXT,
+  build_target       TEXT,
+  build_configuration TEXT
+);
+
+CREATE TABLE job_tags (
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  key    TEXT NOT NULL,
+  value  TEXT NOT NULL,
+  PRIMARY KEY (job_id, key)
+);
+
+-- Waiting jobs in strict FIFO order, including disconnect grace state.
+CREATE TABLE queue_entries (
+  job_id                TEXT PRIMARY KEY REFERENCES jobs(id),
+  position              INTEGER NOT NULL UNIQUE,
+  disconnected          INTEGER NOT NULL DEFAULT 0,
+  grace_elapsed_ms      INTEGER NOT NULL DEFAULT 0,
+  grace_started_at      TEXT    -- NULL while connected or service down
+);
+
+-- Durable capacity reservation and start grant.
+CREATE TABLE reservations (
+  job_id     TEXT PRIMARY KEY REFERENCES jobs(id),
+  grant_id   TEXT NOT NULL UNIQUE,
+  weight     INTEGER NOT NULL,
+  forced     INTEGER NOT NULL DEFAULT 0,
+  granted_at TEXT NOT NULL,
+  released_at TEXT                       -- NULL while capacity is held
+);
+
+-- Tracked processes for recovery and sampling.
+CREATE TABLE job_processes (
+  job_id         TEXT NOT NULL REFERENCES jobs(id),
+  pid            INTEGER NOT NULL,
+  start_identity TEXT NOT NULL,          -- distinguishes PID reuse
+  role           TEXT NOT NULL,          -- e.g. runner, command, descendant
+  first_seen_at  TEXT NOT NULL,
+  last_seen_at   TEXT,
+  PRIMARY KEY (job_id, pid, start_identity)
+);
+
+-- One summary per job.
+CREATE TABLE job_resource_summaries (
+  job_id                    TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+  elapsed_ms                INTEGER,
+  cpu_time_ms               INTEGER,     -- NULL if not measurable
+  peak_cpu_percent          REAL,        -- sampled peak
+  peak_combined_rss_bytes   INTEGER,     -- sampled peak; may double-count
+  sample_count              INTEGER NOT NULL DEFAULT 0,
+  measurement_completeness  TEXT NOT NULL, -- e.g. complete, partial, unavailable
+  incompleteness_reason     TEXT
+);
+
+-- Broker-wide state such as pause.
+CREATE TABLE broker_state (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+```
+
+Design notes:
+
+- **Transactions.** Each lifecycle transition (enqueue, reorder, reserve
+  and grant, start, finish, release, cancel, removal after grace) is one
+  transaction. A grant is acknowledged only after its reservation commits.
+  A single serialized scheduler writes these transitions.
+- **Foreign keys.** Enabled per connection. Queue entries, reservations and
+  processes reference `jobs`. They deliberately lack `ON DELETE CASCADE`,
+  so deleting a job that still has queue, reservation or process state
+  fails instead of silently dropping recovery state.
+- **Recovery reconciliation.** On restart, before admitting new work,
+  compare unreleased reservations and `job_processes` with verified live
+  processes (PID plus start identity) and reconnecting runners. Release
+  capacity only when processes are verified gone; fail closed when safety
+  cannot be established. A reservation with no reported process is the
+  ambiguous launch gap and needs an agreed rule.
+- **Grace and downtime.** Persist accumulated grace in
+  `grace_elapsed_ms`, and set `grace_started_at` only while the service
+  is accepting reconnections. On shutdown or crash, the elapsed time is
+  preserved (as of the last persisted update) and downtime does not count.
+  How often to persist, and reconnect/expiry races, remain open.
+- **History deletion.** Deleting completed history removes `jobs` rows
+  in terminal states and cascades to tags and summaries. It must not
+  affect queued, reserved or running jobs, and it does not by itself
+  scrub WAL files, backups or freed pages.
+- **Unknown versus zero.** Missing exit codes, metrics or attribution
+  stay `NULL`; completeness is recorded explicitly.
+- **Limits.** The database records intent and observations; it does not
+  by itself solve process-launch races, PID reuse, reparented descendants
+  or lost replies. Those need the runner/broker protocol and process
+  verification above.
+- **Sensitivity.** `command` and `cwd` may contain secrets. The file is
+  user-only, but the unauthenticated loopback API can still expose them.
+
+Open: exact states and transitions, schema migrations, required versus
+tag metadata, timestamps format, indexes, SQLite driver and settings
+(WAL, synchronous level), and broker-instance exclusion.
+
 ## Open decisions before implementation
 
 1. Pause/force-start interaction, confirmation and audit semantics,
@@ -452,7 +709,8 @@ platform-specific behavior rather than extrapolating from macOS.
 3. Durable execution/recovery state machine, broker-instance exclusion,
    process identity and descendant accounting, corruption/disk-full behavior.
 4. Default broker port, identity/version checks, shared-listener routing,
-   API contracts/versioning, REST controls and event delivery.
+   API contracts/versioning, REST controls and event delivery (candidate
+   contracts and schema are in section 11).
 5. Exact job metrics, completeness/error reporting, sampler choice,
    platform parity and overhead.
 6. Metadata schema, required fields/tags, command rendering, history
