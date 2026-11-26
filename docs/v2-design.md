@@ -87,6 +87,7 @@ other row is an explicit user decision.
 | Oversized weights | Reject a weight above capacity at submission; a queued job oversized after a capacity decrease is skipped, never blocks and is never bypass-counted, and receives a visible warning *(delegated)* |
 | Deleted history and keys | The permanent tombstone retains only the idempotency key; reusing it fails with `IDEMPOTENCY_KEY_DELETED` and never creates a job. A deletion event or surviving retry can separately retain the job ID *(delegated)* |
 | Job history | Sample every five seconds; retain root-command runtime, observed CPU time, sampled peak CPU and combined RSS summaries indefinitely until explicitly deleted |
+| History deletion | Available through REST and gRPC; not a monitor control |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
 | Other recorded fields | Client name/version, service version, free memory at admission, termination signal when available, measurement completeness, queue/admission timestamps, explicitly supplied commit/target/configuration |
 | Attribution | Only explicit client-supplied values; missing stays unknown |
@@ -446,6 +447,16 @@ Alternatives considered:
   queued-to-active race to guard in the UI: whatever state the job reaches
   before the request lands, the user already confirmed cancelling it. The
   cost is an extra step for routine queued cancellations.
+
+**User decision: no history deletion in the monitor.** The monitor does not
+need controls for deleting one job or bulk history. Deletion remains
+available through the REST and gRPC APIs, subject to the existing eligibility
+and recovery checks; API calls do not receive a monitor confirmation.
+
+The assistant suggested confirmation for monitor-based deletion to reduce
+accidental loss. The user had not planned to add those monitor controls.
+Leaving them out keeps the monitor simpler, while deletion requires another
+client and direct API requests have no UI prompt.
 
 **User decision: cancelling a running job.** On an explicit cancel request,
 the runner attempts termination first. The broker may fall back to
@@ -854,8 +865,9 @@ platform mechanisms are not.
 Untracked descendants are an explicitly accepted exception to complete tree
 verification (section 5).
 
-**Open.** Confirmation for other destructive actions (cancellation and
-force-start are decided), other exit/status codes,
+**Open.** Confirmation for other supported monitor controls (cancellation and
+force-start are decided; history deletion is not a monitor control), other
+exit/status codes,
 concurrent cancel/reorder/admit races, detection of blocking coordination
 and runner-kill mechanisms for takeover, audit persistence, and
 whether pause survives a broker restart.
@@ -3454,8 +3466,9 @@ current results from historical runs and list bounds and unchecked cases.
 
 ## Remaining design and verification work
 
-1. Confirmation and audit semantics for other controls; concurrent control
-   races. Running-job cancellation is runner-first with verified-identity
+1. Confirmation and audit semantics for other monitor controls; concurrent
+   control races. History deletion is not a monitor control. Running-job
+   cancellation is runner-first with verified-identity
    broker fallback after acknowledgment/completion deadline expiry or verified
    runner death. Starting defaults are 5 s acknowledgment and 30 s completion
    after acknowledgment; termination force-stops immediately. One shared
