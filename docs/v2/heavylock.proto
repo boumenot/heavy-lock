@@ -227,6 +227,8 @@ service ControlService {
   // A confirmed force-start is allowed while normal admissions are paused.
   rpc ForceStartJob(ForceStartJobRequest) returns (Job);
 
+  // Pause and resume commit durably before acknowledgement. Pause survives
+  // broker restarts until an explicit resume; it does not revoke reservations.
   rpc PauseQueue(PauseQueueRequest) returns (BrokerStatus);
   rpc ResumeQueue(ResumeQueueRequest) returns (BrokerStatus);
 

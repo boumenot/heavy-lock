@@ -36,6 +36,7 @@ CREATE TABLE schema_migrations (
 -- Single-row broker state.
 CREATE TABLE broker_state (
   id                INTEGER PRIMARY KEY CHECK (id = 1),
+  -- Committed pause survives broker restarts until an explicit resume.
   paused            INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
   paused_at_ns      INTEGER,              -- NULL when not paused
   next_queue_seq    INTEGER NOT NULL DEFAULT 1, -- next back-of-queue sequence

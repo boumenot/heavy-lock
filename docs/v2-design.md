@@ -61,7 +61,7 @@ other row is an explicit user decision.
 | Service | One independently supervised broker per OS user, protected by a port-independent OS singleton lock |
 | Admission | FIFO with bounded backfill *(delegated; supersedes strict FIFO)*: a later eligible connected job may pass a head blocked only by slot capacity, at most K times per head (configurable, default 1; K = 0 is strict FIFO); manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
 | No-wait | One registered-stream normal-admission decision; a definite refusal exits 75 without queueing, while an ambiguous result is an error, not 75 *(delegated)* |
-| Pause | Pause normal admissions only; running jobs continue and confirmed force-start remains allowed |
+| Pause | Pause normal admissions until explicitly resumed, including across broker restarts; running jobs continue and confirmed force-start remains allowed |
 | Force-start | Bypass resource checks, including while paused; count toward occupied capacity, with monitor confirmation |
 | New submission while service unavailable | Fail immediately and clearly; do not auto-start, retry until restart, or run unscheduled |
 | Recovery | Persist valid existing-job rejoin/reports; become ready once trusted storage gives complete accounting, keeping each unreconciled reservation held and counted while normal scheduling continues *(delegated; supersedes global fail-closed blocking)*; never release or replay on uncertainty |
@@ -408,6 +408,20 @@ requests. Control state must not depend on the monitor staying alive.
 **User decision: queue-only pause.** Stop new normal admissions while
 running jobs continue. This is not suspension of running processes.
 Resuming restores normal queue admission.
+
+**User decision: persistent pause.** A committed pause survives broker
+restarts and remains in effect until an explicit resume commits. Load the
+durable pause state before admitting queued work after recovery; a storage
+failure cannot be acknowledged as a successful pause or resume. An already
+committed reservation is not revoked, and the approved force-start
+exception remains available while paused, subject to recovery and
+launch-safety checks.
+
+The assistant recommended persistence so a crash and automatic restart do
+not unexpectedly resume normal admissions. Clearing pause on restart would
+resume work more conveniently but could violate the operator's intent. The
+chosen behavior can leave queued work paused until someone remembers to
+resume it.
 
 **User decision: force-start.** Permit a manual start out of queue order,
 bypassing normal resource-admission checks, including capacity,
@@ -867,10 +881,9 @@ verification (section 5).
 
 **Open.** Confirmation for other supported monitor controls (cancellation and
 force-start are decided; history deletion is not a monitor control), other
-exit/status codes,
-concurrent cancel/reorder/admit races, detection of blocking coordination
-and runner-kill mechanisms for takeover, audit persistence, and
-whether pause survives a broker restart.
+exit/status codes, concurrent cancel/reorder/admit races, detection of
+blocking coordination and runner-kill mechanisms for takeover, and audit
+persistence.
 
 ## 4. Runner and service lifecycle
 
@@ -2036,6 +2049,8 @@ service ControlService {
   // A confirmed force-start is allowed while normal admissions are paused.
   rpc ForceStartJob(ForceStartJobRequest) returns (Job);
 
+  // Pause and resume commit durably before acknowledgement. Pause survives
+  // broker restarts until an explicit resume; it does not revoke reservations.
   rpc PauseQueue(PauseQueueRequest) returns (BrokerStatus);
   rpc ResumeQueue(ResumeQueueRequest) returns (BrokerStatus);
 
@@ -2662,6 +2677,7 @@ CREATE TABLE schema_migrations (
 -- Single-row broker state.
 CREATE TABLE broker_state (
   id                INTEGER PRIMARY KEY CHECK (id = 1),
+  -- Committed pause survives broker restarts until an explicit resume.
   paused            INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
   paused_at_ns      INTEGER,              -- NULL when not paused
   next_queue_seq    INTEGER NOT NULL DEFAULT 1, -- next back-of-queue sequence

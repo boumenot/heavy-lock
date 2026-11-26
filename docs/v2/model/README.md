@@ -181,9 +181,10 @@ Grace advances only while the broker is ready and the queued runner is
 disconnected; successful reconnect resets it. Reconnect and expiry are
 serialized actions. This model does not count time during recovery even
 when rejoin is already available; the exact reconnect-ready point remains
-open. The model keeps pause across restart as an assumption, not a user
-decision. `GraceSafety` uses 30 abstract eligible-time ticks to check the
-chosen grace threshold, but neither a tick nor a timeout probe models
+open. The model keeps pause across restart, matching the user's decision;
+this models persistence but does not prove an implementation commits and
+reloads it correctly. `GraceSafety` uses 30 abstract eligible-time ticks to
+check the chosen grace threshold, but neither a tick nor a timeout probe models
 real elapsed time. The checks do not prove wall-clock behavior or the
 heartbeat and launch-timeout intervals.
 The model starts each runner connected. Under the delegated registration
