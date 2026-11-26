@@ -15,7 +15,7 @@ repository development uses the [Nix dev shell](#development-with-nix).
 apps/
   heavy-lock/      Dart runner and status CLI (bin, lib, test, pubspec)
   monitor-macos/   Swift Dock/menu status monitor (Swift package, tests)
-  tuna/            v2 Go runner/broker prototype; runs no work yet
+  tuna/            v2 Go runner/broker prototype; not for real workloads
 packages/
   heavylock-v2-swift/  Generated Swift bindings for the v2 contract (library)
 tool/              Build/test/install orchestration; not shipped
@@ -371,27 +371,58 @@ update`, then rerun all gates.
 ### v2 prototype and contract bindings
 
 The [v2 implementation plan](docs/v2-implementation-plan.md) is in progress.
-`apps/tuna` holds the single Go executable for the planned job-runner and
-`tuna service` broker modes. `tuna service` and the control CLI work; runner
-mode still prints an explicit not-implemented error (exit 70) and never
-launches a command, so continue using the v1 `heavy-lock` runner for all
-workloads. The v2 target is macOS
-26+ on Apple Silicon, exercised on macOS 26.7.3/arm64 with Xcode 27.2
-(Swift 6.4.2), Go 1.27.3 and `protoc` 36.2.
+`apps/tuna` holds the single Go executable for the v2 job runner and the
+`tuna service` broker. It is a prototype that has not been migrated into
+any invoker: keep using the v1 `heavy-lock` runner for all workloads, and do
+not mix the two for the same work, because they use separate gates. The v2
+target is macOS 26+ on Apple Silicon, exercised on macOS 26.7.3/arm64 with
+Xcode 27.2 (Swift 6.4.2), Go 1.27.3 and `protoc` 36.2.
 
-`tuna service [--port 49783] [--data-dir DIR] [--event-max-age 24h]
-[--event-max-count 100000]` takes the per-user singleton lock
+```bash
+tuna service [--port 49783] [--data-dir DIR] [--event-max-age 24h] \
+  [--event-max-count 100000]          # per-user broker; one per user
+tuna --port 49783 [--weight heavy|light|N] [--worklog N] [--no-wait] \
+  [--retries 0-3] -- <command> [arguments...]
+```
+
+`tuna service` takes the non-blocking per-user singleton lock
 (`broker.lock`, never unlinked) and opens `broker.db` in the data directory
 (default `~/Library/Application Support/heavy-lock/v2`), then serves control
-gRPC and unary REST on one IPv4 loopback port using plaintext HTTP/2 and
-HTTP/1.1. It logs `ready on 127.0.0.1:PORT` once admission is open and stops
-cleanly on SIGINT/SIGTERM. A second broker fails on the lock even with a
-different port and exits 75 (EX_TEMPFAIL; the design leaves the code
-unspecified); a port conflict exits 70. Runner RPCs return `UNIMPLEMENTED`
-until the runner (#13) is composed into the same broker. Login startup and
-crash restart (#17) are not provided.
-The runner requires an explicit `--port`. Service identity, REST/CORS and
-submission equivalence are specified in the
+gRPC, unary REST and the runner service on one IPv4 loopback port using
+plaintext HTTP/2 and HTTP/1.1. It logs `ready on 127.0.0.1:PORT` once
+admission is open and stops cleanly on SIGINT/SIGTERM. A second broker exits
+75 on the lock even with a different port (the design leaves the exit code
+unspecified); a port conflict exits 70. Login startup and crash restart (#17)
+are not provided. The runner:
+
+- requires an explicit `--port`, a running, ready broker, and a command
+  after `--`; an unreachable, incompatible or recovering broker exits 69.
+  There is no v1 fallback and no implicit broker start.
+- registers a stream with a fresh runner incarnation, waits in the queue
+  (or, with `--no-wait`, exits 75 when not admitted), then durably claims
+  the grant before it spawns the command once, without a shell. It seals
+  no-future-launch and reports start, finish or launch failure.
+- sets `TUNA_JOB_ID` to the job ID in the command's environment. A nested
+  `tuna` that sees a valid marker runs its command directly, without the
+  broker; an invalid marker exits 64. The v1 `HEAVY_LOCK_HELD` marker is
+  not recognized.
+- exits with the command's status (128+N for signal N; 127 not found,
+  126 not executable). Cancellation kills the command root with SIGKILL.
+  SIGTERM/SIGHUP are forwarded to the command; SIGINT is left to the
+  terminal's process group. A signal before launch exits 128+N and the
+  command never starts.
+- retries an eligible nonzero exit (not a signal, cancellation or
+  force-start) only with `--retries`, immediately, linking each attempt to
+  the previous job.
+- treats any unconfirmed claim, finish or release as held: it never spawns
+  after an ambiguous claim, never resubmits under a new key and never
+  relaunches on recovery. A broker lost while the command runs does not
+  stop the command; its exit status still propagates, and the reservation
+  stays held until the broker verifies the exit.
+
+Only the command root is tracked, and process identity uses darwin
+`sysctl`; descendants that outlive the root are not discovered or verified.
+Service identity, REST/CORS and submission equivalence are specified in the
 [v2 design](docs/v2-design.md#6-apis-port-and-local-access-risks).
 Both APIs are unauthenticated; any local process, and potentially any web
 page permitted by the browser, can access exposed data and controls.
@@ -506,11 +537,14 @@ flush or power-loss durability (#6 remains deferred).
 The v2 [scheduler library](docs/v2-scheduler.md) (`apps/tuna/scheduler`)
 adds weighted FIFO admission with bounded backfill, resource sharing checks,
 durable pause/reorder, force-start, queued-runner registration and grace, and
-the atomic `TrySubmitAndWatch` no-wait decision. It is not yet wired to the
-transport and launches no processes. Run its focused tests through the gate:
+the atomic `TrySubmitAndWatch` no-wait decision, plus the launch lifecycle:
+one-shot claims bound to a runner incarnation, seals, reports, cancellation
+and release only with verified process exit. Every committed event batch is
+published once, in commit order, to the broker's live event hub. Run the v2
+tests through the gate:
 
 ```bash
-heavy-lock -- nix develop -c go -C apps/tuna test -race ./scheduler ./storage -count=1
+heavy-lock -- nix develop -c go -C apps/tuna test -race ./... -count=1
 ```
 
 The shell deliberately uses `mkShellNoCC` and does not provide Swift: on
@@ -561,7 +595,7 @@ Monitor integration takes a plain Dart path, not FVM.
 
 Current behavior is documented in [technical decisions](docs/technical-decisions.md).
 The [v2 design and decision record](docs/v2-design.md) captures future
-choices, tradeoffs, recommendations and open questions; v2 is not implemented.
+choices, tradeoffs, recommendations and open questions; v2 is an unmigrated prototype.
 The [v2 implementation plan](docs/v2-implementation-plan.md) sequences the
 work, release checks and deferred follow-ups.
 The [TLA+ model and bounded checks](docs/v2/model/README.md) review its

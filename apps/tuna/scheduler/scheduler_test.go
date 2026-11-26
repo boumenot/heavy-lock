@@ -59,6 +59,8 @@ type harness struct {
 	store   *storage.Store
 	clock   *fakeClock
 	sampler *fakeSampler
+	probe   ProcessProbe
+	publish func([]*pb.BrokerEvent)
 	s       *Scheduler
 }
 
@@ -83,7 +85,8 @@ func (h *harness) start() {
 		h.t.Fatal(err)
 	}
 	h.clock = &fakeClock{}
-	if h.s, _, err = Start(h.ctx, h.store, Options{Config: h.cfg, ServiceVersion: "test", PID: 1, Clock: h.clock.read, Sampler: h.sampler}); err != nil {
+	if h.s, _, err = Start(h.ctx, h.store, Options{Config: h.cfg, ServiceVersion: "test", PID: 1, Clock: h.clock.read, Sampler: h.sampler,
+		Processes: h.probe, Publish: h.publish}); err != nil {
 		h.t.Fatal(err)
 	}
 	if _, err := h.s.MarkReady(h.ctx); err != nil {
@@ -614,7 +617,8 @@ func TestNotReadyRejectsNewWorkButAcceptsReconnect(t *testing.T) {
 	if h.store, err = storage.Open(h.ctx, h.path); err != nil {
 		t.Fatal(err)
 	}
-	h.s, _, err = Start(h.ctx, h.store, Options{Config: h.cfg, ServiceVersion: "test", PID: 1, Clock: h.clock.read, Sampler: h.sampler})
+	h.s, _, err = Start(h.ctx, h.store, Options{Config: h.cfg, ServiceVersion: "test", PID: 1, Clock: h.clock.read, Sampler: h.sampler,
+		Processes: h.probe, Publish: h.publish})
 	if err != nil {
 		t.Fatal(err)
 	}
