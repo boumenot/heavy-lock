@@ -407,6 +407,8 @@ Monitor integration takes a plain Dart path, not FVM.
 Current behavior is documented in [technical decisions](docs/technical-decisions.md).
 The [v2 design and decision record](docs/v2-design.md) captures future
 choices, tradeoffs, recommendations and open questions; v2 is not implemented.
+The [v2 implementation plan](docs/v2-implementation-plan.md) sequences the
+work, release checks and deferred follow-ups.
 The [TLA+ model and bounded checks](docs/v2/model/README.md) review its
 concurrency and recovery assumptions; they are not implementation verification.
 
