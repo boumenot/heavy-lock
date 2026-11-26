@@ -47,12 +47,13 @@ users' jobs or machines.
 | Service | One independently supervised broker per OS user, automatically restarted after a crash |
 | Admission | Strict FIFO, with explicit manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
 | Pause | Pause new admissions only; running jobs continue |
-| Force-start | Bypass resource checks, with confirmation in the monitor |
+| Force-start | Bypass resource checks, count toward occupied capacity, with confirmation in the monitor |
 | New submission while service unavailable | Fail immediately and clearly; do not auto-start, retry until restart, or run unscheduled |
 | Recovery | SQLite persists queue and active state; reconcile verified live jobs and occupied slots before admitting new work |
 | Queued-runner disconnect | Preserve place during a grace period, then remove if still disconnected; service downtime does not count |
 | Job history | Sample every five seconds, retain summaries rather than raw timestamped samples, keep indefinitely until explicitly deleted |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
+| Other recorded fields | Client name/version, service version, free memory at admission, termination signal when available, measurement completeness, queue/admission timestamps, explicitly supplied commit/target/configuration |
 | Attribution | Only explicit client-supplied values; missing stays unknown |
 | Scheduling from history | Not in v2 |
 | Service telemetry library | Deferred; job sampling and SQLite summaries are not deferred |
@@ -148,16 +149,16 @@ reasonable interpretation. Do not implement either as settled policy.
 
 **User decision: force-start.** Permit a manual start out of FIFO order,
 bypassing normal resource-admission checks, including capacity,
-free-memory, CPU-load and settling checks. The monitor must confirm before
-sending this request; direct API clients have no monitor prompt. This can
-overload the machine and is not a safety guarantee.
+free-memory, CPU-load and settling checks. Count forced jobs toward
+occupied capacity so later normal admissions account for them, including
+any overload. The monitor must confirm before sending this request; direct
+API clients have no monitor prompt. This can overload the machine and is
+not a safety guarantee.
 
-**Recommendations.** Count forced jobs in occupied capacity so later
-normal admissions see the overload. Mark them visibly and record the
-request, time and any supplied actor/reason. Force-start should bypass
-resource policy, not unresolved recovery, process identity or durable-state
-safety checks. These details require agreement; claimed actors are not
-authenticated.
+**Recommendations.** Mark forced jobs visibly and record the request,
+time and any supplied actor/reason. Force-start should bypass resource
+policy, not unresolved recovery, process identity or durable-state safety
+checks. These details require agreement; claimed actors are not authenticated.
 
 **Proposals for other controls.** Reorder waiting jobs only, visibly and
 with an audit entry. Cancel a waiting job by removing it and returning a
@@ -315,14 +316,12 @@ human-readable string and record the exit code. Original shell quoting
 cannot reliably be recovered; the string is not guaranteed replayable.
 Do not invent an exit code when the outcome cannot be recovered.
 
-**Proposal (unconfirmed).** The earlier living draft listed these as
-decisions, but no separate user choice is recorded for them: retain
-client name/version, service version, free memory at admission,
-termination signal where available and measurement completeness;
-queue-entry and admission timestamps distinguish queue wait from process
-startup, and jobs never admitted have no admission timestamp. Commit SHA,
-build/test target and build configuration would be recorded only when
-explicitly supplied, consistent with the attribution decision below.
+**User decision.** Also record client name and version, service version,
+free memory at admission, termination signal where available and measurement
+completeness. Store queue-entry and admission timestamps to distinguish
+queue wait from process startup; jobs never admitted have no admission
+timestamp. Record commit SHA, build/test target and build configuration
+only when explicitly supplied by the client.
 
 **User decision.** Attribution uses only caller-supplied values. Missing
 repository, branch, issue/worklog, agent/session or purpose remains
@@ -446,8 +445,8 @@ platform-specific behavior rather than extrapolating from macOS.
 
 ## Open decisions before implementation
 
-1. Pause/force-start interaction, forced-slot accounting, confirmation and
-   audit semantics, cancellation ownership/outcomes and control races.
+1. Pause/force-start interaction, confirmation and audit semantics,
+   cancellation ownership/outcomes and control races.
 2. Queued grace duration, reconnect-ready timing, downtime accounting,
    persisted grace and reconnect/expiry races; running disconnect behavior.
 3. Durable execution/recovery state machine, broker-instance exclusion,
