@@ -553,6 +553,18 @@ can also hold them. Do not synthesize POSIX signals for Windows. Keep
 cancellation intent separate from the observed outcome: a cancel request
 does not establish the exit code, signal or verified process termination.
 
+**Proposed update delivery: push, not polling.** The runner opens one
+long-lived server-streaming `WatchJob` call after submission. The broker
+pushes queue-position changes, the admission grant, cancellation and other
+state changes on that stream; the runner does not repeatedly poll for
+status. `GetJob` is for on-demand snapshots, such as after reconnecting or
+when diagnosing state. Five-second resource sampling is a broker-side
+activity independent of this stream. Stream keepalive/heartbeat settings,
+reconnect behavior, missed-event recovery (for example a snapshot on
+re-open) and how a lost stream interacts with the grace period remain
+open. Monitor REST event delivery (polling, server-sent events, WebSocket
+or a gRPC stream) is also still open.
+
 **Proposed list behavior.** With no state filter, `ListJobs` and
 `GET /v1/jobs` include queued, running and completed jobs. Candidate
 filters include state and explicitly supplied repository; other possibilities
