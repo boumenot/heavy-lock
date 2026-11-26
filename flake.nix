@@ -5,13 +5,14 @@
   # channels may lag behind.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
-  # Swift package dependencies of packages/heavylock-v2-swift, pinned here by
-  # release tag; flake.lock records each tag's commit. SwiftPM still fetches
-  # them, but evaluating this flake fails unless Package.resolved (and the
-  # exact requirements in Package.swift) match these pins, and dev.dart and
+  # Swift package dependencies of packages/heavylock-v2-swift and
+  # apps/tuna-monitor-macos, pinned here by release tag; flake.lock records
+  # each tag's commit. SwiftPM still fetches them, but evaluating this flake
+  # fails unless each package's Package.resolved (and the exact requirements
+  # in its Package.swift) match these pins, and dev.dart and
   # tool/generate_v2.sh only build from Package.resolved. To update one,
-  # change its tag here and in Package.swift, run `nix flake lock` and
-  # `swift package resolve`, then commit all three files.
+  # change its tag here and in both Package.swift files, run `nix flake lock`
+  # and `swift package resolve` in both packages, then commit all the files.
   inputs.grpc-swift-2 = {
     url = "github:grpc/grpc-swift-2/2.4.4";
     flake = false;
@@ -115,30 +116,30 @@
       ];
       forAllSystems = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      # Swift pins whose tag and commit come from the inputs above. `direct`
-      # dependencies must also appear in Package.swift with `exact:`.
-      swiftPackage = ./packages/heavylock-v2-swift;
+      # Swift pins whose tag and commit come from the inputs above. Every
+      # package below resolves exactly these pins; its `direct` dependencies
+      # must also appear in its Package.swift with `exact:`.
+      grpcDirect = [
+        "grpc-swift-2"
+        "grpc-swift-protobuf"
+        "grpc-swift-nio-transport"
+      ];
+      swiftPackages = {
+        "packages/heavylock-v2-swift" = {
+          src = ./packages/heavylock-v2-swift;
+          direct = grpcDirect ++ [ "swift-protobuf" ];
+        };
+        "apps/tuna-monitor-macos" = {
+          src = ./apps/tuna-monitor-macos;
+          direct = grpcDirect;
+        };
+      };
       swiftDependencies = {
-        grpc-swift-2 = {
-          owner = "grpc";
-          direct = true;
-        };
-        grpc-swift-protobuf = {
-          owner = "grpc";
-          direct = true;
-        };
-        grpc-swift-nio-transport = {
-          owner = "grpc";
-          direct = true;
-        };
-        swift-protobuf = {
-          owner = "apple";
-          direct = true;
-        };
-        swift-service-lifecycle = {
-          owner = "swift-server";
-          direct = false;
-        };
+        grpc-swift-2.owner = "grpc";
+        grpc-swift-protobuf.owner = "grpc";
+        grpc-swift-nio-transport.owner = "grpc";
+        swift-protobuf.owner = "apple";
+        swift-service-lifecycle.owner = "swift-server";
       }
       //
         lib.genAttrs
@@ -163,7 +164,6 @@
           ]
           (_: {
             owner = "apple";
-            direct = false;
           });
       lock = lib.importJSON ./flake.lock;
       swiftPins = lib.mapAttrs (
@@ -172,47 +172,52 @@
           node = lock.nodes.${lock.nodes.root.inputs.${name}};
         in
         {
-          inherit (dependency) direct;
           location = "https://github.com/${dependency.owner}/${name}.git";
           version = node.original.ref;
           revision = node.locked.rev;
         }
       ) swiftDependencies;
-      resolvedPins = lib.listToAttrs (
-        map (pin: lib.nameValuePair pin.identity pin)
-          (lib.importJSON (swiftPackage + "/Package.resolved")).pins
-      );
-      manifest = builtins.readFile (swiftPackage + "/Package.swift");
-      swiftPinErrors =
-        lib.optional (lib.attrNames resolvedPins != lib.attrNames swiftPins)
-          "Package.resolved pins [${toString (lib.attrNames resolvedPins)}], flake pins [${toString (lib.attrNames swiftPins)}]"
-        ++ lib.concatLists (
-          lib.mapAttrsToList (
-            name: pin:
-            let
-              resolved = resolvedPins.${name} or null;
-              requirement = ''.package(url: "${pin.location}", exact: "${pin.version}")'';
-            in
-            lib.optional (
-              resolved != null
-              && (
-                resolved.location != pin.location
-                || resolved.state.version or null != pin.version
-                || resolved.state.revision != pin.revision
-              )
-            ) "Package.resolved ${name} differs from flake pin ${pin.version} (${pin.revision})"
-            ++ lib.optional (
-              pin.direct && !lib.hasInfix requirement manifest
-            ) "Package.swift lacks ${requirement}"
-          ) swiftPins
+      swiftPackageErrors =
+        path: package:
+        let
+          resolvedPins = lib.listToAttrs (
+            map (pin: lib.nameValuePair pin.identity pin)
+              (lib.importJSON (package.src + "/Package.resolved")).pins
+          );
+          manifest = builtins.readFile (package.src + "/Package.swift");
+        in
+        map (error: "${path}: ${error}") (
+          lib.optional (lib.attrNames resolvedPins != lib.attrNames swiftPins)
+            "Package.resolved pins [${toString (lib.attrNames resolvedPins)}], flake pins [${toString (lib.attrNames swiftPins)}]"
+          ++ lib.concatLists (
+            lib.mapAttrsToList (
+              name: pin:
+              let
+                resolved = resolvedPins.${name} or null;
+                requirement = ''.package(url: "${pin.location}", exact: "${pin.version}")'';
+              in
+              lib.optional (
+                resolved != null
+                && (
+                  resolved.location != pin.location
+                  || resolved.state.version or null != pin.version
+                  || resolved.state.revision != pin.revision
+                )
+              ) "Package.resolved ${name} differs from flake pin ${pin.version} (${pin.revision})"
+              ++ lib.optional (
+                lib.elem name package.direct && !lib.hasInfix requirement manifest
+              ) "Package.swift lacks ${requirement}"
+            ) swiftPins
+          )
         );
+      swiftPinErrors = lib.concatLists (lib.mapAttrsToList swiftPackageErrors swiftPackages);
       checkSwiftPins =
         value:
         if swiftPinErrors == [ ] then
           value
         else
           throw ''
-            packages/heavylock-v2-swift does not match the Swift pins in flake.nix:
+            Swift packages do not match the Swift pins in flake.nix:
               ${lib.concatStringsSep "\n  " swiftPinErrors}'';
       # The runtime SQLite driver is defined here; Go's manifests carry the
       # same pin for ordinary Go tooling and buildGoModule vendoring.

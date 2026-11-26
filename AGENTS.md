@@ -7,8 +7,9 @@ Follow [docs/development-lifecycle.md](docs/development-lifecycle.md).
 - Shipped apps live in `apps/`: the runner in `apps/heavy-lock` (code in
   `lib/heavy_lock.dart`, status publication in `lib/src/heavy_lock_status.dart`,
   entrypoints in `bin/`, integration tests in `test/`) and the macOS monitor
-  in `apps/monitor-macos/`. The v2 Go prototype `tuna` is in `apps/tuna`
-  and its generated Swift contract library in `packages/heavylock-v2-swift`;
+  in `apps/monitor-macos/`. The v2 Go prototype `tuna` is in `apps/tuna`,
+  its v2 macOS monitor in `apps/tuna-monitor-macos/` and its generated
+  Swift contract library in `packages/heavylock-v2-swift`;
   regenerate bindings with `tool/generate_v2.sh`, never by hand.
   `tool/dev.dart` (library and tests in `tool/`)
   builds, tests and installs them; the root `pubspec.yaml` is a pub workspace.
@@ -17,7 +18,8 @@ Follow [docs/development-lifecycle.md](docs/development-lifecycle.md).
   <command>`). It pins Dart via `flake.lock` and sets
   `HEAVY_LOCK_MONITOR_DART`; macOS Swift comes from Xcode. Keep `flake.nix`
   and docs in sync when the SDK constraint changes. Swift package
-  dependencies of `packages/heavylock-v2-swift` are pinned as `flake.nix`
+  dependencies of `packages/heavylock-v2-swift` and `apps/tuna-monitor-macos`
+  are pinned as `flake.nix`
   inputs; change them there, in `Package.swift` and in `Package.resolved`
   together, or flake evaluation fails.
 - Keep the runner SDK-only. No Flutter/FVM or runtime package dependencies.

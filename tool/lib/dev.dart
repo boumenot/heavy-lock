@@ -143,6 +143,7 @@ final List<App> apps = [
   const MacMonitorApp(),
   const TunaApp(),
   const SwiftContractApp(),
+  const TunaMonitorApp(),
   const FutureApp('monitor-windows', 'Windows status monitor', 'windows'),
   const FutureApp('monitor-linux', 'Linux status monitor', 'linux'),
 ];
@@ -401,56 +402,12 @@ class MacMonitorApp extends App {
       '${context.buildRoot}/monitor-macos/$bundleName';
 
   @override
-  Future<int> build(DevContext context) async {
-    final package = this._package(context);
-    var code = await context.shell.run('swift', [
-      'build',
-      '--package-path',
-      package,
-      '-c',
-      'release',
-    ]);
-    if (code != 0) return code;
-    final binary = File('$package/.build/release/HeavyLockMonitor');
-    if (!await binary.exists()) {
-      context.err.writeln('Swift build produced no executable: ${binary.path}');
-      return 1;
-    }
-    final output = Directory('${context.buildRoot}/monitor-macos');
-    await output.create(recursive: true);
-    final staging = await output.createTemp('.staging-');
-    try {
-      final bundle = '${staging.path}/$bundleName';
-      await Directory('$bundle/Contents/MacOS').create(recursive: true);
-      await binary.copy('$bundle/Contents/MacOS/HeavyLockMonitor');
-      await File('$package/Info.plist').copy('$bundle/Contents/Info.plist');
-      code = await context.shell.run('chmod', [
-        '755',
-        '$bundle/Contents/MacOS/HeavyLockMonitor',
-      ]);
-      if (code == 0) {
-        code = await context.shell.run('codesign', [
-          '--force',
-          '--sign',
-          '-',
-          bundle,
-        ]);
-      }
-      if (code != 0) {
-        context.err.writeln('Bundle signing failed; previous build kept.');
-        return code;
-      }
-      final result = await replaceDirectory(bundle, this._bundle(context));
-      if (result != null) {
-        context.err.writeln(result);
-        return 1;
-      }
-    } finally {
-      if (await staging.exists()) await staging.delete(recursive: true);
-    }
-    context.out.writeln('Built: ${this._bundle(context)}');
-    return 0;
-  }
+  Future<int> build(DevContext context) => buildMacBundle(
+    context,
+    package: this._package(context),
+    executable: 'HeavyLockMonitor',
+    bundle: this._bundle(context),
+  );
 
   @override
   Future<int> test(DevContext context) => context.shell.run(
@@ -564,7 +521,7 @@ class TunaApp extends App {
       unavailableExitCode;
 }
 
-/// Generated Swift bindings for the v2 contract, consumed by the future v2
+/// Generated Swift bindings for the v2 contract, consumed by the v2
 /// monitor. A library, so it is never installed.
 class SwiftContractApp extends App {
   const SwiftContractApp();
@@ -604,6 +561,117 @@ class SwiftContractApp extends App {
   /// Builds only the dependency versions in Package.resolved, which flake.nix
   /// verifies against its Swift pins.
   static const resolvedOnly = '--only-use-versions-from-resolved-file';
+}
+
+/// The v2 macOS monitor. Until the v2 cutover it is built and tested but
+/// never installed, so it cannot replace the v1 monitor.
+class TunaMonitorApp extends App {
+  const TunaMonitorApp();
+
+  static const bundleName = 'Tuna Monitor.app';
+
+  @override
+  String get name => 'tuna-monitor-macos';
+  @override
+  String get description => 'v2 macOS monitor and controls (prototype)';
+  @override
+  Set<String> get hosts => const {'macos'};
+  @override
+  bool get installable => false;
+
+  String _package(DevContext context) =>
+      '${context.root}/apps/tuna-monitor-macos';
+
+  @override
+  Future<int> build(DevContext context) => buildMacBundle(
+    context,
+    package: this._package(context),
+    executable: 'TunaMonitor',
+    bundle: '${context.buildRoot}/tuna-monitor-macos/$bundleName',
+    swiftArguments: const [SwiftContractApp.resolvedOnly],
+  );
+
+  /// Runs the integration test against `build/tuna/tuna` when it has been
+  /// built (`check all` builds tuna first); it is skipped otherwise.
+  @override
+  Future<int> test(DevContext context) async {
+    final tuna = File('${context.buildRoot}/tuna/tuna');
+    final integration = await tuna.exists();
+    if (!integration) {
+      context.out.writeln(
+        'Skipping the broker integration test: ${tuna.path} is not built.',
+      );
+    }
+    return context.shell.run('swift', [
+      'test',
+      SwiftContractApp.resolvedOnly,
+      '--package-path',
+      this._package(context),
+    ], environment: integration ? {'TUNA_MONITOR_TEST_TUNA': tuna.path} : null);
+  }
+
+  @override
+  Future<int> install(DevContext context, String? destination) async =>
+      unavailableExitCode;
+}
+
+/// Builds [executable] from the Swift [package] in release mode and replaces
+/// the signed app [bundle], keeping the previous bundle on failure.
+Future<int> buildMacBundle(
+  DevContext context, {
+  required String package,
+  required String executable,
+  required String bundle,
+  List<String> swiftArguments = const [],
+}) async {
+  var code = await context.shell.run('swift', [
+    'build',
+    ...swiftArguments,
+    '--package-path',
+    package,
+    '-c',
+    'release',
+  ]);
+  if (code != 0) return code;
+  final binary = File('$package/.build/release/$executable');
+  if (!await binary.exists()) {
+    context.err.writeln('Swift build produced no executable: ${binary.path}');
+    return 1;
+  }
+  final output = Directory(File(bundle).parent.path);
+  await output.create(recursive: true);
+  final staging = await output.createTemp('.staging-');
+  try {
+    final staged = '${staging.path}/${bundle.split('/').last}';
+    await Directory('$staged/Contents/MacOS').create(recursive: true);
+    await binary.copy('$staged/Contents/MacOS/$executable');
+    await File('$package/Info.plist').copy('$staged/Contents/Info.plist');
+    code = await context.shell.run('chmod', [
+      '755',
+      '$staged/Contents/MacOS/$executable',
+    ]);
+    if (code == 0) {
+      code = await context.shell.run('codesign', [
+        '--force',
+        '--sign',
+        '-',
+        staged,
+      ]);
+    }
+    if (code != 0) {
+      context.err.writeln('Bundle signing failed; previous build kept.');
+      return code;
+    }
+    final result = await replaceDirectory(staged, bundle);
+    if (result != null) {
+      context.err.writeln(result);
+      return 1;
+    }
+  } finally {
+    if (await staging.exists()) await staging.delete(recursive: true);
+  }
+  context.out.writeln('Built: $bundle');
+  return 0;
 }
 
 /// Moves [source] to [target], replacing an existing directory so a failure

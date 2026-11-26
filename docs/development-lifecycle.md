@@ -2,7 +2,8 @@
 
 This lifecycle covers the Dart CLI (`apps/heavy-lock`), the standalone
 Swift monitor (`apps/monitor-macos`), the v2 Go prototype (`apps/tuna`),
-the Swift v2 contract library and the `tool/` orchestrator.
+its v2 monitor (`apps/tuna-monitor-macos`), the Swift v2 contract library
+and the `tool/` orchestrator.
 
 ## Ready, implementation and done
 
@@ -74,7 +75,9 @@ build/heavy-lock/heavy-lock-status --json
 ```
 
 `check all` builds and tests every application implemented for the host
-(on macOS, the runner, monitor, `tuna` and Swift v2 library); use `build`,
+(on macOS, the runner, monitor, `tuna`, Swift v2 library and v2 monitor;
+the v2 monitor's broker integration test runs when `build/tuna/tuna`
+exists, which `check all` builds first); use `build`,
 `test` or `check` with a target name for one application. Focused tests run
 directly, e.g. `cd tool && dart test` for the orchestrator. Regenerate v2
 bindings with `heavy-lock -- nix develop -c tool/generate_v2.sh`, or add
@@ -91,7 +94,9 @@ may use temporary gates only in isolated tests. Full/coverage suites,
 monitor suites and all compiles run through the machine-wide lock.
 Analyzers and formatting run directly. Targeted checks can precede the full
 release gates. Monitor UI changes also need a manual launch check
-(`open "build/monitor-macos/Heavy Lock Status.app"`).
+(`open "build/monitor-macos/Heavy Lock Status.app"`, or for the v2 monitor
+`open "build/tuna-monitor-macos/Tuna Monitor.app" --args --port PORT`
+against a temporary broker).
 
 Check CLI exit propagation, admission/no-wait, nesting, cancellation and the
 same default gate when changing runner behavior. Use temporary gates only
