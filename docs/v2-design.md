@@ -57,7 +57,7 @@ other row is an explicit user decision.
 | APIs | gRPC for runner, Swift monitor and other clients; REST queries and controls for `curl`, with polling rather than REST streaming |
 | Runner updates | Push over `WatchJob`, with a current-state snapshot on reconnect |
 | Monitor event replay | Configurable bounded replay; initial limits are 24 hours and 100,000 events |
-| Transport | Both APIs share a fixed, configurable loopback TCP port; runner takes an explicit port argument |
+| Transport | Both APIs share a configurable loopback TCP port, broker default 49783; runner takes an explicit port argument |
 | Access | No API authentication; no remote access |
 | Service | One independently supervised broker per OS user, protected by a port-independent OS singleton lock |
 | Admission | FIFO with bounded backfill *(delegated; supersedes strict FIFO)*: a later eligible connected job may pass a head blocked only by slot capacity, at most K times per head (configurable, default 1; K = 0 is strict FIFO); manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
@@ -1376,10 +1376,17 @@ history deletion could still create gaps. The event log is not an
 authenticated audit trail. The details of time-based pruning under clock
 changes and its maintenance cadence remain to be verified.
 
-**User decision.** The runner takes an explicit port argument; there is
-no automatic port discovery. A broker must report a port conflict, not
-silently pick another port. Different users may need different ports.
-Whether the broker supplies a default numeric port remains open.
+**User decision: broker port.** The broker defaults to TCP port **49783**,
+configurable for both APIs. The runner still takes an explicit port argument;
+there is no automatic port discovery. A broker must report a port conflict,
+not silently pick another port. Different users may need different ports.
+
+The assistant recommended a default to make ordinary broker setup
+predictable. Requiring an explicit broker port would avoid a built-in value
+but add configuration. Port 49783 is in the
+[dynamic/private range](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml);
+it is not reserved for this service and may already be occupied, including
+by an ephemeral connection. A port number is not authentication.
 
 **User decision.** Neither API authenticates clients. Any local process
 able to connect, including one running as another OS user, can access
@@ -3559,10 +3566,10 @@ current results from historical runs and list bounds and unchecked cases.
 6. Singleton-lock path, OS primitives and filesystem support; descendant and
    reparented-process discovery; precision and boot identity for process IDs;
    database-failure detection, explicit error mapping and repair workflows.
-7. Default broker port, identity/version checks, shared-listener
-   routing/multiplexer, gRPC-Swift/runtime and code-generation versions, and
-   gRPC-Gateway versus hand-written REST handlers. REST polling rather than
-   event streaming is decided (section 6).
+7. Identity/version checks, shared-listener routing/multiplexer,
+   gRPC-Swift/runtime and code-generation versions, and gRPC-Gateway versus
+   hand-written REST handlers. The broker port default and REST polling
+   rather than event streaming are decided (section 6).
 8. Reliable monotonic root-runtime measurement across delayed reports and
    restarts, CPU-time accounting, sampler choice, measurement completeness,
    platform parity and overhead (section 7). The elapsed interval, CPU
