@@ -138,8 +138,10 @@ never a hard-coded repository. Unresolved repositories have no guessed link.
 The version-1 publisher protocol does not need a repo field.
 
 Keep repository worklog and verification/TDD/debug/review skills without
-fixed-model gates or automatic run-to-merge authorization. Provide the
-installed-command consumer and read-only worklog-list skill as templates.
+fixed-model gates. "Implement/ship/merge/land #N" authorizes the
+`ship-worklog` loop; the lifecycle's shipping criteria add this
+repository's gates. Provide the installed-command consumer and read-only
+worklog-list skill as templates.
 
 **Migration.** The current gate and environment names are a clean break from
 earlier runners, with no aliases. All invokers, including nested runners,
