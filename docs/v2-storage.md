@@ -1,8 +1,9 @@
 # v2 transactional storage
 
 `apps/tuna/storage` implements worklog #11 as a library. The prototype still
-runs no jobs: transport wiring, admission policy (#12), OS evidence gathering
-and process signaling are separate work. Storage does not establish exclusive
+runs no jobs: transport wiring, admission policy (the
+[scheduler](v2-scheduler.md), #12), OS evidence gathering and process
+signaling are separate work. Storage does not establish exclusive
 broker ownership or automatically declare recovery complete.
 
 ## Transactions and publication

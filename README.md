@@ -437,6 +437,16 @@ and replayable events without scheduler policy or process signaling.
 WAL/FULL and macOS fullfsync settings are not a claim of physically verified
 flush or power-loss durability (#6 remains deferred).
 
+The v2 [scheduler library](docs/v2-scheduler.md) (`apps/tuna/scheduler`)
+adds weighted FIFO admission with bounded backfill, resource sharing checks,
+durable pause/reorder, force-start, queued-runner registration and grace, and
+the atomic `TrySubmitAndWatch` no-wait decision. It is not yet wired to the
+transport and launches no processes. Run its focused tests through the gate:
+
+```bash
+heavy-lock -- nix develop -c go -C apps/tuna test -race ./scheduler ./storage -count=1
+```
+
 The shell deliberately uses `mkShellNoCC` and does not provide Swift: on
 macOS the monitor builds with the system Xcode `swift` (`xcode-select
 --install`), which Nix leaves untouched. Nix's Dart is used only for
