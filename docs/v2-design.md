@@ -54,7 +54,7 @@ other row is an explicit user decision.
 | Language and packaging | Go runner and broker; one executable with a service mode |
 | Initial platforms | macOS first; Linux and Windows are later targets |
 | V1 switch | Stop using v1 and switch to v2; no mixed v1/v2 admission or nesting, migration plan, or legacy compatibility requirement |
-| APIs | gRPC for runner, Swift monitor and other clients; REST for `curl` |
+| APIs | gRPC for runner, Swift monitor and other clients; REST queries and controls for `curl` |
 | Runner updates | Push over `WatchJob`, with a current-state snapshot on reconnect |
 | Transport | Both APIs share a fixed, configurable loopback TCP port; runner takes an explicit port argument |
 | Access | No API authentication; no remote access |
@@ -1277,7 +1277,7 @@ portable process-tree tracking is complete.
 **User decision.** Use gRPC with a typed Protocol Buffers contract for the
 runner, Swift monitor and other clients. Monitor controls and live events
 use gRPC, with resumable event delivery. Retain REST for ad-hoc `curl`
-queries. This supersedes the earlier choice of REST for the monitor. Both
+access. This supersedes the earlier choice of REST for the monitor. Both
 protocols share one fixed, configurable TCP port on loopback (`127.0.0.1`
 and/or `::1`). Never bind wildcard, LAN or public addresses. Remote access
 is not supported.
@@ -1287,6 +1287,21 @@ avoid a gRPC runtime in Swift. The selected gRPC approach shares typed
 contracts and streaming semantics across clients, but adds gRPC-Swift,
 code-generation and runtime/version compatibility work. REST event streaming
 via SSE remains a separate proposal, not part of this decision.
+
+**User decision: REST control scope.** Expose all unary `ControlService`
+queries and controls over REST as well as gRPC, so `curl` can inspect state,
+cancel and reorder jobs, pause and resume the queue, force-start and delete
+history. Each REST endpoint still maps to the corresponding gRPC operation;
+runner lifecycle RPCs are not REST endpoints. Whether REST also exposes the
+streaming `WatchEvents` operation remains open.
+
+The assistant recommended full query and control access for convenient
+`curl` automation. Read-only REST would have a narrower HTTP control surface
+but require gRPC for changes. Both APIs remain unauthenticated, and direct
+API calls do not receive the monitor's cancel or force-start confirmations.
+Full REST control adds exposure to unsafe HTTP/browser requests; origin and
+host checks can mitigate some browser risks but do not authenticate local
+clients.
 
 **User decision.** The runner takes an explicit port argument; there is
 no automatic port discovery. A broker must report a port conflict, not
@@ -1325,13 +1340,13 @@ or a security boundary.
 - versioned `/v1` paths and a `heavylock.v2` package
 - health and readiness
 - error mapping
-- every control over REST
 - SSE event delivery for REST clients
 
-Apart from one-way REST-to-gRPC parity and the chosen gRPC streams for runner
-and monitor, these contract details remain unapproved proposals. CLI control
-equivalents, port-argument spelling, IPv4/IPv6 binding behavior, Swift gRPC
-dependency/version choices and service identity verification also remain open.
+Apart from the selected REST query/control scope, REST-to-gRPC mapping and
+gRPC streams for runner and monitor, these contract details remain
+unapproved proposals. CLI control equivalents, port-argument spelling,
+IPv4/IPv6 binding behavior, Swift gRPC dependency/version choices and
+service identity verification also remain open.
 
 ## 7. Resource history and attribution
 
@@ -1538,7 +1553,7 @@ remain proposed defaults.
 | `ClientInfo` | Name, version, OS and architecture; explicitly reported only |
 | Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected while the job is retained. After history deletion a key-only tombstone rejects every reuse *(delegated)*; see [section 11.3](#113-sqlite-schema). |
 | Outcome | Native `int64` exit code, optional POSIX signal number and name, and `outcome_kind` |
-| API parity | One-way REST-to-gRPC parity: every REST endpoint maps to a `ControlService` RPC |
+| API parity | Every REST endpoint maps to a `ControlService` RPC; all unary `ControlService` queries and controls also have REST endpoints. REST event streaming remains open |
 | Runner updates | `WatchJob` push stream with a current-state snapshot on reconnect |
 | Monitor updates | gRPC controls and resumable live event streaming |
 | SQLite journal | WAL with `synchronous = FULL` on all platforms and `fullfsync` on macOS; measure commit latency |
@@ -1881,8 +1896,9 @@ service RunnerService {
 }
 
 // ControlService carries broker operations shared by runners, the monitor
-// and other clients. Every REST endpoint maps to exactly one RPC here
-// (one-way parity); the reverse is not required.
+// and other clients. Every REST endpoint maps to exactly one RPC here.
+// All unary ControlService queries and controls also have REST endpoints.
+// Whether WatchEvents is exposed over REST is not yet decided.
 service ControlService {
   rpc GetHealth(GetHealthRequest) returns (Health);
   rpc GetStatus(GetStatusRequest) returns (BrokerStatus);
@@ -2461,9 +2477,10 @@ message BrokerSnapshot {
 
 The REST API is JSON on the same loopback port. Each endpoint maps to
 exactly one `ControlService` RPC and calls the same broker domain logic,
-which gives the one-way parity the user approved. Runner lifecycle RPCs
-have no REST endpoints. Exposing every `ControlService` control in this
-draft is a proposal, not a consequence of the Swift monitor's gRPC choice.
+and all unary `ControlService` queries and controls have REST endpoints, as
+the user chose. Runner lifecycle RPCs have no REST endpoints. The exact
+paths, JSON encoding and error mapping below remain proposals, and REST
+event streaming is a separate open choice.
 
 Request and response bodies are the RPC messages encoded with
 [protojson](https://protobuf.dev/programming-guides/json/):

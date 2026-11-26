@@ -155,8 +155,9 @@ service RunnerService {
 }
 
 // ControlService carries broker operations shared by runners, the monitor
-// and other clients. Every REST endpoint maps to exactly one RPC here
-// (one-way parity); the reverse is not required.
+// and other clients. Every REST endpoint maps to exactly one RPC here.
+// All unary ControlService queries and controls also have REST endpoints.
+// Whether WatchEvents is exposed over REST is not yet decided.
 service ControlService {
   rpc GetHealth(GetHealthRequest) returns (Health);
   rpc GetStatus(GetStatusRequest) returns (BrokerStatus);
