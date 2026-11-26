@@ -54,7 +54,7 @@ other row is an explicit user decision.
 | Language and packaging | Go runner and broker; one executable with a service mode |
 | Initial platforms | macOS first; Linux and Windows are later targets |
 | V1 switch | Stop using v1 and switch to v2; no mixed v1/v2 admission or nesting, migration plan, or legacy compatibility requirement |
-| APIs | gRPC for runner, Swift monitor and other clients; REST queries and controls for `curl` |
+| APIs | gRPC for runner, Swift monitor and other clients; REST queries and controls for `curl`, with polling rather than REST streaming |
 | Runner updates | Push over `WatchJob`, with a current-state snapshot on reconnect |
 | Transport | Both APIs share a fixed, configurable loopback TCP port; runner takes an explicit port argument |
 | Access | No API authentication; no remote access |
@@ -1285,15 +1285,13 @@ is not supported.
 The previous REST/SSE monitor alternative would use familiar HTTP/JSON and
 avoid a gRPC runtime in Swift. The selected gRPC approach shares typed
 contracts and streaming semantics across clients, but adds gRPC-Swift,
-code-generation and runtime/version compatibility work. REST event streaming
-via SSE remains a separate proposal, not part of this decision.
+code-generation and runtime/version compatibility work.
 
 **User decision: REST control scope.** Expose all unary `ControlService`
 queries and controls over REST as well as gRPC, so `curl` can inspect state,
 cancel and reorder jobs, pause and resume the queue, force-start and delete
 history. Each REST endpoint still maps to the corresponding gRPC operation;
-runner lifecycle RPCs are not REST endpoints. Whether REST also exposes the
-streaming `WatchEvents` operation remains open.
+runner lifecycle RPCs are not REST endpoints.
 
 The assistant recommended full query and control access for convenient
 `curl` automation. Read-only REST would have a narrower HTTP control surface
@@ -1302,6 +1300,16 @@ API calls do not receive the monitor's cancel or force-start confirmations.
 Full REST control adds exposure to unsafe HTTP/browser requests; origin and
 host checks can mitigate some browser risks but do not authenticate local
 clients.
+
+**User decision: REST event delivery.** REST has no live event stream; REST
+clients poll the query endpoints instead. The monitor continues to receive
+resumable live events through gRPC `WatchEvents`.
+
+The assistant recommended exposing server-sent events (SSE) so `curl -N`
+could follow the same event feed without polling. That would add a streaming
+endpoint and reconnection, retention and error handling. Polling is simpler
+for REST clients and the server, but can miss transient changes between
+requests; callers needing the event stream use gRPC.
 
 **User decision.** The runner takes an explicit port argument; there is
 no automatic port discovery. A broker must report a port conflict, not
@@ -1340,13 +1348,12 @@ or a security boundary.
 - versioned `/v1` paths and a `heavylock.v2` package
 - health and readiness
 - error mapping
-- SSE event delivery for REST clients
 
-Apart from the selected REST query/control scope, REST-to-gRPC mapping and
-gRPC streams for runner and monitor, these contract details remain
-unapproved proposals. CLI control equivalents, port-argument spelling,
-IPv4/IPv6 binding behavior, Swift gRPC dependency/version choices and
-service identity verification also remain open.
+Apart from the selected REST query/control scope and polling,
+REST-to-gRPC mapping, and gRPC streams for runner and monitor, these
+contract details remain unapproved proposals. CLI control equivalents,
+port-argument spelling, IPv4/IPv6 binding behavior, Swift gRPC
+dependency/version choices and service identity verification also remain open.
 
 ## 7. Resource history and attribution
 
@@ -1536,7 +1543,6 @@ detail. Remaining proposals include:
 - storing the outcome while a job is `FINISHING`
 - never-reused event sequences with a resume floor
 - dropping wall-clock ordering constraints
-- SSE event delivery to REST clients
 
 **Initial configurable timer defaults are user decisions**: 30 seconds for
 queued-disconnect grace, 5 seconds for broker-to-runner heartbeats, and 30
@@ -1553,7 +1559,7 @@ remain proposed defaults.
 | `ClientInfo` | Name, version, OS and architecture; explicitly reported only |
 | Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected while the job is retained. After history deletion a key-only tombstone rejects every reuse *(delegated)*; see [section 11.3](#113-sqlite-schema). |
 | Outcome | Native `int64` exit code, optional POSIX signal number and name, and `outcome_kind` |
-| API parity | Every REST endpoint maps to a `ControlService` RPC; all unary `ControlService` queries and controls also have REST endpoints. REST event streaming remains open |
+| API parity | Every REST endpoint maps to a `ControlService` RPC; all unary `ControlService` queries and controls also have REST endpoints. REST clients poll rather than stream |
 | Runner updates | `WatchJob` push stream with a current-state snapshot on reconnect |
 | Monitor updates | gRPC controls and resumable live event streaming |
 | SQLite journal | WAL with `synchronous = FULL` on all platforms and `fullfsync` on macOS; measure commit latency |
@@ -1898,7 +1904,7 @@ service RunnerService {
 // ControlService carries broker operations shared by runners, the monitor
 // and other clients. Every REST endpoint maps to exactly one RPC here.
 // All unary ControlService queries and controls also have REST endpoints.
-// Whether WatchEvents is exposed over REST is not yet decided.
+// WatchEvents is gRPC-only; REST clients poll the query endpoints.
 service ControlService {
   rpc GetHealth(GetHealthRequest) returns (Health);
   rpc GetStatus(GetStatusRequest) returns (BrokerStatus);
@@ -2479,8 +2485,8 @@ The REST API is JSON on the same loopback port. Each endpoint maps to
 exactly one `ControlService` RPC and calls the same broker domain logic,
 and all unary `ControlService` queries and controls have REST endpoints, as
 the user chose. Runner lifecycle RPCs have no REST endpoints. The exact
-paths, JSON encoding and error mapping below remain proposals, and REST
-event streaming is a separate open choice.
+paths, JSON encoding and error mapping below remain proposals. REST clients
+poll; live event streaming is available through gRPC only.
 
 Request and response bodies are the RPC messages encoded with
 [protojson](https://protobuf.dev/programming-guides/json/):
@@ -2507,7 +2513,6 @@ fills `job_id`.
 | `POST` | `/v1/queue/resume` | `ResumeQueue` | Resumes normal admissions |
 | `DELETE` | `/v1/jobs/{job_id}` | `DeleteJob` | Terminal, reconciled jobs only |
 | `DELETE` | `/v1/history?finishedBeforeUnixNs=…` | `DeleteHistory` | Skips and counts ineligible jobs |
-| `GET` | `/v1/events?afterEventSeq=…` | `WatchEvents` | Proposed server-sent events; see below |
 
 **Errors.** A non-OK RPC status becomes the standard HTTP equivalent, for
 example:
@@ -2524,20 +2529,8 @@ example:
 The body is the protojson `google.rpc.Status`, including its `ErrorInfo`
 reason, so REST and gRPC clients see the same `ErrorReason`.
 
-**REST event delivery (proposal).** `GET /v1/events` would stream
-server-sent events (`text/event-stream`) backed by `WatchEvents`:
-- Each event's SSE `id` is its `event_seq`, and its `data` is the
-  protojson `BrokerEvent`.
-- Without a resume position, the stream begins with a `BrokerSnapshot`.
-- On reconnect, the browser-standard `Last-Event-ID` header (or
-  `afterEventSeq`) resumes after that sequence.
-- If the sequence has been pruned, the broker returns `EVENTS_EXPIRED` and
-  the HTTP client restarts from a snapshot.
-- `Heartbeat` events keep idle connections alive.
-
-This SSE delivery is a proposal, not a user decision.
-SSE is one-way HTTP and works with `curl -N` without a WebSocket upgrade.
-The Swift monitor uses gRPC regardless of whether REST streaming is added.
+**REST event delivery.** Poll the status, queue and job query endpoints.
+The user chose not to expose the gRPC `WatchEvents` stream through REST.
 
 **Implementation choice (open).** A gRPC-Gateway mapping could generate
 these handlers from the proto. Separately written handlers calling the same
@@ -2547,9 +2540,8 @@ been selected.
 The tradeoffs discussed:
 - Parity reduces policy drift between clients, but it expands the
   contract, tests and versioning surface.
-- JSON and Protobuf differ in field presence and error conventions; exposing
-  server streaming to HTTP clients requires a separate mapping such as the
-  proposed SSE stream rather than a single response.
+- JSON and Protobuf differ in field presence and error conventions; REST
+  clients poll and may miss transient changes between responses.
 - Neither API authenticates. Every REST and gRPC control is available to
   any local process that can connect.
 
@@ -3439,8 +3431,8 @@ current results from historical runs and list bounds and unchecked cases.
    database-failure detection, explicit error mapping and repair workflows.
 7. Default broker port, identity/version checks, shared-listener
    routing/multiplexer, gRPC-Swift/runtime and code-generation versions, and
-   gRPC-Gateway versus hand-written REST handlers. REST event delivery by
-   SSE is a separate, unapproved proposal.
+   gRPC-Gateway versus hand-written REST handlers. REST polling rather than
+   event streaming is decided (section 6).
 8. Exact job metric definitions, sampler choice, platform parity and
    overhead.
 9. Command rendering and the payload-equivalence rule. Key-only
