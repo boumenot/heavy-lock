@@ -707,6 +707,7 @@ message DeleteHistoryResponse {
 
 message WatchEventsRequest {
   // 0 means start with a snapshot. Otherwise resume after this sequence.
+  // Replay defaults to at most 24 hours and the newest 100,000 events.
   // OUT_OF_RANGE / EVENTS_EXPIRED if any event after it is no longer
   // retained (the sequence is below the broker's event floor, raised by
   // pruning and history deletion) or if it is beyond the last issued

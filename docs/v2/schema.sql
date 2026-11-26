@@ -415,7 +415,8 @@ CREATE TABLE job_resource_summaries (
   updated_at_ns            INTEGER NOT NULL
 ) STRICT;
 
--- Bounded log backing WatchEvents resume. seq is assigned from
+-- Bounded log backing WatchEvents resume; configurable initial retention
+-- limits are 24 hours and the newest 100,000 events. seq is assigned from
 -- broker_state.last_event_seq + 1 in the same transaction as the change, so
 -- values are never reused after pruning or deletion. Deleting rows (pruning,
 -- or a job's events on history deletion) raises broker_state.event_floor_seq

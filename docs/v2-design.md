@@ -56,6 +56,7 @@ other row is an explicit user decision.
 | V1 switch | Stop using v1 and switch to v2; no mixed v1/v2 admission or nesting, migration plan, or legacy compatibility requirement |
 | APIs | gRPC for runner, Swift monitor and other clients; REST queries and controls for `curl`, with polling rather than REST streaming |
 | Runner updates | Push over `WatchJob`, with a current-state snapshot on reconnect |
+| Monitor event replay | Configurable bounded replay; initial limits are 24 hours and 100,000 events |
 | Transport | Both APIs share a fixed, configurable loopback TCP port; runner takes an explicit port argument |
 | Access | No API authentication; no remote access |
 | Service | One independently supervised broker per OS user, protected by a port-independent OS singleton lock |
@@ -1336,6 +1337,26 @@ endpoint and reconnection, retention and error handling. Polling is simpler
 for REST clients and the server, but can miss transient changes between
 requests; callers needing the event stream use gRPC.
 
+**User decision: bounded monitor event replay.** Retain events for at most
+an initial configurable 24 hours and the newest 100,000 events, pruning
+according to whichever limit removes more. These are unmeasured starting
+defaults. The event log contains ordered state changes for reconnecting
+gRPC clients; it is separate from job history, which remains until explicitly
+deleted. The count limit is not a byte limit.
+
+If a needed event has been pruned, the monitor refreshes current state rather
+than silently skipping changes. Finished-job history remains queryable unless
+explicitly deleted, but intermediate transitions cannot be replayed.
+Deleting history can also remove events containing deleted data and require
+a refresh, even within the retention limits.
+
+The assistant recommended bounded replay to limit event-log growth and
+long-lived duplicate job details. Indefinite event retention would permit
+longer replay but grow the database and retain more copies of job details;
+history deletion could still create gaps. The event log is not an
+authenticated audit trail. The details of time-based pruning under clock
+changes and its maintenance cadence remain to be verified.
+
 **User decision.** The runner takes an explicit port argument; there is
 no automatic port discovery. A broker must report a port conflict, not
 silently pick another port. Different users may need different ports.
@@ -1622,8 +1643,8 @@ detail. Remaining proposals include:
 **Initial configurable timer defaults are user decisions**: 30 seconds for
 queued-disconnect grace, 5 seconds for broker-to-runner heartbeats, and 30
 seconds for launch investigation from the durable reservation commit.
-Event retention, the `ListJobs` page size, and SQLite cache and mmap sizes
-remain proposed defaults.
+Event replay limits are user-selected initial defaults (section 6). The
+`ListJobs` page size and SQLite cache and mmap sizes remain proposed defaults.
 
 | Area | User decision |
 |---|---|
@@ -1698,9 +1719,9 @@ defaults are initial and unmeasured; monotonic timer reconstruction across
 broker restarts remains open.
 
 The Swift monitor also uses gRPC, including a resumable live event stream.
-The draft `WatchEvents` uses broker-wide event sequences and proposes a fresh
-snapshot when a resume position is unavailable; exact event retention and
-expiry behavior are still proposed, not separately approved.
+The draft `WatchEvents` uses broker-wide event sequences. The user chose
+bounded replay and a current-state refresh when needed events have expired;
+the specific error and snapshot wire details remain proposed.
 
 After an ordinary submission, the runner opens one long-lived
 server-streaming `WatchJob` call. No-wait opens `TrySubmitAndWatch` instead;
@@ -2529,6 +2550,7 @@ message DeleteHistoryResponse {
 
 message WatchEventsRequest {
   // 0 means start with a snapshot. Otherwise resume after this sequence.
+  // Replay defaults to at most 24 hours and the newest 100,000 events.
   // OUT_OF_RANGE / EVENTS_EXPIRED if any event after it is no longer
   // retained (the sequence is below the broker's event floor, raised by
   // pruning and history deletion) or if it is beyond the last issued
@@ -3056,7 +3078,8 @@ CREATE TABLE job_resource_summaries (
   updated_at_ns            INTEGER NOT NULL
 ) STRICT;
 
--- Bounded log backing WatchEvents resume. seq is assigned from
+-- Bounded log backing WatchEvents resume; configurable initial retention
+-- limits are 24 hours and the newest 100,000 events. seq is assigned from
 -- broker_state.last_event_seq + 1 in the same transaction as the change, so
 -- values are never reused after pruning or deletion. Deleting rows (pruning,
 -- or a job's events on history deletion) raises broker_state.event_floor_seq
@@ -3323,8 +3346,8 @@ All `Attribution` values are unauthenticated declarations.
 
 These settings follow the user's decisions to use WAL, `synchronous = FULL`
 on all platforms, `fullfsync` on macOS, and to measure commit latency. The
-cache and mmap sizes, checkpoint cadence and event-retention limits below are
-proposed defaults.
+cache and mmap sizes and checkpoint cadence below are proposed defaults.
+The event-retention limits are user-selected initial defaults.
 
 #### Database-level settings
 
@@ -3389,10 +3412,11 @@ Read-only pool connections also set `PRAGMA query_only = ON`.
   idle period, outside the deletion transaction.
 - Run `PRAGMA quick_check` at startup before recovery. If it fails, the
   broker refuses readiness rather than scheduling against a corrupt queue.
-- Proposed retention: prune `events` rows older than 24 hours or beyond
-  the newest 100,000, whichever removes more. Pruning raises
-  `event_floor_seq` in the same transaction. Clients resuming below the
-  floor receive `EVENTS_EXPIRED` and resynchronize from a snapshot.
+- **User decision: initial event retention.** By default, prune `events`
+  rows older than 24 hours or beyond the newest 100,000, whichever removes
+  more; make both limits configurable. Pruning raises `event_floor_seq` in
+  the same transaction. Clients resuming below the floor receive
+  `EVENTS_EXPIRED` and resynchronize from a snapshot.
 
 #### Write volume
 
@@ -3498,7 +3522,6 @@ current results from historical runs and list bounds and unchecked cases.
    otherwise waiting; detection of blocking coordination, kill/escalation
    mechanisms and cleanup of stopped descendants remain open.
 2. Concrete defaults still proposed or unset:
-   - event retention (proposed 24 hours or 100,000 events)
    - page size (proposed 50, maximum 500)
    - SQLite cache and mmap sizes (proposed 16 MiB and 256 MiB)
 3. Platform mechanisms for proving runner termination, serialized sealing,
