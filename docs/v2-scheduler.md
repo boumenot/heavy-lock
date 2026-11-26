@@ -2,9 +2,10 @@
 
 `apps/tuna/scheduler` implements worklog #12 as a library on top of the
 [transactional storage](v2-storage.md). It decides and commits normal
-admissions, force-starts and queue controls. It does not launch, claim,
-signal or release processes (#13/#15), expose RPCs or CLI commands (#14), or
-predict load from history. Policy rules are those of
+admissions, force-starts and queue controls. #13 adds the launch lifecycle
+used by the broker's RunnerService (see [Launch lifecycle](#launch-lifecycle)).
+It does not signal processes or take over orphans (#15), expose control RPCs
+or CLI commands (#14), or predict load from history. Policy rules are those of
 [design section 2](v2-design.md#2-queue-and-admission-policy) and the registration
 and grace rules of [section 4](v2-design.md#4-runner-and-service-lifecycle).
 
@@ -109,6 +110,35 @@ once the decision is made aborts the transaction without any record. Recovery, v
 commit failures are errors, never busy. `ContractError` maps scheduler and
 storage errors to the contract's structured error reasons.
 
+## Launch lifecycle
+
+`Claim`, `Seal`, `ReportStarted`, `ReportFinished`, `ReportLaunchFailed`,
+`AcknowledgeCancel` and `ReportCancelFailed` wrap the storage transitions
+under the scheduler mutex. Each is bound to the grant and the exact runner
+incarnation (UUID plus observed PID and start time); a replacement runner
+gets `CLAIM_MISMATCH`. A claim is one-shot: a retransmission by the same
+incarnation is acknowledged without a second allowance, a fenced or
+cancelled grant gets `GRANT_FENCED`, and claims are refused until
+`MarkReady`. Duplicate reports are idempotent.
+
+Grants advertise the 30-second launch-investigation timeout, but the
+investigation clock and its reconstruction after restart are not implemented
+yet (#15). A timeout is never release evidence.
+
+Every transition checks, in the same transaction, whether the fenced
+reservation can be released: every tracked command process must be verified
+exited by the `ProcessProbe` (darwin `sysctl` PID and start time), with a
+matching outcome or no-spawn proof. A missing probe, a probe error or a live
+process keeps it held. `Reconcile`, run every second by the service, retries
+inconclusive probes. A release runs admission.
+
+`Cancel` finishes a queued job at once, fences and releases a reserved,
+unclaimed grant, and only records the request for a claimed job, whose
+runner kills the command and reports. Every committed write goes through one
+path that publishes its events exactly once, in commit order, to
+`Options.Publish`; `Registration.Seq` and `EventSeq` let a stream skip
+events already reflected by its snapshot.
+
 ## Verification
 
 ```bash
@@ -122,4 +152,8 @@ force-start beyond capacity, oversized jobs after a capacity decrease,
 reorder, grace expiry, reconnect and downtime, superseded streams, no-wait
 admission/busy/backfill/closed streams/storage failure, and races between
 same-key no-wait calls, concurrent admissions and reconnect versus expiry.
+Launch tests cover one-shot claims, replacement-incarnation fencing,
+duplicate reports, fail-closed release without or with an inconclusive
+probe, launch failure, cancellation by state, ordered publication and claims
+refused while recovering. End-to-end runner tests are in `apps/tuna/service`.
 The thresholds are initial, unmeasured defaults; broad validation is #7.

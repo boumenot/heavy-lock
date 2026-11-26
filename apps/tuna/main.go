@@ -14,26 +14,33 @@ import (
 	"time"
 
 	"github.com/boumenot/heavy-lock/apps/tuna/cli"
+	"github.com/boumenot/heavy-lock/apps/tuna/runner"
 	"github.com/boumenot/heavy-lock/apps/tuna/service"
 	"github.com/boumenot/heavy-lock/apps/tuna/transport"
 )
 
+// version identifies this build to the broker and in client attribution.
+var version = "2.0.0-dev"
+
 const (
-	usageExitCode    = 64
-	softwareExitCode = 70
-	// tempFailExitCode (EX_TEMPFAIL) reports another broker holding the
-	// per-user singleton lock, matching the runner's busy/unavailable code.
-	tempFailExitCode = 75
-	serviceVersion   = "2.0.0-dev"
+	usageExitCode    = runner.ExitUsage
+	softwareExitCode = runner.ExitSoftware
 	serviceUsage     = "Service: tuna service [--port PORT (default 49783)] [--data-dir DIR]\n" +
 		"  [--event-max-age DURATION (default 24h)] [--event-max-count N (default 100000)]\n" +
-		"  Serves unauthenticated control gRPC/REST on 127.0.0.1 only; a port conflict\n" +
-		"  is an error (exit 70), never a different port; a second broker exits 75.\n" +
-		"  Runner RPCs are not implemented yet.\n"
+		"  Serves unauthenticated control gRPC/REST and the runner service on\n" +
+		"  127.0.0.1 only; a port conflict is an error, never a different port.\n" +
+		"  A second broker for the same user exits 75.\n"
 	usage = "Usage: tuna --port <port> [runner options] -- <command> [arguments...]\n" +
 		"       tuna service [options]\n" +
 		"       tuna <control> [options]\n\n" +
-		"The v2 runner is not implemented yet.\n\n" + serviceUsage + "\n" + cli.Usage
+		"Runner options:\n" +
+		"  --port <port>          v2 broker port on 127.0.0.1 (required)\n" +
+		"  --weight <weight>      heavy (default), light, or a positive integer\n" +
+		"  --worklog <issue>      attribute the job to a worklog issue number\n" +
+		"  --no-wait              exit 75 instead of queueing when not admitted\n" +
+		"  --retries <n>          retry an eligible nonzero exit up to n (0-3) times\n\n" +
+		"The command runs without a shell. The broker must already be running;\n" +
+		"an unreachable broker exits 69.\n\n" + serviceUsage + "\n" + cli.Usage
 )
 
 func writeResult(w io.Writer, message string, code int) int {
@@ -43,34 +50,117 @@ func writeResult(w io.Writer, message string, code int) int {
 	return code
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	return runContext(ctx, args, stdout, stderr)
+func usageError(stderr io.Writer, format string, args ...any) int {
+	return writeResult(stderr, "tuna: "+fmt.Sprintf(format, args...)+"\n", usageExitCode)
 }
 
-func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+// launcher runs a parsed invocation; tests substitute it.
+type launcher struct {
+	service func(service.Options) int
+	runner  func(runner.Options) int
+	control func(args []string, stdout, stderr io.Writer) (int, bool)
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	return dispatch(args, stdout, stderr, launcher{
+		service: func(o service.Options) int {
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			err := service.Run(ctx, o)
+			switch {
+			case errors.Is(err, service.ErrLocked):
+				_, _ = fmt.Fprintf(stderr, "tuna service: %v\n", err)
+				return runner.ExitBusy
+			case err != nil:
+				_, _ = fmt.Fprintf(stderr, "tuna service: %v\n", err)
+				return softwareExitCode
+			}
+			return 0
+		},
+		runner: func(o runner.Options) int {
+			signals := make(chan os.Signal, 4)
+			signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+			defer signal.Stop(signals)
+			o.Signals = signals
+			return runner.Run(context.Background(), o)
+		},
+		control: func(args []string, stdout, stderr io.Writer) (int, bool) {
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			return cli.Run(ctx, args, stdout, stderr)
+		},
+	})
+}
+
+func dispatch(args []string, stdout, stderr io.Writer, l launcher) int {
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		return writeResult(stdout, usage, 0)
 	}
 	if len(args) > 0 && args[0] == "service" {
-		return runService(ctx, args[1:], stdout, stderr)
+		return dispatchService(args[1:], stdout, stderr, l)
 	}
-	if code, handled := cli.Run(ctx, args, stdout, stderr); handled {
+	if code, handled := l.control(args, stdout, stderr); handled {
 		return code
 	}
+	sep := -1
 	for i, arg := range args {
-		if arg == "--" && i+1 < len(args) {
-			if !hasExplicitPort(args[:i]) {
-				return writeResult(stderr, "tuna: runner requires one --port between 1 and 65535\n", usageExitCode)
-			}
-			return writeResult(stderr, "tuna: runner mode is not implemented\n", softwareExitCode)
+		if arg == "--" {
+			sep = i
+			break
 		}
 	}
-	return writeResult(stderr, usage, usageExitCode)
+	if sep < 0 || sep+1 == len(args) {
+		return writeResult(stderr, usage, usageExitCode)
+	}
+	o := runner.Options{Command: args[sep+1:], Version: version, Log: stderr, Weight: runner.HeavyWeight}
+	seen := map[string]bool{}
+	for i := 0; i < sep; i++ {
+		if args[i] == "--no-wait" {
+			if seen[args[i]] {
+				return usageError(stderr, "--no-wait may be given once")
+			}
+			seen[args[i]], o.NoWait = true, true
+			continue
+		}
+		name, value, ok, err := option(args[:sep], &i, seen)
+		if err != nil {
+			return usageError(stderr, "%v", err)
+		}
+		if !ok {
+			return usageError(stderr, "unknown runner option %q", args[i])
+		}
+		switch name {
+		case "--port":
+			o.Port, err = parsePort(value)
+		case "--weight":
+			var valid bool
+			if o.Weight, valid = runner.ParseWeight(value); !valid {
+				err = fmt.Errorf("--weight must be heavy, light or a positive integer")
+			}
+		case "--worklog":
+			if n, perr := strconv.ParseUint(value, 10, 63); perr != nil || n == 0 {
+				err = fmt.Errorf("--worklog must be a positive issue number")
+			} else {
+				o.Worklog = value
+			}
+		case "--retries":
+			n, perr := strconv.Atoi(value)
+			if perr != nil || n < 0 || n > runner.MaxRetries {
+				err = fmt.Errorf("--retries must be between 0 and %d", runner.MaxRetries)
+			}
+			o.Retries = n
+		}
+		if err != nil {
+			return usageError(stderr, "%v", err)
+		}
+	}
+	if !seen["--port"] {
+		return usageError(stderr, "runner requires one --port between 1 and 65535")
+	}
+	return l.runner(o)
 }
 
-func runService(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func dispatchService(args []string, stdout, stderr io.Writer, l launcher) int {
 	fs := flag.NewFlagSet("service", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	port := fs.Int("port", transport.DefaultPort, "broker port")
@@ -86,46 +176,45 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if fs.NArg() != 0 || *port < 1 || *port > 65535 || *maxAge <= 0 || *maxCount < 1 {
 		return writeResult(stderr, "tuna: invalid service arguments\n"+serviceUsage, usageExitCode)
 	}
-	err := service.Run(ctx, service.Options{
+	return l.service(service.Options{
 		Port:           *port,
 		DataDir:        *dataDir,
-		ServiceVersion: serviceVersion,
+		ServiceVersion: version,
 		Log:            stderr,
 		EventMaxAge:    *maxAge,
 		EventMaxCount:  *maxCount,
 	})
-	if errors.Is(err, service.ErrLocked) {
-		return writeResult(stderr, fmt.Sprintf("tuna service: %v\n", err), tempFailExitCode)
-	}
-	if err != nil {
-		return writeResult(stderr, fmt.Sprintf("tuna service: %v\n", err), softwareExitCode)
-	}
-	return 0
 }
 
-func hasExplicitPort(args []string) bool {
-	found := false
-	for i := 0; i < len(args); i++ {
-		var value string
-		switch {
-		case args[i] == "--port":
-			i++
-			if i == len(args) {
-				return false
-			}
-			value = args[i]
-		case strings.HasPrefix(args[i], "--port="):
-			value = strings.TrimPrefix(args[i], "--port=")
-		default:
-			continue
-		}
-		port, err := strconv.Atoi(value)
-		if found || err != nil || port < 1 || port > 65535 {
-			return false
-		}
-		found = true
+var valued = map[string]bool{"--port": true, "--weight": true, "--worklog": true, "--retries": true}
+
+// option reads a valued option written as "--name value" or "--name=value".
+// Each option may be given once.
+func option(args []string, i *int, seen map[string]bool) (name, value string, ok bool, err error) {
+	name, value, inline := strings.Cut(args[*i], "=")
+	if !valued[name] {
+		return "", "", false, nil
 	}
-	return found
+	if !inline {
+		*i++
+		if *i == len(args) {
+			return "", "", false, fmt.Errorf("%s requires a value", name)
+		}
+		value = args[*i]
+	}
+	if seen[name] {
+		return "", "", false, fmt.Errorf("%s may be given once", name)
+	}
+	seen[name] = true
+	return name, value, true, nil
+}
+
+func parsePort(value string) (int, error) {
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, errors.New("--port must be between 1 and 65535")
+	}
+	return port, nil
 }
 
 func main() {

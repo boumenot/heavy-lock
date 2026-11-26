@@ -1763,8 +1763,14 @@ The macOS-first v2 rollout leaves the existing v1 runner available on Linux
 and Windows until their v2 support is ready; it does not make mixed v1/v2
 admission on the same machine safe.
 
-**Open.** The v2 environment/nesting marker contract and same-version
-draining upgrades.
+**Delegated (#13).** The v2 nesting marker is `TUNA_JOB_ID`, set to the
+admitted job ID in the command's environment. A runner that sees a valid
+UUIDv4 marker runs its command directly without contacting the broker; an
+invalid marker exits 64 rather than running unadmitted. The marker is
+environment-based and best effort: it is not verified with the broker, and
+a v1 `HEAVY_LOCK_HELD` marker is never treated as v2 admission.
+
+**Open.** Same-version draining upgrades.
 
 The current [migration warning](../README.md#migration) remains applicable
 to the current runner. This design document does not authorize mixed
@@ -3802,8 +3808,10 @@ current results from historical runs and list bounds and unchecked cases.
     architecture is delegated and macOS 26+ is user-confirmed (section 1);
     later platform plans are outside current scope. macOS login startup is
     delegated (section 4).
-12. The v2 nesting marker, retry delay and other CLI
-    configuration, including CLI control details. The simple v1/v2 switch
+12. CLI configuration beyond the runner options, including CLI control
+    details. The nesting marker (`TUNA_JOB_ID`, section 9), immediate
+    retries (no delay) and a fail-fast exit 69 for an unreachable or
+    unready broker were delegated in #13. The simple v1/v2 switch
     and lack of legacy status compatibility are decided, and common runner
     options and CLI queue controls are retained by delegation (section 9);
     no-wait, oversized weights and capacity fixed per broker run are delegated

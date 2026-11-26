@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/boumenot/heavy-lock/apps/tuna/broker"
+	"github.com/boumenot/heavy-lock/apps/tuna/procid"
 	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
 	"github.com/boumenot/heavy-lock/apps/tuna/transport"
+	"golang.org/x/sys/unix"
 )
 
 // MaintenanceInterval paces grace expiry, release reconciliation retries and
@@ -69,9 +71,9 @@ func AcquireLock(dir string) (*Lock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open singleton lock: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
+		if errors.Is(err, unix.EWOULDBLOCK) {
 			return nil, ErrLocked
 		}
 		return nil, fmt.Errorf("lock singleton: %w", err)
@@ -84,6 +86,8 @@ func (l *Lock) Release() error { return l.file.Close() }
 // Run serves until ctx is cancelled or the transport fails, then closes the
 // transport and records a clean scheduler stop. A listener conflict is
 // returned (wrapping transport.ErrPortInUse); another port is never chosen.
+// Reservations left by an earlier run stay held as occupied capacity; this
+// does not verify or take them over.
 func Run(ctx context.Context, o Options) (err error) {
 	if runtime.GOOS != "darwin" {
 		return errors.New("the v2 broker is implemented only on macOS")
@@ -127,7 +131,7 @@ func Run(ctx context.Context, o Options) (err error) {
 		PID:            int64(os.Getpid()),
 		Sampler:        o.Sampler,
 		Publish:        hub.Publish,
-		Processes:      processProbe,
+		Processes:      procid.Probe{},
 	})
 	if err != nil {
 		return err

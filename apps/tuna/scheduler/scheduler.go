@@ -58,6 +58,10 @@ type Options struct {
 // a job is current; a superseded registration's disconnect is ignored.
 type Registration struct {
 	JobID string
+	// Seq is the last committed event sequence reflected by the snapshot
+	// returned with this registration. A stream subscribed to live events
+	// before registering skips events at or below it.
+	Seq   int64
 	token uint64
 }
 
@@ -89,6 +93,7 @@ type Scheduler struct {
 	lastSharing   *Sharing
 	publish       func([]*pb.BrokerEvent)
 	processes     ProcessProbe
+	lastSeq       int64
 }
 
 // Start records a new broker run with capacity fixed for that run. Every
@@ -218,10 +223,21 @@ func (s *Scheduler) Ready() bool {
 // commit order. Callers hold the mutex (Start runs before any other use).
 func (s *Scheduler) write(ctx context.Context, mutate func(*storage.Tx) error) ([]*pb.BrokerEvent, error) {
 	events, err := s.store.Write(durable(ctx), mutate)
+	if err == nil && len(events) > 0 {
+		s.lastSeq = events[len(events)-1].EventSeq
+	}
 	if err == nil && s.publish != nil {
 		s.publish(events)
 	}
 	return events, err
+}
+
+// EventSeq returns the last committed event sequence of this broker run.
+// Every write goes through write, so it is the store's current sequence.
+func (s *Scheduler) EventSeq() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastSeq
 }
 
 func (s *Scheduler) usable(needReady bool) error {
@@ -253,7 +269,10 @@ func (s *Scheduler) Submit(ctx context.Context, req *pb.SubmitJobRequest) (stora
 		var err error
 		result, err = tx.Submit(req, storage.Submission{Mode: contract.AdmissionQueued,
 			ServiceVersion: s.version, ServiceRunID: s.run})
-		return err
+		if err != nil || result.Busy {
+			return err
+		}
+		return s.projectJob(&tx.Reader, result.Job)
 	})
 	if err != nil {
 		return storage.SubmissionResult{}, nil, err
@@ -332,14 +351,12 @@ func (s *Scheduler) TrySubmitAndWatch(ctx context.Context, req *pb.SubmitJobRequ
 		if result.Created {
 			// Conservative if the commit then fails: it only delays sharing.
 			s.lastAdmission = s.clock()
-			return nil
-		}
-		// Same-key recovery by the same incarnation; never another allowance.
-		if result.Job.State != pb.JobState_JOB_STATE_FINISHED &&
+		} else if result.Job.State != pb.JobState_JOB_STATE_FINISHED &&
 			(result.Job.Grant == nil || !sameRunner(result.Job.Grant.Runner, req.GetRunner())) {
+			// Same-key recovery never grants another incarnation an allowance.
 			return storage.ErrIdentity
 		}
-		return nil
+		return s.projectJob(&tx.Reader, result.Job)
 	})
 	if err != nil {
 		return nil, nil, nil, err
@@ -350,7 +367,9 @@ func (s *Scheduler) TrySubmitAndWatch(ctx context.Context, req *pb.SubmitJobRequ
 	if result.Job.State == pb.JobState_JOB_STATE_FINISHED {
 		return nil, result.Job, events, nil
 	}
-	return s.register(result.Job.JobId), result.Job, events, nil
+	reg := s.register(result.Job.JobId)
+	reg.Seq = s.lastSeq
+	return reg, result.Job, events, nil
 }
 
 // durable detaches storage writes and samples from caller cancellation. A
@@ -421,7 +440,10 @@ func (s *Scheduler) Watch(ctx context.Context, id string, runner *pb.RunnerIncar
 			}
 		}
 		job, err = tx.Job(id)
-		return err
+		if err != nil {
+			return err
+		}
+		return s.projectJob(&tx.Reader, job)
 	})
 	if err != nil {
 		restore()
@@ -434,6 +456,7 @@ func (s *Scheduler) Watch(ctx context.Context, id string, runner *pb.RunnerIncar
 	if queued {
 		delete(s.grace, id)
 	}
+	reg.Seq = s.lastSeq
 	more, err := s.admitLocked(ctx)
 	return reg, job, append(events, more...), err
 }
