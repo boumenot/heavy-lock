@@ -77,6 +77,7 @@ other row is an explicit user decision.
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
 | Blocked cancel takeover | On deadline expiry with a live runner blocking safe coordination, broker tries to terminate that verified runner; takes over only after its exact incarnation is verified dead and coordination is safe; otherwise waits holding the reservation. Explicit cancel only; the broker never kills a runner for runner-death cleanup |
 | Cancel confirmation | Monitor confirms every cancel (queued, reserved or running); direct API clients get no prompt |
+| Control activity log | No separate long-term log; retain required job state and bounded replay events |
 | Running-job cancellation | Explicit cancel: runner first; immediately force-stop verified job processes (no graceful phase; supersedes graceful-then-force); broker may take over on verified identities after acknowledgment/completion deadline expiry or verified runner death; expiry is not release evidence |
 | Timestamp encoding | UTC Unix nanoseconds in signed `int64` on the wire and SQLite `INTEGER`; supersedes microseconds |
 | Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes and API parity; see [section 11](#11-interface-and-schema-design) |
@@ -438,9 +439,20 @@ pause a stronger, more predictable global stop. Allowing a confirmed
 exception keeps emergency/manual control available, but an operator can
 deliberately increase load while normal admission remains paused.
 
-**Recommendations.** Mark forced jobs visibly and record the request,
-time and any supplied actor/reason. Audit details require agreement;
-claimed actors are not authenticated.
+**Recommendation.** Mark forced jobs visibly. Job history retains relevant
+force and cancellation state, including the cancellation request time and
+any supplied reason; claimed client attribution is not authenticated.
+
+**User decision: no separate control activity log.** Keep the durable state
+required for scheduling and job history, and the bounded event-replay log,
+but do not add a separate long-term record of manual controls. The existing
+records do not promise a complete history of every reorder, pause, resume or
+operator action.
+
+The assistant recommended omitting a separate log for this local setup.
+Such a log could help reconstruct older actions but adds storage, retention
+and deletion complexity. With unauthenticated APIs, a supplied caller name
+would be a declaration, not proof of who acted.
 
 **User decision: confirm every cancellation in the monitor.** The monitor
 must ask the user to confirm before sending any cancel request, whether the
@@ -872,7 +884,7 @@ enumeration caveat in section 8 remains applicable. No platform, signal,
 lock primitive or containment mechanism is selected or validated here.
 
 **Proposals for other controls and mechanisms.** Reorder waiting jobs only,
-visibly and with an audit entry. Cancel a waiting job by removing it and
+visibly through the queue state. Cancel a waiting job by removing it and
 returning a distinct runner outcome. For the runner's own termination
 mechanism, preserve the current process-tree approach: freeze/snapshot on
 POSIX, signal and resume appropriately. Immediate force is selected; these
@@ -883,8 +895,7 @@ verification (section 5).
 **Open.** Confirmation for other supported monitor controls (cancellation and
 force-start are decided; history deletion is not a monitor control), other
 exit/status codes, concurrent cancel/reorder/admit races, detection of
-blocking coordination and runner-kill mechanisms for takeover, and audit
-persistence.
+blocking coordination and runner-kill mechanisms for takeover.
 
 ## 4. Runner and service lifecycle
 
@@ -3506,13 +3517,14 @@ current results from historical runs and list bounds and unchecked cases.
 
 ## Remaining design and verification work
 
-1. Confirmation and audit semantics for other monitor controls; concurrent
-   control races. History deletion is not a monitor control. Running-job
-   cancellation is runner-first with verified-identity
-   broker fallback after acknowledgment/completion deadline expiry or verified
-   runner death. Starting defaults are 5 s acknowledgment and 30 s completion
-   after acknowledgment; termination force-stops immediately. One shared
-   broker termination procedure serves takeover and runner-death cleanup.
+1. Confirmation for other monitor controls; concurrent control races. History
+   deletion is not a monitor control, and no separate long-term control log
+   is required. Running-job cancellation is runner-first with
+   verified-identity broker fallback after acknowledgment/completion deadline
+   expiry or verified runner death. Starting defaults are 5 s acknowledgment
+   and 30 s completion after acknowledgment; termination force-stops
+   immediately. One shared broker termination procedure serves takeover and
+   runner-death cleanup.
    Clock starts, restart handling, the sticky first takeover reason and
    late-report merge are delegated decisions (section 3).
    Coordination/fencing of a still-live runner and platform termination
