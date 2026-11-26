@@ -76,6 +76,7 @@ other row is an explicit user decision.
 | SQLite journal | WAL with `synchronous = FULL` everywhere and `fullfsync = ON` on macOS; measure commit latency |
 | SQLite driver | Start with `modernc.org/sqlite`; pin and validate a version before implementation relies on it |
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
+| Backup policy | Deferred until active development; do not automatically replace a corrupt database |
 | Blocked cancel takeover | On deadline expiry with a live runner blocking safe coordination, broker tries to terminate that verified runner; takes over only after its exact incarnation is verified dead and coordination is safe; otherwise waits holding the reservation. Explicit cancel only; the broker never kills a runner for runner-death cleanup |
 | Cancel confirmation | Monitor confirms every cancel (queued, reserved or running); direct API clients get no prompt |
 | Routine monitor controls | Pause, resume and reorder do not require confirmation |
@@ -1328,6 +1329,20 @@ state or silently creating a fresh database could be more available but can
 duplicate work or overlook occupied capacity. Concrete error classification,
 repair and operator workflows remain open.
 
+**User decision: defer backup policy.** Decide whether and how to provide
+built-in backups during active v2 development. No automatic-backup schedule,
+retention or restore policy is selected here.
+
+The assistant recommended automatic, SQLite-consistent local backups to
+help recover history. They require disk space and can retain full command
+lines, including data deleted from the live database. Relying on manual or
+system backups instead keeps built-in operation simpler but may leave no
+recoverable history. Consistent capture of the database and WAL requires a
+verified mechanism. An older backup alone cannot establish complete current
+accounting or recover later idempotency records, so restoring one does not
+by itself permit the broker to resume admissions or claims. Any restore
+workflow must preserve the storage-failure and recovery safeguards above.
+
 The monitor may crash/restart without stopping the broker or its jobs.
 Running state is not proven by a database row, heartbeat or PID alone.
 
@@ -1597,8 +1612,9 @@ local clients; these choices are not awaiting approval. Store the database
 in user-only storage (proposed POSIX mode 0600), never upload it implicitly,
 and provide explicit history deletion without removing queued/active
 recovery state. File permissions alone do not restrict access through the
-API. WAL/backup handling and disk-growth management remain implementation
-questions; redaction or finite retention would require a new user decision.
+API. WAL handling and disk-growth management remain implementation
+questions; backup policy is deferred until active development. Redaction or
+finite retention would require a new user decision.
 
 ## 8. Service telemetry versus job sampling
 
@@ -3622,6 +3638,7 @@ current results from historical runs and list bounds and unchecked cases.
 6. Singleton-lock path, OS primitives and filesystem support; descendant and
    reparented-process discovery; precision and boot identity for process IDs;
    database-failure detection, explicit error mapping and repair workflows.
+   Backup policy is deferred until active development (section 5).
 7. Identity/version checks, browser CORS/preflight interoperability,
    shared-listener routing/multiplexer, gRPC-Swift/runtime and code-generation
    versions, and gRPC-Gateway versus hand-written REST handlers. The broker
