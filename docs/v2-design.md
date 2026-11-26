@@ -52,7 +52,7 @@ choices are explicit user decisions.
 
 | Area | Decision |
 |---|---|
-| Language and packaging | Go runner and broker; one executable with a service mode |
+| Language and packaging | Go runner and broker; one executable named `tuna` with runner and `service` modes |
 | Initial platforms | Apple Silicon *(architecture delegated)* on macOS 26+ *(minimum version user-confirmed)*, developed and validated on the user's current Mac; other platforms are out of current scope |
 | V1 switch | Stop using v1 and switch to v2; no mixed v1/v2 admission or nesting, migration plan, or legacy compatibility requirement |
 | Runner CLI | Retain the common v1 command separator, weight and worklog options *(delegated)*, plus the already-decided `--no-wait`; an explicit broker port is still required |
@@ -110,7 +110,9 @@ silently settled by the table.
 ## 1. Language, packaging and ownership
 
 **User decision.** Implement the v2 runner and broker in **Go** and ship
-them as **one executable**, with a service mode. The existing macOS
+them as **one executable named `tuna`**, with runner and `service` modes.
+The user selected the executable name `tuna`; it replaces the proposed v2
+binary name `heavy-lock` only. The existing macOS
 monitor remains a separate Swift app, using gRPC. The existing v1 runner
 remains Dart; the v2 implementation does not change it. This choice does
 not replace the separately discussed build orchestrator.

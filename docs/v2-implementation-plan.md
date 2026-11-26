@@ -18,9 +18,10 @@ with Xcode 27.2 and Swift 6.4.2. These observations do not make 26.7.3 the
 minimum or establish that other macOS versions have been tested. Do not
 expand the OS or architecture test matrix without a demonstrated need.
 
-The core is one Go executable, running as a client or a supervised per-user
-broker; the optional macOS monitor is a separate Swift app. Linux, Windows
-and possible Intel support are outside the current implementation scope.
+The core is one Go executable named `tuna`, running as a job runner or a
+supervised per-user broker via `tuna service`; the optional macOS monitor is a
+separate Swift app. Linux, Windows and possible Intel support are outside the
+current implementation scope.
 
 Do not silently reopen the user-selected or delegated decisions summarized
 in the design. In particular, retain the accepted unauthenticated loopback
@@ -103,10 +104,11 @@ following the [development lifecycle](development-lifecycle.md).
   compatible gRPC-Swift/compiler versions. Update development documentation
   and keep Dart available for v1. Verify Swift/Xcode requirements on the
   user's current Mac.
-- Establish a buildable single Go executable with explicit client and broker
-  roles, generated Go/Swift contract bindings, and an isolated Swift monitor
-  integration path. Keep generated artifacts and their regeneration procedure
-  reproducible; do not add dependencies to the v1 Dart runner.
+- Establish a buildable single Go executable named `tuna` with runner and
+  `service` modes, generated Go/Swift contract bindings, and an isolated
+  Swift monitor integration path. Keep generated artifacts and their
+  regeneration procedure reproducible; do not add dependencies to the v1
+  Dart runner.
 - Define the unresolved wire details: transport routing for plaintext gRPC
   and REST on one loopback listener, RPC-to-REST mappings and error shapes,
   request/payload canonicalization, command rendering, and service
