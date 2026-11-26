@@ -20,7 +20,8 @@ PRAGMA journal_mode = WAL;
 
 -- Per-connection settings (also applied by the broker on every open):
 PRAGMA foreign_keys = ON;
-PRAGMA synchronous = FULL;    -- proposal; see the design record
+PRAGMA synchronous = FULL;    -- user decision; see the design record
+-- On macOS the broker also applies PRAGMA fullfsync = ON on each connection.
 PRAGMA busy_timeout = 5000;
 PRAGMA temp_store = MEMORY;
 
@@ -90,7 +91,7 @@ CREATE TABLE jobs (
                       -- reservation committed; NULL if never admitted,
                       -- e.g. 1764121230000000000 (2025-11-26T01:40:30.000000000Z)
   started_at_ns       INTEGER,
-                      -- ReportStarted received; NULL if never launched,
+                      -- root start time once recorded; NULL does not prove no launch,
                       -- e.g. 1764121230250000000 (2025-11-26T01:40:30.250000000Z)
   finished_at_ns      INTEGER,
                       -- terminal transition; NULL until finished,
@@ -133,7 +134,7 @@ CREATE TABLE jobs (
   -- Outcome ---------------------------------------------------------------
   outcome_kind        TEXT CHECK (outcome_kind IN (
                         'exited', 'signaled', 'cancelled_before_start',
-                        'removed_disconnected', 'launch_failed', 'lost')),
+                        'removed_disconnected', 'launch_failed', 'unknown')),
                       -- e.g. 'exited'
   exit_code           INTEGER CHECK (exit_code BETWEEN -2147483648 AND 4294967295),
                       -- native code; POSIX e.g. 1, Windows e.g. 3221225477 (0xC0000005)
@@ -144,13 +145,19 @@ CREATE TABLE jobs (
   -- State consistency (presence only; wall-clock values are not compared) --
   CHECK (started_at_ns IS NULL OR admitted_at_ns IS NOT NULL),
   CHECK ((state = 'finished') = (finished_at_ns IS NOT NULL)),
-  -- ReportFinished stores the outcome while finishing (awaiting verified exit).
-  CHECK ((state IN ('finishing', 'finished')) = (outcome_kind IS NOT NULL)),
-  CHECK (state <> 'finishing' OR outcome_kind IN ('exited', 'signaled')),
+  -- Unknown may be visible while the reservation remains held.
+  CHECK ((state = 'queued' AND outcome_kind IS NULL)
+      OR (state IN ('reserved', 'running')
+          AND (outcome_kind IS NULL OR outcome_kind = 'unknown'))
+      OR (state = 'finishing' AND outcome_kind IS NOT NULL
+          AND outcome_kind IN ('exited', 'signaled'))
+      OR (state = 'finished' AND outcome_kind IS NOT NULL)),
   CHECK (state NOT IN ('reserved', 'running', 'finishing') OR admitted_at_ns IS NOT NULL),
   CHECK (state NOT IN ('running', 'finishing') OR started_at_ns IS NOT NULL),
   CHECK (outcome_kind IS NOT 'exited' OR (exit_code IS NOT NULL AND signal_number IS NULL)),
   CHECK (outcome_kind IS NOT 'signaled' OR signal_number IS NOT NULL),
+  CHECK (outcome_kind IS NOT 'unknown'
+         OR (exit_code IS NULL AND signal_number IS NULL AND signal_name IS NULL)),
   CHECK (signal_name IS NULL OR signal_number IS NOT NULL)
 ) STRICT;
 
@@ -170,6 +177,12 @@ CREATE TABLE queue_entries (
   job_id              TEXT    PRIMARY KEY REFERENCES jobs (id),
   queue_seq           INTEGER NOT NULL UNIQUE,  -- lower runs first; may be negative after move-front
   runner_connected    INTEGER NOT NULL DEFAULT 1 CHECK (runner_connected IN (0, 1)),
+                      -- provisional; this default is not evidence that
+                      -- the initial WatchJob stream has registered
+  runner_incarnation_id TEXT NOT NULL CHECK (length(runner_incarnation_id) = 36),
+                      -- process-generated UUIDv4; unchanged on reconnect
+  runner_pid          INTEGER NOT NULL CHECK (runner_pid > 0),
+  runner_start_time_ns INTEGER NOT NULL,
   grace_elapsed_us    INTEGER NOT NULL DEFAULT 0 CHECK (grace_elapsed_us >= 0),
                       -- monotonic grace consumed, checkpointed
   grace_started_at_ns INTEGER,  -- wall time of current disconnect, informational
@@ -177,7 +190,8 @@ CREATE TABLE queue_entries (
                       -- run in which grace was last counted; a different run
                       -- means the start time is stale (downtime excluded)
   CHECK (runner_connected = 1 OR grace_service_run_id IS NOT NULL),
-  CHECK (runner_connected = 0 OR (grace_started_at_ns IS NULL AND grace_service_run_id IS NULL))
+  CHECK (runner_connected = 0 OR
+         (grace_elapsed_us = 0 AND grace_started_at_ns IS NULL AND grace_service_run_id IS NULL))
 ) STRICT;
 
 -- Durable capacity reservations. A grant is sent only after this row commits.
@@ -188,11 +202,26 @@ CREATE TABLE reservations (
   forced            INTEGER NOT NULL DEFAULT 0 CHECK (forced IN (0, 1)),
   granted_at_ns     INTEGER NOT NULL,
   service_run_id    INTEGER NOT NULL REFERENCES service_runs (id),
+  -- The selected runner's UUIDv4 and OS identity jointly bind the claim.
+  runner_incarnation_id TEXT NOT NULL CHECK (length(runner_incarnation_id) = 36),
+  runner_pid        INTEGER NOT NULL CHECK (runner_pid > 0),
+  runner_start_time_ns INTEGER NOT NULL,
+  claimed_at_ns     INTEGER,  -- durable one-shot claim; NULL until committed
+  fenced_at_ns      INTEGER,  -- durable no-future-launch proof; NULL until established
+  fence_reason      TEXT CHECK (fence_reason IN (
+                      'claim_prevented', 'runner_sealed', 'runner_terminated')),
+  no_launch_proof   TEXT CHECK (no_launch_proof IN (
+                      'claim_prevented', 'runner_confirmed')),
+                    -- runner_confirmed includes a serialized seal and no spawn
   released_at_ns    INTEGER,  -- NULL while capacity is held
   release_reason    TEXT CHECK (release_reason IN (
                       'processes_exited', 'launch_failed', 'cancelled_before_start',
                       'recovery_verified_gone')),
-  CHECK ((released_at_ns IS NULL) = (release_reason IS NULL))
+  CHECK ((released_at_ns IS NULL) = (release_reason IS NULL)),
+  CHECK ((fenced_at_ns IS NULL) = (fence_reason IS NULL)),
+  CHECK (no_launch_proof IS NULL OR fenced_at_ns IS NOT NULL),
+  CHECK (no_launch_proof IS NOT 'claim_prevented' OR claimed_at_ns IS NULL),
+  CHECK (released_at_ns IS NULL OR fenced_at_ns IS NOT NULL)
 ) STRICT;
 
 -- Occupied capacity = SUM(weight) over this index.
@@ -203,8 +232,8 @@ CREATE INDEX reservations_active ON reservations (job_id, weight)
 CREATE TABLE job_processes (
   job_id              TEXT    NOT NULL REFERENCES jobs (id),
   pid                 INTEGER NOT NULL CHECK (pid > 0),
-  start_time_ns       INTEGER NOT NULL,  -- platform process start time; with pid
-                                         -- distinguishes PID reuse
+  start_time_ns       INTEGER NOT NULL,  -- platform start time helps distinguish
+                                         -- PID reuse; ambiguity is not death
   role                TEXT    NOT NULL CHECK (role IN ('runner', 'command', 'descendant')),
   first_seen_at_ns    INTEGER NOT NULL,
   last_seen_at_ns     INTEGER,

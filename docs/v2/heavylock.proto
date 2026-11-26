@@ -18,41 +18,67 @@ package heavylock.v2;
 option go_package = "github.com/boumenot/heavy-lock/gen/heavylock/v2;heavylockv2";
 
 // RunnerService is used by the runner process that executes a job.
+// Mutations are acknowledged only after durable commit; storage failure is
+// reported explicitly rather than acknowledged as a successful transition.
+// While not ready, no new reservation or claim is issued. An original runner
+// may still spawn under a claim that committed before recovery or failure;
+// its reservation stays held, and the claim must be reconciled or fenced.
 service RunnerService {
   // Enqueue a job. Idempotent on idempotency_key: the same key with an
   // equivalent payload returns the existing job with created = false; the
   // same key with a different payload fails with ALREADY_EXISTS /
-  // IDEMPOTENCY_KEY_REUSED. Fails with UNAVAILABLE while recovery runs.
+  // IDEMPOTENCY_KEY_REUSED. Fails with UNAVAILABLE while recovery runs or
+  // durable storage is unavailable.
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
 
   // Server-streaming job channel (push, not polling). Every call, including
   // a reconnect, starts with a snapshot of the job's current durable state;
   // there is no per-job resume token. Subsequent messages are pushed state
   // changes: queue position, grant, cancellation and terminal state. The
-  // runner treats the snapshot as level-triggered: a present grant that it
-  // has not yet acted on means launch (at most once per grant_id), and a
-  // present cancel_requested_at_unix_ns means cancel. An open stream is the
+  // runner treats the snapshot as level-triggered: a present grant calls for
+  // a durable ClaimLaunch, not a spawn by itself. A present
+  // cancel_requested_at_unix_ns means cancel. An open stream is the
   // runner's connection signal for the queued-runner grace period, and the
   // broker sends a heartbeat at least every heartbeat_interval_ms so the
-  // runner can detect a dead broker. Closing the stream while queued starts
-  // grace; it never releases a reserved or running job's capacity.
+  // runner can detect a silent broker. Grace begins when the broker detects
+  // the queued stream's disconnection, not when a heartbeat is missed; a
+  // successful queued reconnect resets it. It never releases a
+  // reserved or running job's capacity. Existing jobs may reconnect during
+  // recovery; snapshots do not transfer a claim.
   rpc WatchJob(WatchJobRequest) returns (stream JobEvent);
 
-  // Confirm the command process was launched under grant_id. Idempotent for
-  // the same grant and process identity. FAILED_PRECONDITION /
-  // GRANT_MISMATCH if the grant is not the job's active grant.
+  // Rejoin an existing job without obtaining permission to launch. Valid
+  // rejoin and lifecycle reports are accepted during recovery; submission,
+  // ClaimLaunch and new admissions remain unavailable.
+  rpc RejoinJob(RejoinJobRequest) returns (Job);
+
+  // Persist the one-shot claim before replying. The grant is bound to the
+  // specified runner process incarnation, and a replacement cannot claim it.
+  // A retry by the same incarnation returns the same claim, not a second
+  // launch allowance. No claim is accepted during recovery or storage failure.
+  rpc ClaimLaunch(ClaimLaunchRequest) returns (ClaimLaunchResponse);
+
+  // Acknowledge that this runner has fenced all future spawns under the
+  // grant. The acknowledgement must be serialized with the actual spawn.
+  // True no_command_spawned additionally attests that no spawn occurred.
+  // Idempotent and accepted for an existing grant during recovery.
+  rpc SealLaunch(SealLaunchRequest) returns (Job);
+
+  // Confirm the root was launched under the claimed grant. Matching retries
+  // are idempotent, including after an earlier ReportFinished recorded the
+  // start; conflicting process identities are rejected.
   rpc ReportStarted(ReportStartedRequest) returns (Job);
 
   // Report that the command was not launched under grant_id, either because
-  // launching failed or because cancellation was requested first. Releases
-  // the reservation and makes the job terminal with outcome LAUNCH_FAILED or
-  // CANCELLED_BEFORE_START.
+  // launching failed or because cancellation was requested first. A report
+  // alone does not release capacity; the accepted no-launch or process
+  // verification conditions must first be established.
   rpc ReportLaunchFailed(ReportLaunchFailedRequest) returns (Job);
 
-  // Report the observed process outcome. The broker stores it and moves the
-  // job to FINISHING. Idempotent for the same grant and outcome. Capacity is
-  // released, and the job becomes FINISHED, only after the broker verifies
-  // the tracked processes have ended.
+  // Report the observed outcome together with runner and root identities. If
+  // start is missing, validate against the claim and store start and outcome
+  // atomically. Matching retries are idempotent; conflicting reports fail.
+  // Capacity remains held until the agreed release checks pass.
   rpc ReportFinished(ReportFinishedRequest) returns (Job);
 }
 
@@ -68,9 +94,8 @@ service ControlService {
 
   // Cancel a queued job (removes it from the queue and finishes it as
   // CANCELLED_BEFORE_START). For a reserved or running job, record the
-  // request and push CancelRequested to the runner; the job stays RESERVED
-  // or RUNNING until the runner reports ReportLaunchFailed(cancelled) or
-  // ReportFinished, because a granted command may already be running.
+  // request and push CancelRequested to the runner; a granted command may
+  // already be running, so reports alone do not release its reservation.
   // Terminal jobs: FAILED_PRECONDITION / JOB_TERMINAL. Repeated cancellation
   // of the same job is a no-op success.
   rpc CancelJob(CancelJobRequest) returns (Job);
@@ -81,8 +106,8 @@ service ControlService {
   // Admit a waiting job immediately, bypassing FIFO order and resource
   // checks. Its weight counts toward occupied capacity, so occupancy may
   // exceed capacity. Confirmation is a client UI responsibility. It never
-  // bypasses recovery (UNAVAILABLE / RECOVERING). Its interaction with a
-  // paused queue is an open decision.
+  // bypasses recovery, storage failure or launch-safety checks.
+  // A confirmed force-start is allowed while normal admissions are paused.
   rpc ForceStartJob(ForceStartJobRequest) returns (Job);
 
   rpc PauseQueue(PauseQueueRequest) returns (BrokerStatus);
@@ -116,10 +141,10 @@ enum OutcomeKind {
   OUTCOME_KIND_EXITED = 1;                 // process exited; exit_code set
   OUTCOME_KIND_SIGNALED = 2;               // POSIX signal termination
   OUTCOME_KIND_CANCELLED_BEFORE_START = 3; // cancelled while queued, or reserved
-                                           // and the runner confirmed no launch
+                                           // with confirmed no launch
   OUTCOME_KIND_REMOVED_DISCONNECTED = 4;   // grace period expired while queued
   OUTCOME_KIND_LAUNCH_FAILED = 5;          // grant issued, launch failed
-  OUTCOME_KIND_LOST = 6;                   // recovery could not determine outcome
+  OUTCOME_KIND_UNKNOWN = 6;                // outcome is uncertain; may remain held
 }
 
 enum ClientOS {
@@ -158,6 +183,7 @@ enum BlockedReason {
   BLOCKED_REASON_RESOURCE_CHECK = 3;
   BLOCKED_REASON_RECOVERING = 4;
   BLOCKED_REASON_RUNNER_DISCONNECTED = 5;
+  BLOCKED_REASON_STORAGE_UNAVAILABLE = 6;
 }
 
 enum ErrorReason {
@@ -176,6 +202,11 @@ enum ErrorReason {
   METADATA_TOO_LARGE = 12;         // RESOURCE_EXHAUSTED
   EVENTS_EXPIRED = 13;             // OUT_OF_RANGE; resume with a fresh snapshot
   INVALID_PAGE_TOKEN = 14;         // INVALID_ARGUMENT
+  CLAIM_MISMATCH = 15;             // FAILED_PRECONDITION; wrong incarnation
+  GRANT_FENCED = 16;               // FAILED_PRECONDITION
+  REPORT_CONFLICT = 17;            // FAILED_PRECONDITION
+  STORAGE_UNAVAILABLE = 18;        // UNAVAILABLE; durable state cannot be trusted
+  STORAGE_CORRUPT = 19;            // DATA_LOSS; never auto-replace the database
 }
 
 // ---------------------------------------------------------------- shared
@@ -207,9 +238,18 @@ message Attribution {
 message ProcessIdentity {
   int64 pid = 1;
   // Platform process start time in UTC Unix nanoseconds; with pid it
-  // distinguishes PID reuse. Precision is platform-dependent, so identities
-  // are compared only with values derived by the same platform method.
+  // helps distinguish PID reuse. Precision is platform-dependent; ambiguous
+  // identity is not proof of death. Compare only values derived by the same
+  // platform method.
   int64 start_time_unix_ns = 2;
+}
+
+// Each runner process generates a fresh UUIDv4 and pairs it with its OS
+// process identity. Reconnection by the same process keeps the UUID; a
+// restarted process generates a new one. Neither field authenticates it.
+message RunnerIncarnation {
+  string incarnation_id = 1; // lowercase canonical UUIDv4
+  ProcessIdentity process = 2;
 }
 
 message Grant {
@@ -217,10 +257,11 @@ message Grant {
   uint32 weight = 2;
   bool forced = 3;
   int64 granted_at_unix_ns = 4;
-  // The runner should call ReportStarted or ReportLaunchFailed before this
-  // monotonic deadline elapses. Expiry alone never releases capacity: the
-  // broker must verify that no command was launched under this grant.
+  // Investigation timeout duration, measured by the broker from the durable
+  // reservation commit. Expiry alone never establishes fencing, no launch
+  // or process exit.
   int64 launch_timeout_ms = 5;
+  RunnerIncarnation runner = 6;
 }
 
 message Outcome {
@@ -256,7 +297,7 @@ message Job {
 
   int64 queued_at_unix_ns = 11;
   optional int64 admitted_at_unix_ns = 12;
-  optional int64 started_at_unix_ns = 13;
+  optional int64 started_at_unix_ns = 13;  // root process start, once recorded
   optional int64 finished_at_unix_ns = 14;
   optional int64 cancel_requested_at_unix_ns = 15;
 
@@ -282,6 +323,7 @@ message SubmitJobRequest {
   uint32 weight = 4;               // 1..capacity
   ClientInfo client = 5;
   Attribution attribution = 6;
+  RunnerIncarnation runner = 7;
 }
 
 message SubmitJobResponse {
@@ -291,6 +333,30 @@ message SubmitJobResponse {
 
 message WatchJobRequest {
   string job_id = 1;
+  RunnerIncarnation runner = 2;
+}
+
+message RejoinJobRequest {
+  string job_id = 1;
+  RunnerIncarnation runner = 2;
+}
+
+message ClaimLaunchRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  RunnerIncarnation runner = 3;
+}
+
+message ClaimLaunchResponse {
+  Grant grant = 1;
+  bool already_claimed = 2;       // same claim, not another spawn allowance
+}
+
+message SealLaunchRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  RunnerIncarnation runner = 3;
+  bool no_command_spawned = 4;
 }
 
 message JobEvent {
@@ -330,7 +396,7 @@ message ReportStartedRequest {
   string job_id = 1;
   string grant_id = 2;
   ProcessIdentity process = 3;     // the command process
-  ProcessIdentity runner = 4;      // the runner process
+  RunnerIncarnation runner = 4;   // the runner process that owns the claim
 }
 
 message ReportLaunchFailedRequest {
@@ -340,12 +406,15 @@ message ReportLaunchFailedRequest {
   // True when the runner did not launch because cancellation was requested;
   // the outcome is then CANCELLED_BEFORE_START instead of LAUNCH_FAILED.
   bool cancelled = 4;
+  RunnerIncarnation runner = 5;
 }
 
 message ReportFinishedRequest {
   string job_id = 1;
   string grant_id = 2;
   Outcome outcome = 3;             // kind EXITED or SIGNALED
+  RunnerIncarnation runner = 4;
+  ProcessIdentity process = 5;     // root, even if ReportStarted was lost
 }
 
 // ---------------------------------------------------------------- control
@@ -354,11 +423,12 @@ message GetHealthRequest {}
 
 message Health {
   bool live = 1;
-  bool ready = 2;                  // false while recovery runs
+  bool ready = 2;                  // false during recovery or storage failure
   string service_version = 3;
   int64 started_at_unix_ns = 4;
   int64 schema_version = 5;
   optional string recovery_detail = 6;
+  optional string storage_detail = 7; // untrusted/unavailable durable state
 }
 
 message GetStatusRequest {}
@@ -374,6 +444,7 @@ message BrokerStatus {
   BlockedReason head_blocked_reason = 8;
   optional int64 free_memory_bytes = 9;
   optional double load_average_1m = 10;
+  bool storage_unavailable = 11;
 }
 
 message GetQueueRequest {}
@@ -395,8 +466,9 @@ message ListJobsRequest {
 
 message ListJobsResponse {
   // Newest first by (queued_at_unix_ns, job_id). Keyset pagination: the
-  // token encodes the last key and filters, so pages are stable under
-  // concurrent inserts.
+  // token encodes the last key and filters, avoiding offset shifts. It is
+  // not a snapshot: concurrent inserts, updates or deletes may affect
+  // later pages.
   repeated Job jobs = 1;
   string next_page_token = 2;              // empty when no more pages
 }

@@ -1,306 +1,257 @@
 # Broker/runner TLA+ review
 
-This is a design model for [heavy-lock v2](../../v2-design.md), not executable
-broker code and not a proof of the proposed implementation. The user requested
-TLA+ tooling and a specification. Modeling assumptions and strengthening
-proposals below are **not additional approved product decisions**.
+This is a finite design model for [heavy-lock v2](../../v2-design.md), not
+broker code or a proof of an implementation. The design record distinguishes
+user decisions from the model's simplifying assumptions and proposed RPC and
+storage layouts.
 
 ## Tooling and reproduction
 
-The repository's pinned Nix shell includes `pkgs.tlaplus18` (TLA+ 1.8.0,
-TLC 2.18) and its Java runtime. It has been realized locally; entering the
-shell makes `tlc` and `tlasany` available without a global installation.
-The wrappers embed their own Nix JDK (Zulu 21); the shell does not put
-`java` on `PATH`, so a system `java` stub is irrelevant.
-
-Realization check (2026-11-25, macOS aarch64, unchanged `flake.lock`):
-`nix develop -c command -v tlc` resolved to
-`/nix/store/…-tlaplus-1.8.0/bin/tlc`, TLC reported `Version 2.18`, SANY
-parsed `BrokerRunner.tla`, and `check.py Scheduling Recovery` plus the six
-witness cases reproduced the outcomes tabulated below.
+The pinned Nix shell includes `pkgs.tlaplus18` (TLA+ 1.8.0, TLC 2.18) and
+its Java runtime. It was realized locally on macOS aarch64; `tlc` and
+`tlasany` resolve from the shell without a global install. The wrappers use
+their Nix JDK; no system `java` is required.
 
 ```bash
 nix develop -c tlc -help
 nix develop -c bash -c 'cd docs/v2/model && tlasany BrokerRunner.tla'
 ```
 
-The six small witnesses take seconds and can run directly:
+These focused checks each bound their own actions; they are not a proof of
+the combined system:
 
 ```bash
 nix develop -c bash -c \
-  'export JAVA_TOOL_OPTIONS=-Xmx768m
+  'export JAVA_TOOL_OPTIONS=-Xmx512m
    python3 docs/v2/model/check.py \
-     VolatileFence UnfencedAbsence IncompleteTracking ForcedOverload \
-     RecoveryBlocked HeadBlocked \
+     Scheduling StorageSchedulingSafety GraceSafety ClaimSafety TimeoutSafety RecoveryClaimSafety \
+     StorageRecoverySafety CompletionSafety KnownChildRace \
+     --logs /tmp/heavy-lock-tlc-focused'
+```
+
+The following deliberately violated predicates expose unsafe alternatives,
+accepted risks or reachable decision points. Their successful wrapper exit
+means the named counterexample was found, **not** that the variant is safe:
+
+```bash
+nix develop -c bash -c \
+  'export JAVA_TOOL_OPTIONS=-Xmx512m
+   python3 docs/v2/model/check.py \
+     VolatileFence UnfencedAbsence IncompleteTracking RecoveryBlocked \
+     ForcedOverload HeadBlocked CrashBeforeLaunch PreventedClaim SealNoSpawn \
+     FinishFirst RecoveryReports RecoverySpawn StorageFailureSpawn \
+     ForcePaused GraceReset \
      --logs /tmp/heavy-lock-tlc-witnesses'
 ```
 
-The exhaustive multi-job checks are resource-intensive and use the shared
-heavy-work lock. **Complete the machine-wide runner migration first**;
-do not mix old and new gates or override lock settings:
-
-```bash
-heavy-lock -- nix develop -c bash -c \
-  'export JAVA_TOOL_OPTIONS=-Xmx768m
-   python3 docs/v2/model/check.py Safety Recovery Scheduling \
-     --logs /tmp/heavy-lock-tlc-safety'
-```
-
-If no compliant installed runner exists, follow the repository's migration
-guidance; do not use another checkout or bypass the gate. Intensive checks for
-this review used a separately authorized, assignment-only exception for the host's
-legacy shared runner. That exception does not change repository policy.
-
-Each case has a committed TLC `.cfg`. `check.py` uses one worker and a
-temporary state directory, leaves full output in the requested log directory,
-and checks both TLC's exit status and the expected invariant name. It rejects
-parse failures, unexpected counterexamples and incomplete runs. Expected
-negative cases return TLC exit 12; the wrapper succeeds only when the named
-witness is found. An expected failure does **not** mean that variant is safe.
-To inspect a case directly:
+Each committed `.cfg` describes its bounds. `check.py` uses one worker and a
+temporary state directory, records the complete TLC log, and rejects parse
+errors, incomplete runs, wrong exit codes or unexpected invariants. Positive
+cases require TLC exit 0 and a completed search; negative witnesses require
+exit 12 and the named invariant. For a direct investigation, use a fresh
+`-metadir` and run, for example:
 
 ```bash
 nix develop -c bash -c \
   'cd docs/v2/model
-   JAVA_TOOL_OPTIONS=-Xmx768m tlc -workers 1 -fpmem 0.05 \
+   JAVA_TOOL_OPTIONS=-Xmx512m tlc -workers 1 -fpmem 0.05 \
      -noGenerateSpecTE -metadir /tmp/heavy-lock-tlc-manual \
-     -config VolatileFence.cfg BrokerRunner.tla'
+     -config IncompleteTracking.cfg BrokerRunner.tla'
 ```
 
-Use a fresh `-metadir` for each direct run.
-`Stress.cfg` combines two jobs with broker and runner crashes and disconnects.
-It is substantially more expensive; run `check.py Stress` through the same
-lock only when deliberately checking that wider bound.
+The wider `Safety`, `Recovery` and `Stress` profiles explore the full
+transition relation and can be resource-intensive. Run them under the
+machine-wide shared heavy-work lock only after completing the runner
+migration; do not mix old and new runners or override the shared gate:
 
-## State and boundaries
+```bash
+heavy-lock -- nix develop -c bash -c \
+  'export JAVA_TOOL_OPTIONS=-Xmx768m
+   python3 docs/v2/model/check.py Safety Recovery \
+     --logs /tmp/heavy-lock-tlc-full'
+```
 
-`db` and `queue` abstract committed SQLite jobs, reservations and queue order.
-Each `Submit`, `Reserve`, `Cancel`, report receiver, `Release` and `Move` is
-one serialized transaction. No action combines a database commit with message
-delivery or OS spawn. Broker crashes occur between transactions; committed
-data survives, corresponding to the proposed durable WAL settings, not a
-model of `NORMAL` power-loss rollback.
+Run `Stress` separately through the same gate when deliberately checking its
+larger bound. If a compatible installed runner is unavailable, the repository
+documents a same-checkout bootstrap *after* migration; otherwise report the
+checks as unrun. Do not execute another checkout's runner or bypass contention.
+`RecoveryReportSafety` can also be costly; run it separately through the
+shared gate when it may exceed a minute on the host.
 
-One job is one logical submission/idempotency key and one unique grant.
-Repeated submission of that key while queued does not append another queue
-entry. The model does not allocate a second grant for the same job.
-`runner` records connection state, a launch claim and volatile knowledge.
-`roots` and `children` represent actual OS processes, independent of runner
-and broker liveness. Runner death does not terminate either set.
+## Modeled boundaries and choices
 
-The launch boundary is deliberately split:
+`db` and `queue` represent committed SQLite rows and explicit FIFO order.
+Every submit, reservation, claim, report, cancellation, release or move is a
+separate serialized transaction. Committing a reservation or claim, sending
+its message, actually spawning, reporting the result and verifying exit are
+distinct actions. Broker crashes occur between transactions and committed
+state survives. The model assumes the requested `FULL`/macOS `fullfsync`
+durability works; it does not model OS, filesystem or hardware failures.
 
-1. `BeginLaunch` consumes the grant and acquires a volatile one-shot ticket.
-2. `Spawn` starts the root and consumes the ticket. It does not update the
-   durable claim. There is no atomic "persist PID and spawn" assumption.
-3. `SendReport` creates an independently deliverable lifecycle message.
-4. `ReceiveStarted` durably records the start/identity; `ReceiveFinished`
-   durably records finishing, while continuing to hold capacity.
+Each job represents one logical submission and one grant. The assigned runner
+incarnation is abstractly a unique number: it represents the chosen UUIDv4
+plus OS process identity, not UUID generation or the mechanics of verifying
+PID/start-time and boot identity. Reconnection preserves it; a restarted
+runner gets a different one. A claim is recorded before its reply may let the
+original runner spawn. Claim replies and grant snapshots can be lost,
+duplicated or delayed, and the runner serializes spawn with sealing. A
+replacement cannot reuse the durable claim. A crash before spawn can leave a
+claimed grant without a root identity or outcome.
 
-Crash can occur at every boundary. The runner's ticket and unreported process
-identity are lost on crash; a restart cannot reconstruct them from the model's
-ghost `launches` counter. If the claim survives but there is no durable
-identity, the model may remain fail-closed. At-most-once is not exactly-once.
+The selected no-future-launch fence is either the original runner's serialized
+seal or verified death of that exact incarnation. The additional no-launch
+case is an atomic broker prevention of an unclaimed grant, or an original
+runner's seal confirming no spawn. Process exit and no-future-launch are
+separate facts. A root and one child are independently modeled; runner death
+does not kill them. Start and finish messages may arrive in either order. The
+finish-first transition records the root and outcome atomically; matching
+retries do not change state and conflicting subsequent reports cannot
+replace those values. First-report authenticity and exact RPC responses are
+not modeled.
 
-Messages are finite sets. Delivery leaves grant messages present, permitting
-duplicate and delayed snapshots, including stale snapshots without a later
-cancellation flag. `DropGrant` and `DropReport` model loss; senders can retry.
-Reports can arrive out of order. Duplicates become stuttering/idempotent
-transitions or are rejected by state guards. Report replies and stream
-buffer sizes are abstracted away.
+Before release, the model requires fencing and either confirmed no launch or
+an identified exited root plus no live known child. It invalidates an
+absence observation if a live child is discovered before release. It permits
+an **untracked** child to survive, reflecting the user's best-effort choice;
+it does not model later discovery after release. Timeout, disconnect, an
+empty scan, an unknown outcome and ordinary reports do not by themselves
+free the reservation. There is no unsafe override for an unknown root.
 
-Normal `Reserve` uses the current queue head, weight fit, unpaused state,
-ready broker and connected runner. A nondeterministic `resourcePass` abstracts
-the live CPU, memory and settle checks. A lone job skips sharing checks.
-`Move` changes explicit order; forced admission ignores FIFO/resource/capacity
-checks, but retains a durable weighted reservation and never bypasses recovery.
-`NormalCapacity` deliberately constrains only **non-forced** occupancy.
-Total occupancy may exceed capacity.
+Normal admission requires a ready broker, an unpaused queue, the connected
+head, capacity and the abstract live resource check. Manual reorder and
+force are explicit exceptions; a forced job counts toward occupied capacity
+and may be admitted while paused, but not during recovery. Cancellation
+removes queued work or records a request for granted work; it does not prove
+termination. Recovery permits existing-job reports/rejoin but blocks new
+submissions, claims and admissions. The user explicitly permits an original
+runner to spawn under a previously committed claim even while recovery is
+underway or storage has failed; the reservation stays held. Recovery must
+reconcile the claim or fence it before readiness.
 
-`Cancel` removes queued work immediately; for granted work it only records a
-request. The runner may already launch from an older snapshot. Capacity stays
-held until launch is safely abandoned or work ends. `ProbeTimeout` requests
-investigation and never releases capacity.
+`StorageFailure` moves the broker to a non-ready mode where it cannot commit
+new reservations or claims; `StorageRestored` re-enters recovery rather
+than immediately becoming ready. A crash while storage is failed does not
+silently repair it. The model assumes already committed database state
+survives and does not model corrupt bytes, hardware behavior, error responses
+or acknowledgements, so it cannot prove the database-failure implementation.
 
-`BrokerRestart` enters recovery. New grants wait for `RecoveryDone`.
-Known live work is reconciled and continues to occupy capacity; unverifiable
-grants block readiness. Grace advances only while the broker is ready and a
-queued runner is disconnected. Reconnect versus expiry is an ordinary
-serialized race. Accumulated grace does not reset on reconnect in this model;
-that policy remains open. Pause survives restart here; that is also a model
-choice, not approval.
+Grace advances only while the broker is ready and the queued runner is
+disconnected; successful reconnect resets it. Reconnect and expiry are
+serialized actions. This model does not count time during recovery even
+when rejoin is already available; the exact reconnect-ready point remains
+open. The model keeps pause across restart as an assumption, not a user
+decision. `GraceSafety` uses 30 abstract eligible-time ticks to check the
+chosen grace threshold, but neither a tick nor a timeout probe models
+real elapsed time. The checks do not prove wall-clock behavior or the
+heartbeat and launch-timeout intervals.
+The model starts each runner connected and does not model a submission
+whose initial `WatchJob` stream never registers; its handling remains open.
 
-## Safety invariants
+## Invariants and profiles
 
-- `QueueConsistent`: every queued job occurs once in explicit queue order.
-- `ReservationsConsistent`: reserved/running/finishing jobs hold capacity;
-  absent/queued/terminal jobs do not.
-- `DurableBeforeDelivery`: a sent grant has a committed reservation history.
-- `NoDuplicateLaunch`: a grant produces at most one actual OS spawn.
-- `NoLiveUnreserved`: a live root or surviving child retains its reservation.
-- `NoPrematureRelease`: a released grant has neither live work nor remaining
-  launch authority; it cannot be replayed as a fresh grant.
-- `NormalCapacity`: normal reservations never exceed capacity, even after
-  forced work causes total overload.
-- `NormalFIFO`: every normal admission used the current head and passed the
-  modeled pause, capacity and resource guards.
-- `NoAdmissionDuringRecovery`: both normal and forced admissions require
-  readiness.
-- `StartedBeforeFinishing`: finishing has a durably recorded start identity,
-  matching the proposed schema's presence constraints.
+The positive profiles check relevant subsets of:
 
-`normalOK` and `recoveryOK` are history monitors updated at admission, not
-claims based solely on the current queue or current broker state. `launches`
-is a ghost observation of actual spawns and is never available to recovery.
-The scheduler-only `SchedulingSpec` checks queue and reservation transitions
-without launching processes or releasing grants; the full lifecycle is
-checked separately with `Spec`.
+- `QueueConsistent`, `ReservationsConsistent`, `DurableBeforeDelivery`:
+  no duplicate queue entries, held-state consistency and durable grants.
+- `NoDuplicateLaunch`, `ClaimBeforeSpawn`, `ClaimBoundToRunner`,
+  `NoClaimWhenNotReady`: one spawn per grant, after the correct durable
+  claim, with no new claim transaction while recovering or storage has failed.
+- `NoLiveRootUnreserved`, `NoKnownChildUnreserved`,
+  `NoPrematureRelease`, `NoFutureProof`, `NoFalseNoLaunch`:
+  root/known-child and launch-fence conditions. `NoLiveUnreserved` is
+  intentionally **not** a general invariant under best-effort tracking.
+- `NoConflictingReportsAccepted`, `StartedBeforeFinishing`,
+  `UnknownOutcomeHeld`: persisted report consistency and uncertainty.
+- `NormalCapacity`, `NormalFIFO`, `NoReservationWhenNotReady`:
+  normal scheduling guards, accounting for forced reservations, and no new
+  reservation while recovering or storage has failed.
+- `GraceResetWhenConnected`, `ExpiredJobNotRevived`: reconnect/expiry ordering.
 
-## Bounds and conditional assumptions
-
-| Case | Jobs/weights; capacity | Broker/runner crashes; disconnects | Purpose |
-|---|---|---|---|
-| `Safety` | 2 jobs, weights 2 and 1; capacity 2 | 0/0; 0 | Interleaved process lifecycle, messages and controls |
-| `Recovery` | 1 job, weight 1; capacity 1 | 1/1; 1 | All process/message boundaries interleaved with broker/runner crashes and reconnects |
-| `Scheduling` | 3 jobs, weights 2, 1 and 1; capacity 2 | 0/0; 0 | Scheduler-only queue/control/reservation interleavings, force allowed during pause |
-| `Stress` | 2 jobs, weights 2 and 1; capacity 2 | 1/1; 1 | Wider combined bound; not completed |
-| `VolatileFence` | 1 job, weight 1; capacity 1 | 0/1; 0 | Crash loses grant-consumption record |
-| `UnfencedAbsence` | 1 job, weight 1; capacity 1 | 1/0; 0 | Process observation without preventing a future launch |
-| `IncompleteTracking` | 1 job, weight 1; capacity 1 | 0/0; 0 | Root exits while a child remains |
-| `ForcedOverload` | 2 jobs, weights 2 and 1; capacity 2 | 0/0; 0 | Witness intentional overload, not a protocol defect |
-| `RecoveryBlocked` | 1 job, weight 1; capacity 1 | 1/0; 0 | Witness that all-RPC refusal cannot accept a needed pending identity report |
-| `HeadBlocked` | 3 jobs, weights 2, 1 and 1; capacity 2 | 0/0; 0 | Witness intentional FIFO blocking despite a later job fitting |
-
-Crash/disconnect bounds are global counts, not per job. Grace is one abstract
-ready-time tick. Each job has at most one concurrent root and one child; a
-ghost counter allows a second spawn so duplication is detectable. All
-queue permutations and eligible manual moves are explored; there is no
-fixed event schedule or trace-length cutoff.
-
-The passing-model candidate sets these explicit **strengthening proposals**:
-
-- `DurableFence = TRUE`: the consumed grant survives runner restart.
-  Restart never reissues a lost volatile launch ticket. The current design
-  says "launch at most once," but does not specify this mechanism. This is
-  a logical crash-surviving, serialized claim, not a choice of a new client
-  database, file format or RPC.
-- `SafeAbsence = TRUE`: verification is permitted only after the launch
-  capability is sealed, or a consumed grant has tracked identity and no
-  remaining ticket. Merely finding no process is insufficient.
-- `CompleteTracking = TRUE`: verification includes all surviving children,
-  with stable identities, and cannot falsely report absence. Real OS APIs
-  do not currently establish this assumption.
-- `RecoveryRPCs = TRUE`: reconnect snapshots and identity/outcome reports
-  can be handled during recovery, while scheduling remains blocked.
-  Section 11 currently says RPCs fail during recovery; this model variant
-  therefore exposes a contract decision, not an approved exception.
-
-`SealLaunch` is a proposed runner acknowledgement preventing any later
-launch under that grant. It is not an existing RPC. A runner that crashes
-after consuming a grant but before establishing identity cannot simply claim
-"launch failed" on restart. Unknown work stays held.
+`ClaimSpec` omits child creation, lifecycle report receivers, pause, force,
+reorder and live-work reconciliation. `TimeoutSpec` adds an abstract timeout
+probe to this claim subset; `StorageSpec` adds failed-storage and
+restore/recovery transitions. `FinishSpec` focuses on
+start/finish delivery and conflicts without crashes, cancellation, seal or
+release. `RecoveryReportSpec` combines report ordering, cancellation, seal,
+release and one broker crash but omits runner crashes, children and force.
+`ObservationSpec` covers discovery versus release for one child but omits
+crashes and controls. `GraceSpec` omits admission; `SchedulingSpec` and
+`StorageSchedulingSpec` omit launch and release, and the latter does not
+reconcile held work. Their combined results are not a compositional proof.
+The full `Spec` includes the omitted interactions.
 
 ## Outcomes and actionable gaps
 
-Measured on 2026-11-25 with the pinned TLA+ 1.8.0/TLC 2.18 package and its
-Java 21 runtime on macOS, one worker and a 768 MiB maximum heap:
+The following runs used TLC 2.18, one worker and `-Xmx512m` on macOS on
+2026-11-25. Positive searches finished with no queued states. Witness
+counts stop at the first deliberately violated invariant.
 
-| Case | TLC result | Generated/distinct states | Depth | TLC elapsed |
-|---|---|---|---|---|
-| `Safety` | No invariant violated; complete | 114,886,273 / 7,095,636 | 42 | 6 min 54 s |
-| `Recovery` | No invariant violated; complete | 4,775,691 / 581,008 | 32 | 14 s |
-| `Scheduling` | No invariant violated; complete | 4,943 / 636 | 11 | under 1 s |
-| `VolatileFence` | `NoDuplicateLaunch` violated | 11,297 / 2,538 | 12 | under 1 s |
-| `UnfencedAbsence` | `NoLiveUnreserved` violated | 2,575 / 904 | 9 | under 1 s |
-| `IncompleteTracking` | `NoLiveUnreserved` violated | 8,206 / 1,435 | 13 | under 1 s |
-| `RecoveryBlocked` | `RecoveryAcceptsPendingIdentity` violated | 2,717 / 925 | 10 | under 1 s |
-| `ForcedOverload` | Expected `NeverForcedOverload` witness | 213 / 63 | 5 | under 1 s |
-| `HeadBlocked` | Expected `NeverHeadBlocked` witness | 544 / 119 | 5 | under 1 s |
+| Focused case | Bounds and scope | Generated / distinct states | Result |
+|---|---|---:|---|
+| `Scheduling` | 3 jobs, weights 2/1/1, capacity 2; queue/controls only | 9,091 / 1,388 | complete |
+| `StorageSchedulingSafety` | 3 jobs; force, normal scheduling and storage failure/restore | 13,331 / 4,164 | complete |
+| `GraceSafety` | 1 job; 1 broker crash, 2 disconnects, 30 grace ticks | 949 / 488 | complete |
+| `ClaimSafety` | 1 job; 1 runner crash; claim/fence/cancel actions | 326,701 / 40,556 | complete |
+| `TimeoutSafety` | 1 job; 1 runner crash; timeout, claim and sealing actions | 773,669 / 84,116 | complete |
+| `RecoveryClaimSafety` | 1 job; 1 broker and 1 runner crash; claim/fence actions | 1,269,139 / 161,761 | complete |
+| `StorageRecoverySafety` | 1 job; 1 broker and 1 runner crash; storage failure/restore and claim/fence actions | 2,800,225 / 361,323 | complete |
+| `CompletionSafety` | 1 job; reordered/lost/conflicting start and finish | 7,589 / 778 | complete |
+| `RecoveryReportSafety` | 1 job; 1 broker crash; report ordering, cancellation, seal and release | 10,089,258 / 746,960 | complete |
+| `KnownChildRace` | 1 job; discovery between scan and release | 523 / 93 | complete |
 
-The three positive profiles exited 0 with no states left on the BFS queue.
-The six witness profiles exited 12 at the named invariant; their counts
-describe prefixes through the first counterexample, not complete graphs.
-The same model contains all of these alternatives; no process or message
-action was removed to hide a discovered violation.
+| Witness | Violated diagnostic invariant | Meaning |
+|---|---|---|
+| `VolatileFence` | `NoDuplicateLaunch` | Losing grant consumption on runner restart permits a second spawn. |
+| `UnfencedAbsence` | `NoLiveUnreserved` | A scan before a delayed spawn cannot justify release. |
+| `IncompleteTracking` | `NoLiveUnreserved` | A fenced, exited root can leave an untracked child after release: accepted oversubscription risk. |
+| `RecoveryBlocked` | `RecoveryAcceptsPendingIdentity` | Refusing every recovery report can prevent persistence of a needed root identity. |
+| `RecoverySpawn` | `NeverSpawnWhileRecovering` | A delayed pre-crash claim reply can start its original runner during recovery. |
+| `StorageFailureSpawn` | `NeverSpawnWhileStorageFailed` | A previously delivered claim can start its original runner after storage becomes untrusted. |
+| `ForcedOverload` | `NeverForcedOverload` | Force intentionally permits occupied weight above capacity. |
+| `HeadBlocked` | `NeverHeadBlocked` | Strict FIFO can block a smaller fitting follower. |
+| `CrashBeforeLaunch` | `NeverCrashBeforeLaunchUnknown` | A committed claim followed by runner death before spawn can remain held with unknown outcome. |
+| `PreventedClaim` | `NeverReleasePreventedClaim` | Atomic prevention of an unclaimed grant can lead to release. |
+| `SealNoSpawn` | `NeverReleaseSealedNoSpawn` | A claimed grant can be released after a seal confirms no spawn. |
+| `FinishFirst` | `NeverFinishBeforeStart` | A finish can atomically establish a missing start. |
+| `RecoveryReports` | `NeverRecoveryReport` | An existing-job report can be persisted during recovery. |
+| `ForcePaused` | `NeverForcedWhilePaused` | A forced reservation can be made while normal admission is paused. |
+| `GraceReset` | `NeverGraceReset` | A reconnect after a partial grace period resets it. |
 
-The initial combined `Stress` profile was stopped after its last progress
-report of 42,798,028 generated / 6,380,994 distinct states, with 2,693,683
-states still pending. **It is not a pass.** Its committed configuration is
-available for a deliberately larger run. Instead, the completed profiles
-separate two-job lifecycle interleavings, one-job crash recovery and
-three-job scheduling. This is not a compositional proof of two-job crash
-recovery; that wider combination remains unchecked to completion.
+The model initially admitted `ObserveAbsent -> TrackChild -> Release`,
+leaving a known live child unreserved. It now invalidates the observation on
+discovery; `KnownChildRace` checks that bounded race. The implementation must
+similarly synchronize child discovery and release, or recheck all newly known
+processes before committing. This does not eliminate the accepted risk of a
+child never discovered before release.
 
-TLC uses 64-bit fingerprints rather than storing/comparing every full state.
-For `Safety`, it reported omission-risk estimates of `4.1e-5` (optimistic
-calculation) and `8.4e-7` (actual-fingerprint estimate). These are tool estimates,
-not a mathematical correctness guarantee. No symmetry reduction or explicit
-trace-depth constraint was used. The depth column is the resulting BFS depth,
-not an imposed maximum.
+The two spawn witnesses retain the counterexamples to a rejected
+absolute no-start rule. They are expected under the approved in-flight-claim
+exception, not violations of the current policy. Preventing them would need
+a different launch/recovery synchronization protocol; blocking new RPCs
+alone is insufficient.
 
-The small witness configurations intentionally retain unsafe alternatives:
-
-1. **Volatile deduplication is insufficient.** Submit, reserve, deliver,
-   consume, spawn, runner crash/restart, replay grant, consume and spawn again.
-   TLC violates `NoDuplicateLaunch`. Decide how grant consumption survives
-   restart, or prohibit restart/replay and fail closed; neither decision
-   follows from UUID idempotency of submissions or reports.
-2. **An absence scan is not launch fencing.** A grant is outstanding while
-   recovery or timeout investigation sees no tracked process and releases
-   capacity. The reported trace consumes the grant, scans an absent root,
-   spawns the root, then releases using the stale observation. Even an
-   accurate scan cannot prove that the root stays absent; the model also
-   allows release before the pending spawn. TLC violates `NoLiveUnreserved`.
-   Require a stable no-future-launch condition, not just a PID scan or
-   heartbeat timeout.
-3. **Root exit is not job-tree exit.** Launch, fork child, root exits, start
-   report records the root, an incomplete scan reports absence, then release
-   while the child lives. TLC violates `NoLiveUnreserved`. Define reliable
-   descendant containment/accounting or retain uncertain capacity.
-4. **Force can overload intentionally.** Reserve the weight-2 job, then
-   force the weight-1 job with capacity 2. TLC violates the deliberately
-   over-strong `NeverForcedOverload` witness. This validates that the model
-   does not "prove" safety by disabling the user's force-start exception.
-
-Two further design gaps are visible without claiming liveness verification:
-
-- A broker cannot both refuse every RPC during recovery and rely on
-  reconnecting runners to report a launch that never reached SQLite.
-  Define a recovery-only report/rejoin path or a reliable OS discovery
-  mechanism. `RecoveryBlocked` reaches a state with an unrecorded live process
-  and a pending identity report that the recovering broker cannot accept;
-  it violates the diagnostic `RecoveryAcceptsPendingIdentity` predicate.
-  This is a reachable recovery-contract gap, not a proof of inevitable
-  deadlock. The model's `RecoveryRPCs` choice must not silently become policy.
-- `ReportFinished` may arrive before the start is durable. The schema needs
-  `started_at_ns` for finishing; the model retains the early finish message
-  until `ReceiveStarted`. Specify whether the real client waits for durable
-  start acknowledgement, or the server reconciles/buffers an early finish.
-  A lost start report plus runner crash can leave the grant unresolved.
-
-`HeadBlocked` reaches a partially occupied capacity-2 broker with the weight-2
-job at the head and a weight-1 follower that could fit. It intentionally
-violates `NeverHeadBlocked`; strict FIFO waits until capacity changes or a
-manual control changes the queue. This demonstrates real head-of-line
-blocking rather than silently implementing automatic backfill.
-
-No production behavior was changed to conceal any of these gaps.
+The earlier `Safety` and `Recovery` results belonged to the prior model
+revision. Their current configurations, and `Stress`, have **not** completed
+for this revision. The old `Stress` run was itself incomplete. Until the
+shared runner migration is complete, these wider checks remain unrun; the
+focused passes above must not be presented as substitutes for them.
 
 ## Limitations
 
-This is finite-state safety checking, not a theorem proof or a claim about
-all job counts. It assumes one serialized broker, durable transactions,
-truthful cooperative clients, unique non-reused keys/grants, fixed weights
-and capacity, and accurate complete observation in the strengthened variant.
-The unauthenticated API cannot enforce cooperative identity or honest reports.
-Multiple broker instances, disk corruption, rollback on power loss, external
-job effects, PID reuse, process-identity precision, detached children beyond
-the one-child abstraction, wall-clock values, telemetry and event-log resume
-are not modeled.
+The model assumes one correctly enforced OS-backed broker lock, durable
+transactions, cooperative truthful clients, unique IDs, fixed capacity and
+weights, accurate verification of modeled known processes, and at most one
+root and one child per job. It does not check the OS lock, actual process
+containment or enumeration, PID reuse/boot precision, UUID collisions,
+first-report validation, detached grandchildren, database corruption,
+disk-full behavior, clock precision, actual gRPC transport/event resume or
+power-loss guarantees. An unauthenticated local client can impersonate an
+identity; UUIDs are not credentials.
 
-There are no fairness assumptions or eventual-completion claims. Jobs may run
-forever, packets may be lost forever, unknown identity may block recovery,
-and a FIFO head can starve followers. Deadlock checking is disabled because
-terminal/fail-closed states are intentional; this does **not** establish
-deadlock freedom. A production design must resolve safety/progress tradeoffs
-explicitly, then refine the model and verify the implementation separately.
+TLC uses fingerprints, so a completed bounded search is not a mathematical
+proof for arbitrary job counts. There are no fairness or eventual-completion
+claims. Packets may be lost forever, jobs may run forever, and an unknown
+root can hold capacity indefinitely. Deadlock checking is disabled because
+terminal and fail-closed states are intentional; this does not establish
+deadlock freedom. Verify real platform mechanisms and the implementation
+separately before relying on these properties.
