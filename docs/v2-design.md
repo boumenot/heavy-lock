@@ -735,7 +735,7 @@ enum OutcomeKind {
   OUTCOME_KIND_LOST = 6;                   // recovery could not determine outcome
 }
 
-enum ClientOs {
+enum ClientOS {
   CLIENT_OS_UNSPECIFIED = 0; // not reported; stored as NULL
   CLIENT_OS_MACOS = 1;
   CLIENT_OS_LINUX = 2;
@@ -796,7 +796,7 @@ enum ErrorReason {
 message ClientInfo {
   optional string name = 1;
   optional string version = 2;
-  ClientOs os = 3;
+  ClientOS os = 3;
   ClientArchitecture architecture = 4;
 }
 
