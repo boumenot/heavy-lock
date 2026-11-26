@@ -284,3 +284,53 @@ not run because browser access approval was denied.
 probes after upgrades. Only this Mac was exercised. The prototype does not
 start a real service or execute a command. Loopback, Host checks and
 permissive CORS do not provide isolation or authentication.
+
+## v2 macOS monitor
+
+**Context.** Phase 7c ([#18](https://github.com/boumenot/heavy-lock/issues/18))
+implements the Swift monitor from
+[v2 design section 3](v2-design.md#3-monitor-controls). The user selected the
+confirmation rules (confirm every cancel and force-start; pause, resume and
+reorder unconfirmed), no history deletion and distinct forced jobs; the
+choices below were delegated.
+
+**Decision.** The v2 monitor is a new SwiftUI package,
+`apps/tuna-monitor-macos` (`Tuna Monitor.app`, `com.boumenot.tuna-monitor`,
+macOS 26+), not a change to the v1 monitor, which keeps observing v1 locks
+until the cutover (#19). A `TunaMonitorCore` library holds the broker client,
+event projection, session loop, control policy and presentation, so they are
+tested without UI; the executable is a thin view. It uses the generated
+`HeavyLockV2` clients over the grpc-swift-nio-transport TransportServices
+HTTP/2 transport, pinned with the contract library's packages and checked by
+the same flake evaluation. `tool/dev.dart` builds and tests it but does not
+install it before cutover. The port is `--port`, then `TUNA_MONITOR_PORT`,
+then 49783; there is no port discovery.
+
+On each (re)connect the monitor checks `Health` for a compatible
+`heavylock.v2` service before watching, so replayed events are never shown
+as live. It resumes after the last applied sequence; a non-contiguous
+sequence or `EVENTS_EXPIRED` discards the cursor and rebuilds from a
+snapshot with a notice. A heartbeat timeout of max(15 s, 3 × the advertised
+interval) marks the broker unavailable. When not live it keeps the last
+known state, dimmed and labelled with its age, and refuses controls; a
+pending confirmation is re-checked for liveness before sending. Recent
+history is the newest 20 finished jobs from `ListJobs`, reloaded on each
+snapshot and maintained from job events. Running/queued counts and
+occupancy are derived from the event-maintained queue and active jobs,
+because the broker emits `status_changed` only for some transitions (not
+reservations or starts); capacity, pause and resource figures come from the
+last status. A queued job heavier than capacity gets a persistent warning
+from either its blocked reason or weight versus capacity.
+
+**Alternatives.** Extending the v1 monitor would mix two protocols in one app
+before cutover and raise its macOS 13 floor. Polling REST would lose
+resumable events. Trusting `BrokerStatus` counts alone showed stale counts in
+a live smoke test.
+
+**Limits.** Running-job cancellation, recovery after broker restart and the
+full job lifecycle are not verified end to end until recovery (#15) lands;
+a smoke test showed a runner orphaned by a broker restart staying in
+"waiting for admission" and ignoring SIGTERM/SIGINT until the broker
+returned. The API is unauthenticated loopback, exposing commands and
+history to any local process. A manual UI review by the user is required.
+Only this Mac (macOS 26.7.3/arm64, Xcode 27.2, Swift 6.4.2) was exercised.

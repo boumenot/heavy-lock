@@ -182,9 +182,16 @@ void main() {
 
       shell.calls.clear();
       expect(await dev(['test', 'all']), 0);
-      expect(shell.steps, ['dart test', 'swift test', 'go test', 'swift test']);
-      expect(shell.calls.last.last, '$root/packages/heavylock-v2-swift');
-      expect(shell.calls.last, contains(SwiftContractApp.resolvedOnly));
+      expect(shell.steps, [
+        'dart test',
+        'swift test',
+        'go test',
+        'swift test',
+        'swift test',
+      ]);
+      expect(shell.calls[3].last, '$root/packages/heavylock-v2-swift');
+      expect(shell.calls[3], contains(SwiftContractApp.resolvedOnly));
+      expect(shell.calls.last.last, '$root/apps/tuna-monitor-macos');
     });
 
     test('tuna builds atomically and is never installed', () async {
@@ -203,7 +210,50 @@ void main() {
       expect(await dev(['install', 'tuna']), unavailableExitCode);
       expect('$err', contains('tuna is not installable'));
       expect(await dev(['install', 'heavylock-v2-swift']), unavailableExitCode);
+      expect(await dev(['install', 'tuna-monitor-macos']), unavailableExitCode);
       expect(shell.calls, isEmpty);
+    });
+
+    test(
+      'the v2 monitor builds a signed bundle from pinned versions',
+      () async {
+        final package = '$root/apps/tuna-monitor-macos';
+        await File('$package/.build/release/TunaMonitor')
+            .create(recursive: true);
+        await File('$package/Info.plist').writeAsString('plist');
+        expect(await dev(['build', 'tuna-monitor-macos']), 0, reason: '$err');
+        expect(shell.steps, ['swift build', 'chmod 755', 'codesign --force']);
+        expect(shell.calls.first, contains(SwiftContractApp.resolvedOnly));
+        final bundle = '$root/build/tuna-monitor-macos/Tuna Monitor.app';
+        expect(
+          await File('$bundle/Contents/Info.plist').readAsString(),
+          'plist',
+        );
+        expect(
+          await File('$bundle/Contents/MacOS/TunaMonitor').exists(),
+          isTrue,
+        );
+        expect(
+          await Directory('$root/build/tuna-monitor-macos').list().length,
+          1,
+          reason: 'no staging directories remain',
+        );
+      },
+    );
+
+    test('the v2 monitor tests a built tuna when available', () async {
+      expect(await dev(['test', 'tuna-monitor-macos']), 0);
+      expect(shell.environments.single, isNull);
+      expect('$out', contains('Skipping the broker integration test'));
+
+      await File('$root/build/tuna/tuna').create(recursive: true);
+      shell.environments.clear();
+      expect(await dev(['test', 'tuna-monitor-macos']), 0);
+      expect(shell.steps.last, 'swift test');
+      expect(shell.calls.last, contains(SwiftContractApp.resolvedOnly));
+      expect(shell.environments.single, {
+        'TUNA_MONITOR_TEST_TUNA': '$root/build/tuna/tuna',
+      });
     });
 
     test('install all skips applications that are not installable', () async {

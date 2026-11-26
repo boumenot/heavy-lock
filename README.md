@@ -16,10 +16,12 @@ apps/
   heavy-lock/      Dart runner and status CLI (bin, lib, test, pubspec)
   monitor-macos/   Swift Dock/menu status monitor (Swift package, tests)
   tuna/            v2 Go runner/broker prototype; not for real workloads
+  tuna-monitor-macos/  v2 SwiftUI monitor for `tuna service` (not installable)
 packages/
   heavylock-v2-swift/  Generated Swift bindings for the v2 contract (library)
 tool/              Build/test/install orchestration; not shipped
-build/             Outputs: build/heavy-lock/, build/monitor-macos/, build/tuna/
+build/             Outputs: build/heavy-lock/, build/monitor-macos/, build/tuna/,
+                   build/tuna-monitor-macos/
 docs/              Lifecycle, technical decisions and v2 design/plan
 skills/            Portable consumer skills
 ```
@@ -521,17 +523,18 @@ are generated and committed; do not edit them by hand:
   `protoc-gen-go-grpc` 1.6.2 from the flake; runtime modules pinned in
   `apps/tuna/go.mod`).
 - Swift: `packages/heavylock-v2-swift/Sources/HeavyLockV2/` (messages plus
-  gRPC clients only), the library the future v2 monitor will use. Its
+  gRPC clients only), the library the v2 monitor uses. Its
   direct dependencies include grpc-swift-2 2.4.4, grpc-swift-protobuf 2.5.0,
   swift-protobuf 1.41.0 and the test-only grpc-swift-nio-transport 2.13.3.
   All direct and transitive packages are pinned as non-flake inputs in
   `flake.nix`, with their commits in `flake.lock`. SwiftPM still
   needs `Package.swift` (exact requirements) and the committed
-  `Package.resolved`; evaluating the flake (`nix develop`, `nix flake check`)
-  fails if either differs from the flake pins, and `tool/dev.dart` and the
+  `Package.resolved`, as does `apps/tuna-monitor-macos`, which pins the
+  same packages; evaluating the flake (`nix develop`, `nix flake check`)
+  fails if either package's files differ from the flake pins, and `tool/dev.dart` and the
   generator build with `--only-use-versions-from-resolved-file`. To update a
   pin, change its tag in `flake.nix` and `Package.swift`, run `nix flake lock`
-  and `swift package resolve`, and commit all three. The `protoc-gen-swift`
+  and `swift package resolve` in both packages, and commit them all. The `protoc-gen-swift`
   and `protoc-gen-grpc-swift-2` plugins are built from those same
   dependencies, so generated code always matches the runtime.
 
@@ -577,6 +580,51 @@ tests through the gate:
 ```bash
 heavy-lock -- nix develop -c go -C apps/tuna test -race ./... -count=1
 ```
+
+#### v2 macOS monitor
+
+`apps/tuna-monitor-macos` builds **Tuna Monitor.app**, a SwiftUI window
+for a running `tuna service`, separate from the v1 Heavy Lock Status
+monitor. It needs macOS 26+ and is not installable or started at login
+until the v2 cutover (#19); launch the build directly:
+
+```bash
+heavy-lock -- nix develop -c dart tool/dev.dart build tuna-monitor-macos
+open "build/tuna-monitor-macos/Tuna Monitor.app"              # port 49783
+open "build/tuna-monitor-macos/Tuna Monitor.app" --args --port 49917
+```
+
+The port comes from `--port`, then `TUNA_MONITOR_PORT`, then 49783. On
+every (re)connect the monitor checks `Health` for a compatible
+`heavylock.v2` service, then watches events from a snapshot and resumes
+after the last processed sequence. A sequence gap or `EVENTS_EXPIRED`
+rebuilds from a fresh snapshot with a notice. No message for
+max(15 s, 3 × heartbeat interval) marks the broker unavailable. When not
+live it keeps the last known state dimmed and labelled with its age, never
+as live, and disables controls.
+
+It shows capacity, occupancy, running/queued counts, pause state and the
+head's blocked reason; active jobs; the queue in order; and up to 20
+recently finished jobs from `ListJobs`, refreshed on each snapshot.
+Running and queued counts and occupancy come from the job events, because
+the broker does not publish `status_changed` for every start or finish.
+Rows show the command, state, weight, worklog, cwd, outcome and warnings,
+including a persistent warning for a queued job heavier than capacity.
+Force-started jobs are marked `FORCED`, including in history. Pause,
+resume and move to front/back are sent immediately; every cancel and
+force-start asks for confirmation, and the request is refused if the broker
+stopped being live meanwhile. There is no history deletion UI. The Dock
+badge shows the queued count while live.
+
+The API is unauthenticated loopback gRPC: any local process or user can see
+full commands, arguments, working directories and history, and can control
+the queue. The v1 monitor and `heavy-lock-status` are not views of v2 jobs.
+`dart tool/dev.dart test tuna-monitor-macos` runs the model, presentation
+and session tests against a scripted broker, and an integration test
+against a temporary real broker when `build/tuna/tuna` exists (set
+`TUNA_MONITOR_TEST_TUNA` to choose a binary for direct `swift test`).
+Running-job cancellation and recovery are not yet verified end to end
+(#15).
 
 The shell deliberately uses `mkShellNoCC` and does not provide Swift: on
 macOS the monitor builds with the system Xcode `swift` (`xcode-select
