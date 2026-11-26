@@ -50,6 +50,7 @@ users' jobs or machines.
 | Force-start | Bypass resource checks, count toward occupied capacity, with confirmation in the monitor |
 | New submission while service unavailable | Fail immediately and clearly; do not auto-start, retry until restart, or run unscheduled |
 | Recovery | SQLite persists queue and active state; reconcile verified live jobs and occupied slots before admitting new work |
+| Database typing | SQLite STRICT tables |
 | Queued-runner disconnect | Preserve place during a grace period, then remove if still disconnected; service downtime does not count |
 | Job history | Sample every five seconds, retain summaries rather than raw timestamped samples, keep indefinitely until explicitly deleted |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
@@ -233,6 +234,10 @@ SQLite. Queued work survives broker restarts. Running jobs continue if the
 broker crashes. On restart, reconcile persisted state with verified live
 process identities and reconnecting runners **before admitting any new
 jobs**. If safety cannot be established, fail closed.
+
+**User decision.** Use SQLite STRICT tables throughout. This requires
+SQLite 3.37.0 or later; the illustrative schema in section 11 follows this
+choice while leaving its exact fields and constraints open.
 
 The monitor may crash/restart without stopping the broker or its jobs.
 Running state is not proven by a database row, heartbeat or PID alone.
@@ -445,12 +450,12 @@ platform-specific behavior rather than extrapolating from macOS.
 
 ## 11. Proposed interfaces and schema (illustrative)
 
-**Status: proposal only.** Everything in this section is a candidate
-starting point for discussion. Method names, paths, message fields, table
-and column names, and state values are **not approved decisions**. They
-apply the decisions above (gRPC for the runner, REST for the monitor,
-SQLite, no authentication, strict FIFO, runner-executed commands) but
-do not settle any open question listed elsewhere.
+**Status: illustrative proposals.** The exact contracts and schema are
+candidate starting points for discussion. Method names, paths, message
+fields, table and column names, and state values are **not approved
+decisions**. They apply the decisions above (gRPC for the runner, REST for
+the monitor, SQLite STRICT tables, no authentication, strict FIFO,
+runner-executed commands) but do not settle any open question listed elsewhere.
 
 ### 11.1 Runner-to-broker gRPC (proposed)
 
@@ -463,8 +468,8 @@ syntax = "proto3";
 package heavylock.v2;
 
 service Runner {
-  // Enqueue a job. Repeating the same idempotency_key returns the
-  // existing job rather than creating a duplicate.
+  // Enqueue a job. The same key and payload return the existing job;
+  // reusing the key with a changed payload is rejected.
   rpc SubmitJob(SubmitJobRequest) returns (Job);
   // List queued, running and completed jobs with optional filters.
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
@@ -481,12 +486,19 @@ service Runner {
 }
 
 message SubmitJobRequest {
-  string idempotency_key = 1;   // client-generated, stable across retries
+  string idempotency_key = 1;   // proposed UUIDv4 per logical submission
   string command = 2;           // human-readable string, for recording only
   string cwd = 3;
   uint32 weight = 4;
   ClientInfo client = 5;        // name, version
   map<string, string> metadata = 6; // explicit attribution only
+}
+
+message ClientInfo {
+  optional string name = 1;         // caller-supplied; absent means unknown
+  optional string version = 2;
+  optional string os = 3;           // explicitly reported, not inferred
+  optional string architecture = 4;
 }
 
 message ListJobsRequest {
@@ -515,15 +527,31 @@ message ProcessIdentity {
 message ReportFinishedRequest {
   string job_id = 1;
   string grant_id = 2;
-  optional int32 exit_code = 3;       // absent when unknown
+  optional int64 exit_code = 3;       // preserves Windows unsigned32 codes
   optional int32 termination_signal = 4;
+  optional string termination_signal_name = 5; // POSIX only, when available
 }
 ```
 
 `GetJobRequest`, `WatchJobRequest`, `CancelWaitingJobRequest` (job ID),
-`Job`, `JobEvent` and `ClientInfo` are omitted; they would carry job state,
+`Job` and `JobEvent` are omitted; they would carry job state,
 queue position, grant and cancellation details, and are equally
 illustrative.
+
+**Recommendations, not user decisions.** Generate a UUIDv4 idempotency key
+for each logical submission and keep it stable across retries of the same
+payload. Reject reuse with a changed payload rather than replacing the
+original job. Payload-equivalence rules and key retention remain open.
+UUIDs are identifiers, not authentication.
+
+`ClientInfo` may explicitly report OS and architecture; missing values
+remain unknown and the service does not infer them. Names and normalization
+rules remain open. Preserve the native process exit-code value when
+available, with optional POSIX signal name/number. The illustrated `int64`
+can hold Windows unsigned32 exit codes that exceed `int32`; SQLite `INTEGER`
+can also hold them. Do not synthesize POSIX signals for Windows. Keep
+cancellation intent separate from the observed outcome: a cancel request
+does not establish the exit code, signal or verified process termination.
 
 **Proposed list behavior.** With no state filter, `ListJobs` and
 `GET /v1/jobs` include queued, running and completed jobs. Candidate
@@ -549,8 +577,10 @@ Proposed invariants, still requiring agreement:
 - A queued runner's disconnect starts the grace period (see section 4);
   service downtime is excluded.
 - `idempotency_key` lets a runner safely repeat a submission whose
-  response was lost. This does not authorize automatic retry when the
-  service is unavailable; new submissions still fail immediately.
+  response was lost, using the same payload. Reuse with a different payload
+  is rejected under the recommendation above. This does not authorize
+  automatic retry when the service is unavailable; new submissions still
+  fail immediately.
 
 Open: the gap between receiving a grant and reporting the launched process
 (a crash there leaves an ambiguous reservation); a lost `ReportStarted` or
@@ -638,6 +668,15 @@ states and constraints are illustrative. `NULL` means unknown or not
 applicable and must stay distinct from zero. No raw resource time series
 is stored.
 
+**User decision: STRICT tables.** All tables below use SQLite's
+[STRICT mode](https://www.sqlite.org/stricttables.html), requiring SQLite
+3.37.0 or later. Supported declared types are `INT`, `INTEGER`, `REAL`,
+`TEXT`, `BLOB` and `ANY`; there is no separate `JSON` type. STRICT permits
+lossless type coercion, so it does not mean that a numeric string is always
+rejected by an integer column. It does not replace `NOT NULL`, `CHECK`,
+enabled foreign keys or validation of JSON content. Exact business
+constraints and timestamp formats/units remain open.
+
 ```sql
 -- Illustrative only; not an approved schema.
 PRAGMA foreign_keys = ON;
@@ -653,14 +692,17 @@ CREATE TABLE jobs (
   forced             INTEGER NOT NULL DEFAULT 0,
   client_name        TEXT,
   client_version     TEXT,
+  client_os          TEXT,                -- proposed explicit client report
+  client_architecture TEXT,
   service_version    TEXT,
   queued_at          TEXT NOT NULL,
   admitted_at        TEXT,                -- NULL if never admitted
   started_at         TEXT,
   finished_at        TEXT,
   free_memory_at_admission_bytes INTEGER,
-  exit_code          INTEGER,             -- NULL when unknown
+  exit_code          INTEGER,             -- native code; NULL when unknown
   termination_signal INTEGER,
+  termination_signal_name TEXT,           -- POSIX only, when available
   -- Explicit client-supplied attribution only; NULL when not supplied.
   repository         TEXT,
   branch             TEXT,
@@ -670,14 +712,14 @@ CREATE TABLE jobs (
   commit_sha         TEXT,
   build_target       TEXT,
   build_configuration TEXT
-);
+) STRICT;
 
 CREATE TABLE job_tags (
   job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
   key    TEXT NOT NULL,
   value  TEXT NOT NULL,
   PRIMARY KEY (job_id, key)
-);
+) STRICT;
 
 -- Waiting jobs in strict FIFO order, including disconnect grace state.
 CREATE TABLE queue_entries (
@@ -686,7 +728,7 @@ CREATE TABLE queue_entries (
   disconnected          INTEGER NOT NULL DEFAULT 0,
   grace_elapsed_ms      INTEGER NOT NULL DEFAULT 0,
   grace_started_at      TEXT    -- NULL when connected; may be stale after a crash
-);
+) STRICT;
 
 -- Durable capacity reservation and start grant.
 CREATE TABLE reservations (
@@ -696,7 +738,7 @@ CREATE TABLE reservations (
   forced     INTEGER NOT NULL DEFAULT 0,
   granted_at TEXT NOT NULL,
   released_at TEXT                       -- NULL while capacity is held
-);
+) STRICT;
 
 -- Tracked processes for recovery and sampling.
 CREATE TABLE job_processes (
@@ -707,7 +749,7 @@ CREATE TABLE job_processes (
   first_seen_at  TEXT NOT NULL,
   last_seen_at   TEXT,
   PRIMARY KEY (job_id, pid, start_identity)
-);
+) STRICT;
 
 -- One summary per job.
 CREATE TABLE job_resource_summaries (
@@ -719,14 +761,70 @@ CREATE TABLE job_resource_summaries (
   sample_count              INTEGER NOT NULL DEFAULT 0,
   measurement_completeness  TEXT NOT NULL, -- e.g. complete, partial, unavailable
   incompleteness_reason     TEXT
-);
+) STRICT;
 
 -- Broker-wide state such as pause.
 CREATE TABLE broker_state (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
-);
+) STRICT;
 ```
+
+#### Recommendation: columns plus validated JSON extras
+
+**Recommendation, not a user decision.** Use dedicated columns for known
+fields used in filtering, reporting or lifecycle logic, plus a validated
+`metadata_json` object for extensible caller metadata. Store each field
+once: reserved fields belong in columns, not duplicated in the JSON extras.
+This does not change the explicit-only attribution decision.
+
+The illustration above currently uses **columns plus `job_tags`** instead.
+That is another hybrid: one row per extra string key/value. It makes
+cross-job tag searches and indexes straightforward, but adds joins and
+rows, and its `TEXT` values do not provide typed nested metadata. Columns
+provide explicit names and constraints and ordinary indexes, at the cost
+of migrations when the known field set changes. SQLite column types alone
+are not a substitute for validation.
+
+A JSON extras object keeps extensions together and reduces tag-table joins,
+but arbitrary-key queries need JSON extraction, and frequently queried keys
+may need expression indexes or promotion to columns. Valid JSON is not
+necessarily valid metadata: validate allowed keys, value types and size
+limits as well. The current protobuf map carries strings only; JSON storage
+does not authorize converting them into inferred numbers, booleans or nested
+objects. A richer typed wire format would be a separate proposal.
+
+One illustrative alternative adds the following column to `jobs`:
+
+```sql
+-- Alternative only; JSON extras would replace job_tags, not duplicate it.
+ALTER TABLE jobs ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'
+  CHECK (json_valid(metadata_json) AND json_type(metadata_json) = 'object');
+```
+
+This is not a migration plan: it does not move existing tag rows or remove
+`job_tags`. The SQL constraint checks JSON syntax and object shape only;
+the broker would still validate the metadata schema and string values.
+SQLite JSON-function availability, validation rules and indexes remain open.
+
+**Proposed wire-to-storage mapping:**
+
+| Input | Storage |
+|---|---|
+| `ClientInfo.name` and `.version` | `jobs.client_name` and `jobs.client_version`; absent values remain `NULL` |
+| Proposed `ClientInfo.os` and `.architecture` | `jobs.client_os` and `jobs.client_architecture`; explicit reports only |
+| Known `metadata` keys: `repository`, `branch`, `worklog`, `agent_session`, `purpose`, `commit_sha`, `build_target`, `build_configuration` | Corresponding `jobs` columns; absent keys remain `NULL` |
+| Other allowed `metadata` keys | JSON extras under the recommendation, or `job_tags` under the current illustration, but not both |
+| Broker version, lifecycle timestamps and admission measurements | Broker-populated columns, not client metadata |
+
+Reject caller metadata that attempts to override reserved client-info,
+command, outcome or broker-managed fields, rather than silently choosing
+between conflicting copies. Extract known attribution keys into their
+columns and exclude them from extras. Explicit empty strings and absent
+values need distinct validation semantics; do not infer missing attribution.
+Client name/version and all supplied attribution remain unauthenticated
+claims. Exact key names, reserved-key policy, storage choice and any later
+promotion of extras into columns still require agreement.
 
 Design notes:
 
@@ -770,7 +868,7 @@ Design notes:
   user-only, but the unauthenticated loopback API can still expose them.
 
 Open: exact states and transitions, schema migrations, required versus
-tag metadata, timestamps format, indexes, SQLite driver and settings
+tag metadata, timestamp formats/units, indexes, SQLite driver and settings
 (WAL, synchronous level), and broker-instance exclusion.
 
 ## Open decisions before implementation
