@@ -571,6 +571,28 @@ void main(List<String> arguments) {
       expect(await File(gate).exists(), isFalse);
     });
 
+    test('version reports the stamp without touching the gate', () async {
+      final unstamped = await Process.run(dart, [
+        runner,
+        '--version',
+      ], environment: environment());
+      expect(unstamped.exitCode, 0);
+      expect(
+        unstamped.stdout,
+        'heavy-lock unknown (unstamped development build)\n',
+      );
+
+      final stamped = await Process.run(dart, [
+        '-Dheavy_lock.version=1.0.7+0123456789ab',
+        '-Dheavy_lock.build=master build',
+        runner,
+        '--version',
+      ], environment: environment());
+      expect(stamped.exitCode, 0);
+      expect(stamped.stdout, 'heavy-lock 1.0.7+0123456789ab (master build)\n');
+      expect(await File(gate).exists(), isFalse);
+    });
+
     test('status CLI reads the configured directory as JSON', () async {
       final process = await start([], holder('status-cli'));
       addTearDown(() => process.kill());

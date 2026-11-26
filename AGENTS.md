@@ -4,9 +4,12 @@ This is a standalone Dart CLI plus an optional macOS Swift monitor.
 Follow [docs/development-lifecycle.md](docs/development-lifecycle.md).
 
 - Work only in the host-provided checkout/branch; preserve unrelated changes.
-- Runner code is in `lib/heavy_lock.dart`, status publication in
-  `lib/src/heavy_lock_status.dart`, entrypoints in `bin/`, and integration
-  tests in `test/`. The monitor is `tool/heavy_lock_monitor/`.
+- Shipped apps live in `apps/`: the runner in `apps/heavy-lock` (code in
+  `lib/heavy_lock.dart`, status publication in `lib/src/heavy_lock_status.dart`,
+  entrypoints in `bin/`, integration tests in `test/`) and the macOS monitor
+  in `apps/monitor-macos/`. `tool/dev.dart` (library and tests in `tool/`)
+  builds, tests and installs them; the root `pubspec.yaml` is a pub workspace.
+  Windows/Linux monitors are future targets: do not create empty projects.
 - Develop inside the Nix dev shell: `nix develop` (or `nix develop -c
   <command>`). It pins Dart via `flake.lock` and sets
   `HEAVY_LOCK_MONITOR_DART`; macOS Swift comes from Xcode. Keep `flake.nix`
@@ -19,15 +22,15 @@ Follow [docs/development-lifecycle.md](docs/development-lifecycle.md).
 - Prefix Dart instance members with `this.` as in the extracted runner.
   Reuse existing admission, process-tree and status mechanisms.
 - Full suites and compiles use `heavy-lock -- <command>`. If not installed,
-  bootstrap with `dart lib/heavy_lock.dart -- <command>` from this checkout.
+  bootstrap with `dart apps/heavy-lock/lib/heavy_lock.dart -- <command>`
+  from this checkout.
   Complete migration of all invokers first; do not mix old and current
   runners in actual workloads, including nested runs. Never run a different
   checkout's code or change machine settings to bypass contention. Analyzers,
   formatters and focused tests run directly.
-- Run `dart analyze`, formatter check, applicable `dart test` cases and
-  locked CLI compilation. For monitor changes, also run locked `swift test`
-  and `bash tool/heavy_lock_monitor/build.sh build` (outside the Nix shell,
-  set `HEAVY_LOCK_MONITOR_DART` to the absolute Dart executable).
+- Run `dart analyze`, formatter check, focused tests and locked
+  `dart tool/dev.dart check <app|all>` (build and tests; `check all` covers
+  the monitor on macOS). Keep `build` free of tests and `test` free of builds.
 - Tests may use temporary gates/settings only inside their isolated child
   processes; production heavy commands keep the shared defaults.
 - Do not remove shared lock files, kill runners with SIGKILL, suppress failed

@@ -22,10 +22,10 @@ void main() {
     root = '${temporary.path}/source checkout';
     home = '${temporary.path}/home';
     await Directory('$root/tool').create(recursive: true);
-    await Directory('$root/build').create(recursive: true);
+    await Directory('$root/build/heavy-lock').create(recursive: true);
     await Directory(home).create();
     for (final script in ['build.sh', 'install.sh']) {
-      await File('tool/$script').copy('$root/tool/$script');
+      await File('$script').copy('$root/tool/$script');
     }
     environment = {...Platform.environment, 'HOME': home};
   });
@@ -37,7 +37,7 @@ void main() {
   test(
     'installs to the default directory and replaces it on upgrade',
     () async {
-      final built = File('$root/build/heavy-lock');
+      final built = File('$root/build/heavy-lock/heavy-lock');
       await built.writeAsString('first binary');
       var result = await runScript('install.sh');
       expect(result.exitCode, 0, reason: '${result.stderr}');
@@ -70,7 +70,7 @@ void main() {
   }, skip: Platform.isWindows);
 
   test('rejects a directory at the installation target', () async {
-    await File('$root/build/heavy-lock').writeAsString('binary');
+    await File('$root/build/heavy-lock/heavy-lock').writeAsString('binary');
     final destination = Directory('${temporary.path}/destination');
     await Directory('${destination.path}/heavy-lock').create(recursive: true);
 
@@ -96,7 +96,7 @@ exit 23
     final chmod = await Process.run('chmod', ['+x', fakeInstall.path]);
     expect(chmod.exitCode, 0, reason: '${chmod.stderr}');
     environment['PATH'] = '${fakeBin.path}:${Platform.environment['PATH']}';
-    await File('$root/build/heavy-lock').writeAsString('new binary');
+    await File('$root/build/heavy-lock/heavy-lock').writeAsString('new binary');
     final destination = Directory('${temporary.path}/destination');
     await destination.create();
     final installed = File('${destination.path}/heavy-lock');
@@ -112,76 +112,29 @@ exit 23
     ]);
   }, skip: Platform.isWindows);
 
-  test('successful build replaces the artifact using the Nix shell', () async {
+  test('build.sh delegates to the orchestrator in the Nix shell', () async {
     final fakeBin = Directory('${temporary.path}/fake bin');
     await fakeBin.create();
     final nix = File('${fakeBin.path}/nix');
     await nix.writeAsString('''#!/bin/sh
 printf '%s\\n' "\$@" > "\$NIX_ARGUMENTS"
-for arg do last="\$arg"; done
-printf 'new binary' > "\$last"
+exit 9
 ''');
     final chmod = await Process.run('chmod', ['+x', nix.path]);
     expect(chmod.exitCode, 0, reason: '${chmod.stderr}');
     environment['PATH'] = '${fakeBin.path}:${Platform.environment['PATH']}';
     environment['NIX_ARGUMENTS'] = '${temporary.path}/nix-arguments';
-    final artifact = File('$root/build/heavy-lock');
-    await artifact.writeAsString('previous binary');
 
     final result = await runScript('build.sh');
-    expect(result.exitCode, 0, reason: '${result.stderr}');
-    expect(await artifact.readAsString(), 'new binary');
-    expect(
-      (await File(
-        environment['NIX_ARGUMENTS']!,
-      ).readAsLines()).take(8).toList(),
-      [
-        'develop',
-        root,
-        '-c',
-        'dart',
-        'compile',
-        'exe',
-        'lib/heavy_lock.dart',
-        '-o',
-      ],
-    );
-    expect(
-      await Directory('$root/build').list().map((entry) => entry.path).toList(),
-      [artifact.path],
-    );
+    expect(result.exitCode, 9);
+    expect(await File(environment['NIX_ARGUMENTS']!).readAsLines(), [
+      'develop',
+      root,
+      '-c',
+      'dart',
+      '$root/tool/dev.dart',
+      'build',
+      'heavy-lock',
+    ]);
   }, skip: Platform.isWindows);
-
-  test(
-    'build failure keeps the previous artifact and removes the partial file',
-    () async {
-      final fakeBin = Directory('${temporary.path}/fake bin');
-      await fakeBin.create();
-      final nix = File('${fakeBin.path}/nix');
-      await nix.writeAsString('''#!/bin/sh
-for arg do last="\$arg"; done
-printf partial > "\$last"
-exit 23
-''');
-      final chmod = await Process.run('chmod', ['+x', nix.path]);
-      expect(chmod.exitCode, 0, reason: '${chmod.stderr}');
-      environment['PATH'] = '${fakeBin.path}:${Platform.environment['PATH']}';
-      final artifact = File('$root/build/heavy-lock');
-      await artifact.writeAsString('previous binary');
-
-      final result = await runScript('build.sh');
-      expect(result.exitCode, isNot(0));
-      expect(result.stderr, isNotEmpty);
-      expect(result.stdout, isNot(contains('Built:')));
-      expect(await artifact.readAsString(), 'previous binary');
-      expect(
-        await Directory('$root/build')
-            .list()
-            .map((entry) => entry.path)
-            .toList(),
-        [artifact.path],
-      );
-    },
-    skip: Platform.isWindows,
-  );
 }

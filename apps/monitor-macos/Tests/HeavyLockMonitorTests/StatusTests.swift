@@ -556,8 +556,9 @@ final class StatusTests: XCTestCase {
         let release = directory.appendingPathComponent("release")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: dart)
-        process.currentDirectoryURL = root
-        process.arguments = [root.appendingPathComponent("bin/heavy_lock.dart").path,
+        let package = root.appendingPathComponent("apps/heavy-lock")
+        process.currentDirectoryURL = package
+        process.arguments = [package.appendingPathComponent("bin/heavy_lock.dart").path,
             "--worklog", "456", "--", "/bin/sh", "-c",
             "while [ ! -f \"$1\" ]; do sleep 0.1; done", "job", release.path]
         var env = ProcessInfo.processInfo.environment
