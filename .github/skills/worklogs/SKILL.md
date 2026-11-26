@@ -142,7 +142,7 @@ Write the body to a UTF-8 file and pass it with `--body-file`; never pipe it thr
 ## Workflow: continue a worklog
 
 1. Read the full body and labels.
-2. If it has an authorization record (an uncommented `Implementation authorized: <date> — "<words>"` line with a real date and quote; see `implementing-worklogs`) and its authorized scope is unfinished, use `implementing-worklogs` and resume from `Phase:`. That record does not grant push/PR/merge permission unless the user's words explicitly request those actions.
+2. If it has an authorization record (an uncommented `Implementation authorized: <date> — "<words>"` line with a real date and quote; see `implementing-worklogs`) and its authorized scope is unfinished, use `implementing-worklogs` and resume from `Phase:`. That record grants push/PR/merge permission only when the user's words request those actions; a quoted "implement/ship/merge/land #N" grants the whole `ship-worklog` loop (lifecycle step 5).
 3. Otherwise summarize the goal, completed items, blockers and next step, and keep the record current. Do not commit, push, open PRs or merge unless the user asks.
 
 ## Workflow: review the queue
@@ -192,7 +192,7 @@ A merged PR that references an open worklog may be partial work; read the worklo
 1. Read the body. Confirm the `Closing the Loop` checks and Manual checks are complete, or record why any were skipped. Unperformed required checks need the user's explicit acceptance of the remaining risk; never invent a result.
 2. Append a final Session Log entry: outcome, verification, PR and merge commit, follow-ups, lessons moved to skills or instructions. Set `Phase: done`.
 3. Set exactly one terminal status: `status:completed` or `status:cancelled`.
-4. Closing: close only when explicitly authorized and the agreed scope is complete, whether local-only or merged. Otherwise ask first.
+4. Closing: close only when explicitly authorized and the agreed scope is complete, whether local-only or merged. An "implement/ship/merge/land #N" request authorizes closing once its PR merges. Otherwise ask first.
 
    ```bash
    gh issue close <n> --comment "<short completion summary>"

@@ -45,4 +45,8 @@ Follow [docs/development-lifecycle.md](docs/development-lifecycle.md).
   global personal skills as part of repository work.
 - Commit only when requested. Do not push, open a PR, merge or modify another
   branch unless the user explicitly requests that action. Worklog creation
-  and implementation are separate permissions.
+  and implementation are separate permissions. Exception: "implement/ship/
+  merge/land #N" authorizes the full `ship-worklog` loop, including PR and
+  merge, under the
+  [lifecycle](docs/development-lifecycle.md) step 5 and its
+  [shipping criteria](docs/development-lifecycle.md#shipping-criteria).

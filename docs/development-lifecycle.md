@@ -25,16 +25,36 @@ the Swift v2 contract library and the `tool/` orchestrator.
    gate. UI changes need a focused macOS manual check when automation cannot
    establish the visible result. Review the diff for process lifetime,
    protocol compatibility, permission boundaries and error reporting.
-5. **Integrate with permission.** Commit, push, PR and merge are distinct
-   actions requiring the user's request. Implementing a worklog does not
-   silently authorize a push or merge. Respect explicit local-only requests
-   and host constraints; never switch/update the default branch outside
-   the provided workspace. Use required commit trailers when applicable.
+5. **Integrate.** "Implement #N", "ship #N", "merge #N" or "land #N"
+   (a worklog or its PR) authorizes the full `ship-worklog` loop: commit,
+   push, PR, gates, fixes, rebase, merge to `master` and close the worklog.
+   "Implement #N" continues through PR and merge. Use judgement on
+   approvals per that skill's approval criteria; it owns the loop. The
+   [shipping criteria](#shipping-criteria) below are this repository's
+   additional requirements. Other requests keep their scope. Respect
+   explicit local-only requests and host constraints; never switch/update
+   the default branch outside the provided workspace. Use required commit
+   trailers when applicable.
 6. **Close the loop.** Record actual results, commit/PR links, remaining
    risks and follow-ups in the worklog. Do not call local completion
-   "merged". Close only when its agreed scope is done and closing is
-   authorized. Required unperformed checks need explicit acceptance, not an
-   invented pass.
+   "merged". Close only when its agreed scope is done. Required unperformed
+   checks need explicit acceptance, not an invented pass.
+
+## Shipping criteria
+
+Repository gates and criteria for the `ship-worklog` loop, in addition to
+its own safety rules:
+
+- Heavy checks run through the shared gate,
+  `/Users/boumenot/.local/bin/heavy-lock -- <command>`; never unlocked.
+- `heavy-lock -- nix develop -c dart tool/dev.dart check <app|all>` passes
+  for every affected application, with analyzer and formatter clean (see
+  [Gates](#gates)).
+- When `apps/tuna`, its Go dependencies or `flake.nix` change:
+  `heavy-lock -- nix build .#tuna` and the race tests
+  `heavy-lock -- nix develop -c go -C apps/tuna test -race ./scheduler ./storage -count=1`.
+- The worklog records the checks run and not run, with their results.
+- The worklog has exactly one `status:*` label at every phase.
 
 ## Gates
 
