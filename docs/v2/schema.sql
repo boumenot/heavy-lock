@@ -402,6 +402,7 @@ CREATE TABLE job_resource_summaries (
   job_id                   TEXT    PRIMARY KEY REFERENCES jobs (id) ON DELETE CASCADE,
   elapsed_ms               INTEGER CHECK (elapsed_ms >= 0),
   cpu_time_ms              INTEGER CHECK (cpu_time_ms >= 0),
+  -- Peak interval CPU: 100% per logical CPU; may exceed 100%.
   peak_cpu_percent         REAL    CHECK (peak_cpu_percent >= 0),
   peak_combined_rss_bytes  INTEGER CHECK (peak_combined_rss_bytes >= 0),
   sample_count             INTEGER NOT NULL DEFAULT 0 CHECK (sample_count >= 0),

@@ -1395,8 +1395,8 @@ proven whole-job total.
 The assistant recommended this CPU-and-memory summary. Recording only
 elapsed time and peak memory would avoid CPU-accounting complexity but lose
 useful information about CPU consumption. The draft proposes combined RSS
-for memory; exact definitions, CPU normalization, elapsed interval, units,
-sampler and platform parity remain open. The estimates have limitations:
+for memory; the elapsed interval, remaining units, sampler and platform
+parity remain open. The estimates have limitations:
 
 - Five-second snapshots can miss short-lived children and transient peaks.
 - Summed RSS can double-count shared pages and differs from macOS footprint
@@ -1407,6 +1407,21 @@ sampler and platform parity remain open. The estimates have limitations:
 - Reparented processes and reused external daemons may be outside the
   tracked tree. Permission/enumeration failures must mark incompleteness,
   not become a success-shaped zero.
+
+**User decision: CPU percentage scale.** Use 100% for one fully occupied
+logical CPU, without dividing by the machine's CPU count or clamping at
+100%. For example, four fully occupied logical CPUs represent 400%. Peak
+CPU is the maximum observed interval value: observed process-tree CPU-time
+change divided by the actual monotonic sampling interval, times 100. The
+nominal sampling interval is five seconds; the result remains subject to
+the process-discovery and CPU-accounting limitations above. It does not
+change the separate live CPU-load admission check.
+
+The assistant recommended the per-core scale because it shows parallelism
+and lets similarly parallel jobs be compared across machines. Scaling by
+total machine capacity would show the fraction of that machine consumed,
+but the same four-CPU workload would display differently on machines with
+different CPU counts.
 
 **Recommendations.** Define measurement completeness and failure reasons
 alongside values, bound sampler overhead on large trees, and verify
@@ -2160,6 +2175,7 @@ message Outcome {
 message ResourceSummary {
   optional int64 elapsed_ms = 1;
   optional int64 cpu_time_ms = 2;
+  // Peak interval CPU: 100% per logical CPU; may exceed 100%.
   optional double peak_cpu_percent = 3;
   optional int64 peak_combined_rss_bytes = 4;
   uint32 sample_count = 5;
@@ -2970,6 +2986,7 @@ CREATE TABLE job_resource_summaries (
   job_id                   TEXT    PRIMARY KEY REFERENCES jobs (id) ON DELETE CASCADE,
   elapsed_ms               INTEGER CHECK (elapsed_ms >= 0),
   cpu_time_ms              INTEGER CHECK (cpu_time_ms >= 0),
+  -- Peak interval CPU: 100% per logical CPU; may exceed 100%.
   peak_cpu_percent         REAL    CHECK (peak_cpu_percent >= 0),
   peak_combined_rss_bytes  INTEGER CHECK (peak_combined_rss_bytes >= 0),
   sample_count             INTEGER NOT NULL DEFAULT 0 CHECK (sample_count >= 0),
@@ -3440,8 +3457,8 @@ current results from historical runs and list bounds and unchecked cases.
    routing/multiplexer, gRPC-Swift/runtime and code-generation versions, and
    gRPC-Gateway versus hand-written REST handlers. REST polling rather than
    event streaming is decided (section 6).
-8. Exact definitions of the chosen job metrics, CPU normalization, elapsed
-   interval, sampler choice, platform parity and overhead (section 7).
+8. Exact definitions of the chosen job metrics other than CPU normalization,
+   elapsed interval, sampler choice, platform parity and overhead (section 7).
 9. Command rendering and the payload-equivalence rule. Key-only
    tombstones after history deletion are a delegated decision
    (section 11.3).

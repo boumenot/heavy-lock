@@ -406,6 +406,7 @@ message Outcome {
 message ResourceSummary {
   optional int64 elapsed_ms = 1;
   optional int64 cpu_time_ms = 2;
+  // Peak interval CPU: 100% per logical CPU; may exceed 100%.
   optional double peak_cpu_percent = 3;
   optional int64 peak_combined_rss_bytes = 4;
   uint32 sample_count = 5;
