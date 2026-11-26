@@ -52,6 +52,7 @@ other row is an explicit user decision.
 | Area | Decision |
 |---|---|
 | Language and packaging | Go runner and broker; one executable with a service mode |
+| Initial platforms | macOS first; Linux and Windows are later targets |
 | APIs | gRPC for runner, Swift monitor and other clients; REST for `curl` |
 | Runner updates | Push over `WatchJob`, with a current-state snapshot on reconnect |
 | Transport | Both APIs share a fixed, configurable loopback TCP port; runner takes an explicit port argument |
@@ -102,6 +103,21 @@ monitor remains a separate Swift app, using gRPC. The v1 runner remains
 Dart until an explicitly planned migration. This choice does not replace
 the separately discussed build orchestrator.
 
+**User decision: platform rollout.** The first stable v2 release targets
+macOS; Linux and Windows are later targets, not prerequisites for that
+release. The existing v1 runner remains available on those other platforms
+until v2 supports them. Dates, minimum OS versions and architectures are
+not yet decided. This choice does not establish that the required macOS
+process-safety mechanisms have been implemented or verified.
+
+The assistant recommended supporting all three platforms before the first
+stable v2 release to preserve v1 platform parity, at the cost of more
+platform-specific implementation and testing before release. Starting with
+macOS and Linux, deferring only Windows, would be an intermediate option.
+The chosen macOS-first rollout narrows the initial verification effort and
+can ship sooner, while Linux and Windows remain on v1 longer and must still
+receive their own process-safety and durability validation before v2 support.
+
 **Alternatives and recommendations.** The assistant initially recommended
 retaining Dart to reuse the runner and avoid a rewrite. Dart isolates can
 run in parallel but communicate by messages rather than sharing memory.
@@ -124,8 +140,9 @@ adapters explicit and the scheduler independently testable.
 
 **Open.** The selected SQLite driver's version and validation, native-library
 needs for other dependencies, cross-compilation, binary distribution,
-supported OS versions, and runner/service version compatibility. No complete
-dependency set is selected here.
+supported macOS versions and architectures, later Linux and Windows release
+plans, and runner/service version compatibility. No complete dependency set
+is selected here.
 
 ## 2. Queue and admission policy
 
@@ -809,6 +826,9 @@ every supported platform:
   the reservation. Permissions errors and failed or partial enumeration
   are not proof of death.
 
+Only macOS is an initial stable v2 release target; Linux and Windows are
+later targets. The candidates for all three remain unverified.
+
 | Platform | Candidate mechanisms and unresolved limits |
 |---|---|
 | macOS | [kqueue `EVFILT_PROC`/`NOTE_EXIT`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html) can report a watched PID's exit; identity binding at registration, missed exits, restart and safe signalling still need verification. The existing runner's `ps`/freeze/snapshot approach is useful prior art, not proof against PID reuse, reparenting or incomplete scans. |
@@ -1426,6 +1446,10 @@ back from the broker to independent v1 locks: two scheduling authorities
 could admit conflicting work. Preserve nesting semantics so nested commands
 do not wait on themselves, but do not invent cross-version compatibility.
 Do not delete shared lock files to upgrade.
+
+The macOS-first v2 rollout leaves the existing v1 runner available on Linux
+and Windows until their v2 support is ready; it does not make mixed v1/v2
+admission on the same machine safe.
 
 **Open.** Major-version rollout, environment/nesting marker contract,
 whether the broker retains any OS-lock coordination, draining upgrades,
@@ -3392,8 +3416,9 @@ current results from historical runs and list bounds and unchecked cases.
     features and actual platform sync behavior, and measure `FULL`/macOS
     `fullfsync` commit latency. The driver and settings are decided, but
     their validation is pending.
-11. Go/protobuf tooling, distribution, supervision, supported platforms,
-    and monotonic launch-timeout reconstruction across broker restarts.
+11. Go/protobuf tooling, distribution, supervision, supported macOS versions
+    and architectures, later Linux/Windows release plans, and monotonic
+    launch-timeout reconstruction across broker restarts.
 12. Admission option compatibility and v1/nesting rollout; retry delay and
     CLI option spelling. No-wait, oversized weights and capacity fixed per
     broker run are delegated decisions (section 2).
