@@ -17,11 +17,15 @@ func TestPrototypeDispatch(t *testing.T) {
 		wantOutput string
 		wantError  string
 	}{
-		{name: "help", args: []string{"--help"}, code: 0, wantOutput: "Usage: tuna"},
+		{name: "help", args: []string{"--help"}, code: 0, wantOutput: "tuna <control>"},
 		{name: "short help", args: []string{"-h"}, code: 0, wantOutput: "Usage: tuna"},
 		{name: "missing command", code: 64, wantError: "Usage: tuna"},
 		{name: "empty command", args: []string{"--"}, code: 64, wantError: "Usage: tuna"},
-		{name: "service", args: []string{"service"}, code: 70, wantError: "tuna: service mode is not implemented"},
+		{name: "service bad port", args: []string{"service", "--port", "0"}, code: 64, wantError: "invalid service arguments"},
+		{name: "service extra", args: []string{"service", "x"}, code: 64, wantError: "invalid service arguments"},
+		{name: "service help", args: []string{"service", "--help"}, code: 0, wantOutput: "tuna service"},
+		{name: "control help", args: []string{"status", "--help"}, code: 0, wantOutput: "force-start"},
+		{name: "control usage", args: []string{"cancel"}, code: 64, wantError: "--job is required"},
 		{name: "runner", args: []string{"--port", "49783", "--", "echo", "hello"}, code: 70, wantError: "tuna: runner mode is not implemented"},
 	}
 

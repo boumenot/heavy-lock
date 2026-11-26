@@ -1,0 +1,220 @@
+// Package cli provides noninteractive control commands for the broker.
+package cli
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
+	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"github.com/boumenot/heavy-lock/apps/tuna/transport"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+)
+
+const Usage = "Controls: tuna <status|queue|jobs|job|pause|resume|reorder|cancel|force-start> [options]\n" +
+	"  --port PORT (default 49783), --json, --timeout DURATION (default 5s)\n" +
+	"  job/cancel/force-start: --job UUID; cancel: --reason TEXT\n" +
+	"  reorder: --job UUID and one of --front, --back, --before UUID, --after UUID\n" +
+	"  jobs: --page-size N, --page-token TOKEN (newest first)\n" +
+	"Controls never prompt. Cancel and force-start execute immediately.\n"
+
+// Run recognizes only controls, leaving runner/service dispatch to main.
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (int, bool) {
+	if len(args) == 0 {
+		return 0, false
+	}
+	command := args[0]
+	switch command {
+	case "status", "queue", "jobs", "job", "pause", "resume", "reorder", "cancel", "force-start":
+	default:
+		return 0, false
+	}
+	fail := func(code int, err error) (int, bool) {
+		if _, writeErr := fmt.Fprintln(stderr, "tuna:", err); writeErr != nil {
+			return 70, true
+		}
+		return code, true
+	}
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	port := fs.Int("port", transport.DefaultPort, "broker port")
+	jsonOutput := fs.Bool("json", false, "protobuf JSON")
+	timeout := fs.Duration("timeout", 5*time.Second, "total RPC deadline")
+	var job, before, after, reason, token string
+	var front, back bool
+	var pageSize uint
+	switch command {
+	case "job", "cancel", "force-start", "reorder":
+		fs.StringVar(&job, "job", "", "job UUID")
+	}
+	if command == "cancel" {
+		fs.StringVar(&reason, "reason", "", "cancellation reason")
+	}
+	if command == "reorder" {
+		fs.BoolVar(&front, "front", false, "move to front")
+		fs.BoolVar(&back, "back", false, "move to back")
+		fs.StringVar(&before, "before", "", "move before job")
+		fs.StringVar(&after, "after", "", "move after job")
+	}
+	if command == "jobs" {
+		fs.UintVar(&pageSize, "page-size", 50, "page size")
+		fs.StringVar(&token, "page-token", "", "page cursor")
+	}
+	if err := fs.Parse(args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			if _, err := io.WriteString(stdout, Usage); err != nil {
+				return 70, true
+			}
+			return 0, true
+		}
+		return fail(64, err)
+	}
+	if fs.NArg() != 0 || *port < 1 || *port > 65535 || *timeout <= 0 || pageSize > 500 {
+		return fail(64, fmt.Errorf("invalid arguments; use tuna %s --help", command))
+	}
+	if (command == "job" || command == "cancel" || command == "force-start" || command == "reorder") && job == "" {
+		return fail(64, fmt.Errorf("--job is required"))
+	}
+	if command == "reorder" {
+		targets := 0
+		for _, present := range []bool{front, back, before != "", after != ""} {
+			if present {
+				targets++
+			}
+		}
+		if targets != 1 {
+			return fail(64, fmt.Errorf("reorder needs exactly one target"))
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+	conn, err := grpc.NewClient("127.0.0.1:"+strconv.Itoa(*port), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fail(70, err)
+	}
+	defer conn.Close()
+	client := pb.NewControlServiceClient(conn)
+	health, err := client.GetHealth(ctx, &pb.GetHealthRequest{})
+	if err == nil {
+		err = contract.CheckService(health, 0)
+	}
+	if err != nil {
+		return fail(70, fmt.Errorf("broker unavailable or incompatible: %w", err))
+	}
+	var result proto.Message
+	switch command {
+	case "status":
+		result, err = client.GetStatus(ctx, &pb.GetStatusRequest{})
+	case "queue":
+		result, err = client.GetQueue(ctx, &pb.GetQueueRequest{})
+	case "jobs":
+		result, err = client.ListJobs(ctx, &pb.ListJobsRequest{PageSize: uint32(pageSize), PageToken: token})
+	case "job":
+		result, err = client.GetJob(ctx, &pb.GetJobRequest{JobId: job})
+	case "pause":
+		result, err = client.PauseQueue(ctx, &pb.PauseQueueRequest{})
+	case "resume":
+		result, err = client.ResumeQueue(ctx, &pb.ResumeQueueRequest{})
+	case "cancel":
+		req := &pb.CancelJobRequest{JobId: job}
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "reason" {
+				req.Reason = &reason
+			}
+		})
+		result, err = client.CancelJob(ctx, req)
+	case "force-start":
+		result, err = client.ForceStartJob(ctx, &pb.ForceStartJobRequest{JobId: job})
+	case "reorder":
+		req := &pb.MoveJobRequest{JobId: job}
+		switch {
+		case front:
+			req.Target = &pb.MoveJobRequest_ToFront{ToFront: true}
+		case back:
+			req.Target = &pb.MoveJobRequest_ToBack{ToBack: true}
+		case before != "":
+			req.Target = &pb.MoveJobRequest_BeforeJobId{BeforeJobId: before}
+		case after != "":
+			req.Target = &pb.MoveJobRequest_AfterJobId{AfterJobId: after}
+		}
+		result, err = client.MoveJob(ctx, req)
+	}
+	if err != nil {
+		s := status.Convert(contract.NormalizeError(err))
+		for _, detail := range s.Details() {
+			if info, ok := detail.(*errdetails.ErrorInfo); ok {
+				return fail(70, fmt.Errorf("%s/%s: %s", s.Code(), info.Reason, s.Message()))
+			}
+		}
+		return fail(70, err)
+	}
+	if result == nil || !result.ProtoReflect().IsValid() {
+		return fail(70, fmt.Errorf("broker returned an empty response"))
+	}
+	if *jsonOutput {
+		data, err := (protojson.MarshalOptions{EmitUnpopulated: true}).Marshal(result)
+		if err != nil {
+			return fail(70, err)
+		}
+		if _, err := fmt.Fprintln(stdout, string(data)); err != nil {
+			return fail(70, err)
+		}
+	} else if err := printResult(stdout, result); err != nil {
+		return fail(70, err)
+	}
+	return 0, true
+}
+
+func printJob(w io.Writer, job *pb.Job) error {
+	forced := ""
+	if job.Forced {
+		forced = " FORCED"
+	}
+	_, err := fmt.Fprintf(w, "%s %s weight=%d%s command=%q blocked=%s\n", job.JobId,
+		strings.TrimPrefix(job.State.String(), "JOB_STATE_"), job.Weight, forced, job.Command,
+		strings.TrimPrefix(job.BlockedReason.String(), "BLOCKED_REASON_"))
+	return err
+}
+
+func printResult(w io.Writer, result proto.Message) error {
+	switch value := result.(type) {
+	case *pb.Job:
+		return printJob(w, value)
+	case *pb.Queue:
+		if _, err := fmt.Fprintf(w, "Queue: %d jobs; head blocked=%s\n", len(value.Jobs), value.HeadBlockedReason); err != nil {
+			return err
+		}
+		for _, job := range value.Jobs {
+			if err := printJob(w, job); err != nil {
+				return err
+			}
+		}
+	case *pb.ListJobsResponse:
+		for _, job := range value.Jobs {
+			if err := printJob(w, job); err != nil {
+				return err
+			}
+		}
+		if value.NextPageToken != "" {
+			_, err := fmt.Fprintln(w, "Next page token:", value.NextPageToken)
+			return err
+		}
+	case *pb.BrokerStatus:
+		_, err := fmt.Fprintf(w, "Capacity: %d; occupied: %d; queued: %d; running: %d; paused: %t; recovering: %t; storage unavailable: %t\n",
+			value.Capacity, value.Occupied, value.QueuedJobs, value.RunningJobs, value.Paused, value.Recovering, value.StorageUnavailable)
+		return err
+	default:
+		return fmt.Errorf("unsupported response %T", result)
+	}
+	return nil
+}

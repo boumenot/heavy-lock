@@ -372,19 +372,85 @@ update`, then rerun all gates.
 
 The [v2 implementation plan](docs/v2-implementation-plan.md) is in progress.
 `apps/tuna` holds the single Go executable for the planned job-runner and
-`tuna service` broker modes. It currently only prints help or explicit
-not-implemented errors (exit 70) and never launches a command, so continue
-using the v1 `heavy-lock` runner for all workloads. The v2 target is macOS
+`tuna service` broker modes. `tuna service` and the control CLI work; runner
+mode still prints an explicit not-implemented error (exit 70) and never
+launches a command, so continue using the v1 `heavy-lock` runner for all
+workloads. The v2 target is macOS
 26+ on Apple Silicon, exercised on macOS 26.7.3/arm64 with Xcode 27.2
 (Swift 6.4.2), Go 1.27.3 and `protoc` 36.2.
 
-The v2 transport package can serve a fake broker on one IPv4 loopback port
-using plaintext gRPC and REST, but `tuna service` does not start it yet.
+`tuna service [--port 49783] [--data-dir DIR] [--event-max-age 24h]
+[--event-max-count 100000]` takes the per-user singleton lock
+(`broker.lock`, never unlinked) and opens `broker.db` in the data directory
+(default `~/Library/Application Support/heavy-lock/v2`), then serves control
+gRPC and unary REST on one IPv4 loopback port using plaintext HTTP/2 and
+HTTP/1.1. It logs `ready on 127.0.0.1:PORT` once admission is open and stops
+cleanly on SIGINT/SIGTERM. A second broker fails on the lock even with a
+different port and exits 75 (EX_TEMPFAIL; the design leaves the code
+unspecified); a port conflict exits 70. Runner RPCs return `UNIMPLEMENTED`
+until the runner (#13) is composed into the same broker. Login startup and
+crash restart (#17) are not provided.
 The runner requires an explicit `--port`. Service identity, REST/CORS and
 submission equivalence are specified in the
 [v2 design](docs/v2-design.md#6-apis-port-and-local-access-risks).
 Both APIs are unauthenticated; any local process, and potentially any web
 page permitted by the browser, can access exposed data and controls.
+
+The control domain uses the same scheduler and SQLite store as the runner,
+not a REST-specific queue. The service default is port 49783; a bind conflict
+is an error, never an automatic port change. It binds `127.0.0.1` only.
+Host/HTTP authority checks accept that loopback listener or `localhost`;
+these checks, loopback binding, CORS and private storage are **not
+authentication**. Other local users/processes can read commands, arguments,
+attribution and retained history, submit jobs through gRPC once runner RPCs
+are served, and invoke
+destructive controls. Any browser origin may read/control REST when the
+browser permits local-network access. There are no tokens or API prompts.
+REST responds with `Access-Control-Allow-Origin: *` (no credentials), permits
+route-supported methods and the `Accept`/`Content-Type` headers in preflight,
+and acknowledges supported private-network preflights; browser permission
+and local-network restrictions still apply and are not bypassed.
+
+Control commands:
+
+```bash
+tuna status --port 49783
+tuna queue --json
+tuna jobs --page-size 50                    # newest-first history and live jobs
+tuna jobs --page-token TOKEN                # next page, with unchanged filters
+tuna job --job JOB_UUID
+tuna pause
+tuna resume
+tuna reorder --job JOB_UUID --front         # or --back/--before UUID/--after UUID
+tuna cancel --job JOB_UUID --reason 'stop'
+tuna force-start --job JOB_UUID
+```
+
+Controls default to port 49783 and a total five-second RPC deadline
+(`--timeout 10s` overrides it); runners still require an explicit port.
+`--json` emits protobuf JSON including default fields; human output labels
+forced jobs `FORCED`. Usage errors exit 64, failed/unavailable/incompatible
+RPCs or output failures exit 70, successful controls exit 0. Error output
+includes the gRPC code and stable reason. All CLI controls execute without
+confirmation, including cancel and force-start; monitor confirmations
+remain the monitor's responsibility.
+
+Unary REST routes are `/v1/health`, `/v1/status`, `/v1/queue`, `/v1/jobs`,
+`/v1/jobs/{job_id}` and `/v1/submissions/{idempotency_key}` for inspection;
+POST `/v1/queue/pause`, `/v1/queue/resume`,
+`/v1/jobs/{job_id}/move`, `/cancel` and `/force-start` invoke controls.
+DELETE `/v1/jobs/{job_id}` and `/v1/history?finishedBeforeUnixNs=...`
+delete safe terminal history. Responses use protobuf JSON; errors use
+`google.rpc.Status` JSON with the same code/message/details as gRPC.
+REST is unary/polling only, not an event or runner-lifecycle endpoint.
+
+gRPC `WatchEvents` starts from an atomic snapshot/cursor at sequence 0;
+reconnects resume after the last processed sequence. The service maintains
+separate bounded replay (initial 24 hours/100,000 events, configurable via
+the control options); job history is retained indefinitely until explicitly
+deleted. `OUT_OF_RANGE / EVENTS_EXPIRED` means discard the cursor and refresh
+with sequence 0, including after pruning/history deletion or a replaced
+database. Replayed events are past state, not evidence of a live broker.
 
 Bindings for the canonical contract, [docs/v2/heavylock.proto](docs/v2/heavylock.proto),
 are generated and committed; do not edit them by hand:

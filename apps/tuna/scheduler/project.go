@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"math"
+	"time"
 
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
@@ -27,6 +28,9 @@ func (s *Scheduler) project(ready bool) func(*storage.Reader, *pb.BrokerEvent) e
 func (s *Scheduler) projectJob(r *storage.Reader, j *pb.Job) error {
 	j.GraceRemainingMs = nil
 	j.BlockedReason = pb.BlockedReason_BLOCKED_REASON_UNSPECIFIED
+	if j.Grant != nil {
+		j.Grant.LaunchTimeoutMs = LaunchTimeout.Milliseconds()
+	}
 	if j.State != pb.JobState_JOB_STATE_QUEUED {
 		return nil
 	}
@@ -95,11 +99,24 @@ func (s *Scheduler) projectStatus(r *storage.Reader, st *pb.BrokerStatus, ready 
 // Snapshot reads a consistent, policy-projected view of status, queue and
 // active jobs.
 func (s *Scheduler) Snapshot(ctx context.Context) (*pb.BrokerSnapshot, error) {
+	event, err := s.SnapshotEvent(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return event.GetSnapshot(), nil
+}
+
+// SnapshotEvent captures the replay cursor in the same transaction as state.
+func (s *Scheduler) SnapshotEvent(ctx context.Context) (*pb.BrokerEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snapshot := &pb.BrokerSnapshot{}
+	event := &pb.BrokerEvent{AtUnixNs: time.Now().UnixNano(), Event: &pb.BrokerEvent_Snapshot{Snapshot: snapshot}}
 	err := s.store.View(ctx, func(r *storage.Reader) error {
 		var err error
+		if event.EventSeq, err = r.EventSequence(); err != nil {
+			return err
+		}
 		if snapshot.Status, err = r.Status(); err != nil {
 			return err
 		}
@@ -114,7 +131,7 @@ func (s *Scheduler) Snapshot(ctx context.Context) (*pb.BrokerSnapshot, error) {
 		}
 		return s.projectQueue(r, snapshot.Queue, s.ready)
 	})
-	return snapshot, err
+	return event, err
 }
 
 // Job reads one policy-projected job.
