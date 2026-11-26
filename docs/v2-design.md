@@ -58,7 +58,7 @@ users' jobs or machines.
 | SQLite journal | WAL with `synchronous = FULL` everywhere and `fullfsync = ON` on macOS; measure commit latency |
 | SQLite driver | Start with `modernc.org/sqlite`; pin and validate a version before implementation relies on it |
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
-| Running-job cancellation | Explicit cancel: runner terminates first; broker may fall back on verified process identity if the runner is unavailable; reservation held until release checks pass; fallback trigger open |
+| Running-job cancellation | Explicit cancel: runner terminates first; broker falls back on verified process identity after a configurable runner response timeout or verified runner death; timeout is not proof of death/exit; reservation held until release checks pass; timeout duration and live-runner coordination open |
 | Timestamp encoding | UTC Unix nanoseconds in signed `int64` on the wire and SQLite `INTEGER`; supersedes microseconds |
 | Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes and API parity; see [section 11](#11-interface-and-schema-design) |
 | Initial timers | Configurable: 30 s queued-disconnect grace, 5 s broker-to-runner heartbeat, 30 s launch investigation from reservation commit |
@@ -172,9 +172,12 @@ time and any supplied actor/reason. Audit details require agreement;
 claimed actors are not authenticated.
 
 **User decision: cancelling a running job.** On an explicit cancel request,
-the runner attempts termination first. If the runner is unavailable, the
-broker may fall back to terminating the job itself, but only against
-verified process identities (root and known descendants). The reservation
+the runner attempts termination first. The broker may fall back to
+terminating the job itself after a configurable runner response timeout
+expires or after verified runner death, but only against verified process
+identities (root and known descendants). An expired timeout is only a
+trigger for the fallback attempt: it does not prove runner death or process
+exit and does not authorize release. The reservation
 stays held until the already-approved release checks pass (section 5); an
 accepted cancel request, a termination attempt or a disconnect is not proof
 of exit. Cancellation is never triggered automatically by runner death or
@@ -193,14 +196,32 @@ Alternatives considered:
   progress when the runner is gone. It introduces two possible terminators,
   so attempts must be coordinated: the broker must not signal an identity it
   cannot verify, must tolerate a runner that was only disconnected and is
-  still terminating, and must not treat its own attempt or a disconnect as
-  death. Both paths are limited by best-effort descendant tracking, so an
+  still terminating, and must not treat its own attempt, an expired timeout or a
+  disconnect as death. Both paths are limited by best-effort descendant tracking, so an
   untracked descendant can survive either one.
 
-Still open: what counts as the runner being "unavailable" and when the
-broker falls back (no fallback trigger is selected), how the two attempts
-are serialized or deduplicated, platform termination mechanisms and
-escalation, and how a fallback result is recorded as the outcome.
+Fallback triggers considered (user chose timeout or verified death):
+- **Verified runner death only.** Safest against a duplicate terminator,
+  since the broker acts only once the runner cannot act. But a hung,
+  partitioned or unverifiable runner leaves the cancel unfulfilled and
+  capacity occupied indefinitely, because a disconnect is not death.
+- **Explicit operator takeover.** A human decides when the broker steps in,
+  avoiding a timer guess, but cancellation then needs a second action and
+  stalls unattended.
+- **Runner response timeout or verified death (chosen).** Cancellation
+  progresses without a human when the runner is slow, hung or unreachable,
+  improving availability. The cost is that the timeout can expire while the
+  runner is alive and still terminating, so both may signal the same tree
+  concurrently, and the broker may act on a runner that would have reported
+  shortly. Termination signals are idempotent in intent, but the
+  interleaving with the runner's freeze/signal/escalate sequence, and PID
+  reuse between verification and signalling, must be handled. A too-short
+  timeout increases overlap; a too-long one delays cancellation.
+
+Still open: the timeout duration and what response resets or satisfies it,
+coordination or fencing of a runner that is still live when the broker
+falls back, platform termination mechanisms and escalation, and how a
+fallback result is recorded as the outcome.
 
 **Proposals for other controls.** Reorder waiting jobs only, visibly and
 with an audit entry. Cancel a waiting job by removing it and returning a
@@ -211,8 +232,8 @@ Untracked descendants are an explicitly accepted exception to complete tree
 verification (section 5).
 
 **Open.** Confirmation for other destructive actions, exit/status codes,
-concurrent cancel/reorder/admit races, the broker-fallback trigger and
-coordination, audit persistence, and whether pause survives a broker restart.
+concurrent cancel/reorder/admit races, the cancel-response timeout
+duration, coordination with a still-live runner, audit persistence, and whether pause survives a broker restart.
 
 ## 4. Runner and service lifecycle
 
@@ -996,9 +1017,11 @@ service ControlService {
   // Cancel a queued job (removes it from the queue and finishes it as
   // CANCELLED_BEFORE_START). For a reserved or running job, record the
   // request and push CancelRequested to the runner, which attempts
-  // termination first. If the runner is unavailable, the broker may fall
-  // back to terminating verified process identities; the trigger and
-  // coordination are not yet specified. A granted command may already be
+  // termination first. After a configurable runner response timeout or
+  // verified runner death, the broker may fall back to terminating verified
+  // process identities. An expired timeout proves neither runner death nor
+  // process exit; the duration and coordination with a still-live runner
+  // are not yet specified. A granted command may already be
   // running, so neither the request, a termination attempt nor a report
   // alone releases its reservation; the approved release checks still apply.
   // Runner death or disconnection never cancels a job automatically.
@@ -2088,8 +2111,9 @@ current results from historical runs and list bounds and unchecked cases.
 
 1. Confirmation and audit semantics for other controls; concurrent control
    races. Running-job cancellation is runner-first with verified-identity
-   broker fallback; the fallback trigger, coordination of attempts and
-   platform termination mechanisms remain open.
+   broker fallback after a configurable response timeout or verified runner
+   death; the timeout duration, coordination/fencing of a still-live runner
+   and platform termination mechanisms remain open.
 2. Concrete defaults still proposed or unset:
    - event retention (proposed 24 hours or 100,000 events)
    - page size (proposed 50, maximum 500)
@@ -2101,8 +2125,8 @@ current results from historical runs and list bounds and unchecked cases.
 4. Definition of successful queued rejoin, identity checks and checkpoint
    precision across repeated broker restarts; expiry/reconnect serialization
    and grace reset are decided.
-5. How to detect actual runner death and when an explicitly requested
-   cancellation falls back to the broker; a disconnect alone is not death.
+5. How to detect actual runner death; a disconnect or an expired cancel
+   response timeout alone is not death.
 6. Singleton-lock path, OS primitives and filesystem support; descendant and
    reparented-process discovery; precision and boot identity for process IDs;
    database-failure detection, explicit error mapping and repair workflows.
