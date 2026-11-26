@@ -217,6 +217,7 @@ service ControlService {
   rpc CancelJob(CancelJobRequest) returns (Job);
 
   // Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+  // The monitor does not require confirmation for reordering.
   rpc MoveJob(MoveJobRequest) returns (Queue);
 
   // Admit a waiting job immediately, bypassing queue order, backfill limits
@@ -229,6 +230,7 @@ service ControlService {
 
   // Pause and resume commit durably before acknowledgement. Pause survives
   // broker restarts until an explicit resume; it does not revoke reservations.
+  // The monitor does not require confirmation for pause or resume.
   rpc PauseQueue(PauseQueueRequest) returns (BrokerStatus);
   rpc ResumeQueue(ResumeQueueRequest) returns (BrokerStatus);
 

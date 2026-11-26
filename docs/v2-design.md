@@ -77,6 +77,7 @@ other row is an explicit user decision.
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
 | Blocked cancel takeover | On deadline expiry with a live runner blocking safe coordination, broker tries to terminate that verified runner; takes over only after its exact incarnation is verified dead and coordination is safe; otherwise waits holding the reservation. Explicit cancel only; the broker never kills a runner for runner-death cleanup |
 | Cancel confirmation | Monitor confirms every cancel (queued, reserved or running); direct API clients get no prompt |
+| Routine monitor controls | Pause, resume and reorder do not require confirmation |
 | Control activity log | No separate long-term log; retain required job state and bounded replay events |
 | Running-job cancellation | Explicit cancel: runner first; immediately force-stop verified job processes (no graceful phase; supersedes graceful-then-force); broker may take over on verified identities after acknowledgment/completion deadline expiry or verified runner death; expiry is not release evidence |
 | Timestamp encoding | UTC Unix nanoseconds in signed `int64` on the wire and SQLite `INTEGER`; supersedes microseconds |
@@ -453,6 +454,15 @@ The assistant recommended omitting a separate log for this local setup.
 Such a log could help reconstruct older actions but adds storage, retention
 and deletion complexity. With unauthenticated APIs, a supplied caller name
 would be a declaration, not proof of who acted.
+
+**User decision: routine control confirmations.** The monitor sends pause,
+resume and reorder requests without an extra confirmation. Cancellation and
+force-start retain their separately approved confirmations.
+
+The assistant recommended no extra prompts for these routine controls to
+keep them quick to use. Confirming each would reduce accidental changes but
+add friction. An accidental resume can admit queued jobs immediately, and
+reordering can change which job starts next.
 
 **User decision: confirm every cancellation in the monitor.** The monitor
 must ask the user to confirm before sending any cancel request, whether the
@@ -892,10 +902,8 @@ platform mechanisms are not.
 Untracked descendants are an explicitly accepted exception to complete tree
 verification (section 5).
 
-**Open.** Confirmation for other supported monitor controls (cancellation and
-force-start are decided; history deletion is not a monitor control), other
-exit/status codes, concurrent cancel/reorder/admit races, detection of
-blocking coordination and runner-kill mechanisms for takeover.
+**Open.** Other exit/status codes, concurrent cancel/reorder/admit races,
+detection of blocking coordination and runner-kill mechanisms for takeover.
 
 ## 4. Runner and service lifecycle
 
@@ -2071,6 +2079,7 @@ service ControlService {
   rpc CancelJob(CancelJobRequest) returns (Job);
 
   // Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+  // The monitor does not require confirmation for reordering.
   rpc MoveJob(MoveJobRequest) returns (Queue);
 
   // Admit a waiting job immediately, bypassing queue order, backfill limits
@@ -2083,6 +2092,7 @@ service ControlService {
 
   // Pause and resume commit durably before acknowledgement. Pause survives
   // broker restarts until an explicit resume; it does not revoke reservations.
+  // The monitor does not require confirmation for pause or resume.
   rpc PauseQueue(PauseQueueRequest) returns (BrokerStatus);
   rpc ResumeQueue(ResumeQueueRequest) returns (BrokerStatus);
 
@@ -3517,9 +3527,9 @@ current results from historical runs and list bounds and unchecked cases.
 
 ## Remaining design and verification work
 
-1. Confirmation for other monitor controls; concurrent control races. History
-   deletion is not a monitor control, and no separate long-term control log
-   is required. Running-job cancellation is runner-first with
+1. Concurrent control races. History deletion is not a monitor control,
+   pause/resume/reorder need no confirmation, and no separate long-term
+   control log is required. Running-job cancellation is runner-first with
    verified-identity broker fallback after acknowledgment/completion deadline
    expiry or verified runner death. Starting defaults are 5 s acknowledgment
    and 30 s completion after acknowledgment; termination force-stops
