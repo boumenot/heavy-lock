@@ -365,6 +365,12 @@ Monitor integration takes a plain Dart path, not FVM.
 - **SDK mismatch:** use a newer compatible SDK for development dependencies;
   installed compiled binaries are independent of SDK upgrades.
 
+## Design
+
+Current behavior is documented in [technical decisions](docs/technical-decisions.md).
+The [v2 design and decision record](docs/v2-design.md) captures future
+choices, tradeoffs, recommendations and open questions; v2 is not implemented.
+
 ## License
 
 [MIT](LICENSE).

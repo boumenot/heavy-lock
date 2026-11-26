@@ -1,0 +1,465 @@
+# Heavy-lock v2 design and decision record
+
+Status: **design only; implementation is not authorized by this document**.
+This record captures the design discussion through 2026-11-25, including
+the user's choices, alternatives, assistant recommendations and unresolved
+questions. It supersedes the earlier exploratory v2 draft, not the
+[current technical decisions](technical-decisions.md) or
+[development lifecycle](development-lifecycle.md).
+
+**User decision** means an explicitly chosen direction recorded in the
+discussion. **Recommendation** means assistant advice, not approval.
+**Proposal** means a concrete behavior still needing agreement.
+**Open** means no final choice has been made. Historical recommendations
+are retained below for their rationale, not as active policy.
+
+No v2 code, Go toolchain migration, deployment, protocol change or machine
+configuration is part of this documentation work. The user authorized
+committing this document locally; push, PR, merge and issue changes are
+separate permissions.
+
+## Purpose and current baseline
+
+The current Dart runner coordinates through OS file locks, publishes
+best-effort version-1 status records, and has a read-only Swift macOS
+monitor. OS lock wake-up order is not a FIFO guarantee. The monitor cannot
+cancel, reorder, pause admissions or force-start work. Its recent history
+is observation-only, in memory, without command exit codes.
+
+The v2 goals are an explicit queue, monitor controls, persistent per-job
+resource summaries in SQLite, explicit client attribution, and stable
+runner and monitor APIs. The initial idea also included predicting safe
+concurrency from resource history; the user subsequently chose
+weight-based scheduling for v2 instead. History collection remains in scope.
+
+The broker owns scheduling; the monitor is a client, not the service.
+Jobs remain local to a machine. Per-user queues do not coordinate separate
+users' jobs or machines.
+
+## Current choices at a glance
+
+| Area | User decision |
+|---|---|
+| Language and packaging | Go runner and broker; one executable with a service mode |
+| APIs | gRPC runner-to-broker; REST for monitor and `curl` |
+| Transport | Both APIs share a fixed, configurable loopback TCP port; runner takes an explicit port argument |
+| Access | No API authentication; no remote access |
+| Service | One independently supervised broker per OS user, automatically restarted after a crash |
+| Admission | Strict FIFO, with explicit manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
+| Pause | Pause new admissions only; running jobs continue |
+| Force-start | Bypass resource checks, with confirmation in the monitor |
+| New submission while service unavailable | Fail immediately and clearly; do not auto-start, retry until restart, or run unscheduled |
+| Recovery | SQLite persists queue and active state; reconcile verified live jobs and occupied slots before admitting new work |
+| Queued-runner disconnect | Preserve place during a grace period, then remove if still disconnected; service downtime does not count |
+| Job history | Sample every five seconds, retain summaries rather than raw timestamped samples, keep indefinitely until explicitly deleted |
+| Command and outcome | Full command plus arguments as a human-readable string; exit code |
+| Attribution | Only explicit client-supplied values; missing stays unknown |
+| Scheduling from history | Not in v2 |
+| Service telemetry library | Deferred; job sampling and SQLite summaries are not deferred |
+
+The detailed sections qualify these decisions. An unresolved detail is not
+silently settled by the table.
+
+## 1. Language, packaging and ownership
+
+**User decision.** Implement the v2 runner and broker in **Go** and ship
+them as **one executable**, with a service mode. The existing macOS
+monitor remains a separate Swift app, using REST. The v1 runner remains
+Dart until an explicitly planned migration. This choice does not replace
+the separately discussed build orchestrator.
+
+**Alternatives and recommendations.** The assistant initially recommended
+retaining Dart to reuse the runner and avoid a rewrite. Dart isolates can
+run in parallel but communicate by messages rather than sharing memory.
+Go was later recommended as the strongest alternative for a long-lived
+concurrent service, with mature gRPC/protobuf tooling and straightforward
+goroutine-based coordination. The user chose Go. Rust was considered for
+its safety and control, at the cost of more implementation complexity.
+The Go choice entails dependencies and a port of process-lifetime behavior;
+it does not prove that cancellation or cross-platform support is solved.
+
+One executable avoids runner/service packaging drift and simplifies
+installation; separate binaries would permit independent deployment but
+add version and installation coordination. One file does not eliminate
+mixed-version clients already running during an upgrade.
+
+**Recommendation.** Add Go and Protocol Buffers generation tooling to the
+Nix development environment when implementation starts. Use the Go gRPC
+and protobuf libraries with generated bindings. Keep platform process
+adapters explicit and the scheduler independently testable.
+
+**Open.** SQLite driver selection, native-library/CGO requirements,
+cross-compilation, binary distribution, supported OS versions, and
+runner/service version compatibility. No driver or dependency set is
+selected here.
+
+## 2. Queue and admission policy
+
+**User decision.** Maintain a durable queue in arrival order and admit in
+**strict FIFO** order. If the head cannot fit, later jobs wait even if they
+could fit. Admit multiple jobs concurrently when capacity allows, in queue
+order. Manual reorder changes that order; force-start is an explicit
+exception. The scheduler does not automatically backfill.
+
+**User decision.** Use weight-based slots rather than history-based
+predictions. Retain the current live free-memory, CPU-load and settling
+checks when admitting work alongside another job. A job running alone is
+exempt from those sharing checks. These are admission heuristics, not
+CPU/memory caps or continuous enforcement.
+
+The current defaults are capacity
+`min(processors ~/ 3, totalMemoryGiB ~/ 4)`, clamped to 2-8, with 25% free
+memory, at most 50% CPU load, and 60 seconds since the previous admission
+for sharing. See the [current behavior](../README.md#capacity-resources-and-priority).
+Exact v2 option names, numeric-weight normalization and capacity
+reconfiguration semantics still need a contract; this document does not
+invent replacements for the current settings.
+
+**Historical recommendation, not selected.** Bounded backfill would let
+small jobs use spare capacity while a large head waits, with limits to
+prevent starvation. It improves utilization but complicates fairness and
+makes queue position less predictive. Strict FIFO favors predictability
+and explainability at the cost of head-of-line blocking and idle capacity.
+
+**Recommendation.** Present the actual queue order, blocked-head reason,
+slot accounting and manual exceptions consistently in all clients.
+Use a single serialized scheduling authority and transactional transitions.
+
+**Open.** Priorities or reservations, if ever added, and their interaction
+with FIFO; oversized requests; capacity changes while jobs are active;
+and precise semantics of a no-wait submission. These are not approved
+v2 features.
+
+## 3. Monitor controls
+
+**User-requested controls.** Cancel, move to back, move to front, pause and
+force-start. The broker decides and applies transitions; the monitor sends
+requests. Control state must not depend on the monitor staying alive.
+
+**User decision: queue-only pause.** Stop new normal admissions while
+running jobs continue. This is not suspension of running processes.
+Resuming restores normal queue admission.
+
+**Open: pause versus force-start.** The earlier draft said pause also
+blocks force-start until resumed. That interaction was not separately
+chosen by the user. Blocking all starts is a reasonable **proposal** for
+a predictable pause; allowing a confirmed manual exception is another
+reasonable interpretation. Do not implement either as settled policy.
+
+**User decision: force-start.** Permit a manual start out of FIFO order,
+bypassing normal resource-admission checks, including capacity,
+free-memory, CPU-load and settling checks. The monitor must confirm before
+sending this request; direct API clients have no monitor prompt. This can
+overload the machine and is not a safety guarantee.
+
+**Recommendations.** Count forced jobs in occupied capacity so later
+normal admissions see the overload. Mark them visibly and record the
+request, time and any supplied actor/reason. Force-start should bypass
+resource policy, not unresolved recovery, process identity or durable-state
+safety checks. These details require agreement; claimed actors are not
+authenticated.
+
+**Proposals for other controls.** Reorder waiting jobs only, visibly and
+with an audit entry. Cancel a waiting job by removing it and returning a
+distinct runner outcome. For running jobs, preserve the current
+process-tree termination approach: freeze/snapshot on POSIX, signal,
+resume appropriately, allow a grace interval and only then escalate.
+Hold capacity until cleanup or verified reconciliation establishes that
+work has ended. Do not treat an accepted cancel request as completed
+termination.
+
+**Open.** Confirmation for other destructive actions, exit/status codes,
+concurrent cancel/reorder/admit races, who performs running cancellation,
+audit persistence, and whether pause survives a broker restart.
+
+## 4. Runner and service lifecycle
+
+**User decision.** One broker per OS user shares a queue across that
+user's repositories and sessions. It runs independently of the monitor,
+under per-user platform supervision with automatic restart after a crash.
+The broker is the service, not another process behind the service.
+
+**Proposal.** Use a launchd agent on macOS and appropriate per-user
+supervision on other platforms. Installation, startup at login, SSH-only
+operation and upgrades need platform-specific design.
+
+**User decision: initial unavailability.** If a new submission cannot reach
+the service, fail immediately with a clear, distinct error. Do not ask the
+supervisor to start it, wait for it to restart or execute outside scheduling.
+Normal bounded connection-attempt timeouts still need specification.
+
+**Historical recommendation, superseded.** Auto-start plus bounded retry
+would make the CLI more convenient but introduces startup latency,
+supervisor coupling and less predictable failure. Immediate failure makes
+service availability an explicit operational requirement. This applies to
+new submissions, not the recovery of already queued jobs.
+
+**User decision: queued disconnect.** Keep an already queued runner's
+place for a grace period, then remove its waiting job if it has not
+reconnected. Service downtime must not consume that period. After restart,
+the period begins only when the service can accept reconnections.
+Queue persistence therefore does not promise indefinite retention of an
+abandoned waiter's place.
+
+This tolerates brief connection interruptions while avoiding indefinite
+head-of-line blocking. Immediate removal is simpler but loses position on
+every transient disconnect. Indefinite retention avoids that loss but lets
+abandoned jobs block strict FIFO until manually removed.
+
+**Open.** Grace duration, definition of reconnect-ready, persistence of
+partially elapsed grace, repeated restarts, reconnect credentials/identity,
+and atomic ordering when reconnect races expiry, cancellation or admission.
+Running-runner disconnect behavior is separate and also needs definition.
+
+**Recommendation.** Make job submission and lifecycle reporting
+idempotent, using stable job/submission identifiers so a lost response does
+not create duplicates. This is not authorization for automatic initial
+submission retry. Define recovery for an ambiguous submit result, reconnect
+and completion-report retry separately from initial unavailability.
+
+**Runner execution proposal.** The runner submits work, waits for admission,
+starts the command locally with inherited terminal I/O, reports process
+identity and completion, and participates in reconnection. gRPC streaming
+can carry queue/admission events and unary calls can report transitions.
+Lease/heartbeat details and the durable admission-to-process-start handshake
+are open. Keeping execution in the runner lets jobs survive a broker crash,
+but requires reconciliation of partially started jobs and surviving children.
+
+## 5. Persistence and crash recovery
+
+**User decision.** Store queue order, active jobs and occupied slots in
+SQLite. Queued work survives broker restarts. Running jobs continue if the
+broker crashes. On restart, reconcile persisted state with verified live
+process identities and reconnecting runners **before admitting any new
+jobs**. If safety cannot be established, fail closed.
+
+The monitor may crash/restart without stopping the broker or its jobs.
+Running state is not proven by a database row, heartbeat or PID alone.
+
+**Recommendation.** Persist lifecycle transitions transactionally and
+make admission durable before acknowledging it. Record process-start
+identity as well as PID to distinguish PID reuse. Reconcile reservations,
+commands not yet started, live commands, surviving descendants and
+unacknowledged completion explicitly. Recovery must avoid both duplicate
+execution and early slot release.
+
+**Corrected unsafe advice.** An early suggestion to release slots on a
+missed heartbeat was withdrawn. A disconnected or crashed runner can leave
+its command or descendants alive; timeout is evidence of lost contact,
+not proof of termination. Heartbeats may trigger investigation, but cannot
+alone release capacity.
+
+**Open.** Recovery state machine, schema/migrations, transaction boundaries,
+broker-instance exclusion, identities across restart, accounting for
+reparented/detached descendants, database corruption/disk-full behavior,
+and how operators resolve genuinely unverifiable state. Recovery is a
+requirement, not a claim that portable process-tree tracking is complete.
+
+## 6. APIs, port and local-access risks
+
+**User decision.** Use gRPC with a typed Protocol Buffers contract between
+runner and broker, and REST for the monitor and ad-hoc `curl` queries.
+Both share one fixed, configurable TCP port on loopback (`127.0.0.1`
+and/or `::1`). Never bind wildcard, LAN or public addresses. Remote access
+is not supported.
+
+**User decision.** The runner takes an explicit port argument; there is
+no automatic port discovery. A broker must report a port conflict, not
+silently pick another port. Different users may need different ports.
+Whether the broker supplies a default numeric port remains open.
+
+**User decision.** Neither API authenticates clients. Any local process
+able to connect, including one running as another OS user, can access
+exposed job details and controls. **Loopback is not user isolation.**
+Per-user scheduling and user-only database permissions do not restrict
+access through the API. Supplied attribution cannot establish authority.
+
+**Historical alternatives, not selected.** Unix sockets or named pipes
+can use OS access controls, and `curl` supports Unix sockets, but TCP was
+chosen. A bearer token would restrict callers at the cost of credential
+management and less convenient `curl` use; the user chose no authentication.
+Separate REST/gRPC ports simplify independent serving but require multiple
+endpoint settings; the shared-port choice requires protocol routing.
+
+**Recommendations.** Route both APIs through the same broker domain
+layer, not independent schedulers. The monitor must not read SQLite
+directly. Evaluate a Go REST implementation versus a gRPC-Gateway
+translation layer; the latter reduces contract duplication but adds
+generation/runtime machinery. Plaintext gRPC on loopback requires
+HTTP/2 cleartext support and deliberate shared-listener routing.
+No gateway or multiplexer has been selected.
+
+Validate HTTP Host/authority against permitted loopback values, reject
+unexpected browser origins, and avoid permissive CORS. These reduce some
+browser-based risks but are **not authentication** and do not stop direct
+local clients. An identity/version handshake can detect an unrelated
+service or stale broker at the configured port; it is not port discovery
+or a security boundary.
+
+**Open.** REST control endpoints versus read-only scope, API versioning,
+health/readiness definitions, errors, streaming/event delivery for the
+monitor, CLI control equivalents, port-argument spelling, IPv4/IPv6
+binding behavior, and service identity verification. Control endpoints
+are needed somewhere for the requested monitor actions; their REST
+contract is not yet agreed.
+
+## 7. Resource history and attribution
+
+**User decision.** Sample running jobs every **five seconds** and persist
+per-job summaries in SQLite, not raw timestamped resource samples. Keep
+history indefinitely until explicitly deleted. Historical data does
+**not** determine admission or concurrency in v2.
+
+**User decision.** Store the full executed command and arguments as one
+human-readable string and record the exit code. Original shell quoting
+cannot reliably be recovered; the string is not guaranteed replayable.
+Do not invent an exit code when the outcome cannot be recovered.
+
+The living draft also records choices to retain client name/version,
+service version, free memory at admission, termination signal where
+available and measurement completeness; queue-entry and admission
+timestamps distinguish queue wait from process startup. Jobs never
+admitted have no admission timestamp. Commit SHA, build/test target and
+build configuration are recorded only when explicitly supplied.
+
+**User decision.** Attribution uses only caller-supplied values. Missing
+repository, branch, issue/worklog, agent/session or purpose remains
+unknown, never inferred from cwd or other context. Values are declarations,
+not authenticated identities.
+
+**Proposals.** Use a versioned, validated metadata schema with bounded
+fields and a defined unknown-field policy. A job record can include job ID,
+cwd, weight, declared attribution, lifecycle times/status and outcome.
+Exact required fields versus tags, allowed lengths, URL validation,
+normalization and any job fingerprint remain open. Fingerprinting is
+not required for v2 admission.
+
+**Proposed resource summaries.** Track the admitted job's process tree,
+with elapsed runtime, CPU time, sampled peak CPU usage and sampled peak
+combined RSS. Exact metric definitions, units and platform parity are
+open. These are measurements/estimates, not proven whole-job totals:
+
+- Five-second snapshots can miss short-lived children and transient peaks.
+- Summed RSS can double-count shared pages and differs from macOS footprint
+  or Windows working-set measurements.
+- CPU counters need identity-aware accumulation across process lifetimes;
+  summing parent/child cumulative counters can double-count reaped-child
+  time, while sampling only surviving processes can omit departed children.
+- Reparented processes and reused external daemons may be outside the
+  tracked tree. Permission/enumeration failures must mark incompleteness,
+  not become a success-shaped zero.
+
+**Recommendations.** Define measurement completeness and failure reasons
+alongside values, bound sampler overhead on large trees, and verify
+platform behavior with real processes. Keep sampler failure separate from
+the selected live sharing checks and recovery safety.
+
+**Historical recommendations, not selected.** Omitting raw commands or
+redacting arguments reduces accidental secret disclosure but loses detail;
+the user chose the full human-readable command. Finite retention limits
+disk growth and exposure; the user chose indefinite retention with
+explicit deletion. Prediction from normalized job history might improve
+utilization but depends on inputs, incremental builds, metric completeness
+and confidence estimates; it was deferred in favor of weighted admission.
+
+**Risk and recommendation.** Arguments and cwd can contain secrets or
+sensitive paths. Store the database in user-only storage (proposed POSIX
+mode 0600), never upload it implicitly, and provide explicit history
+deletion without removing queued/active recovery state. Authentication-free
+local clients can still read whatever history endpoints expose and use
+exposed deletion controls. File permissions alone do not fix that risk.
+Deletion API semantics, WAL/backup handling, disk-growth management and
+whether any explicit redaction option is offered remain open.
+
+## 8. Service telemetry versus job sampling
+
+**User decision.** Defer choosing a dedicated service telemetry library.
+This does not defer five-second per-job sampling, SQLite summaries or REST
+queue/job information. No extra diagnostic endpoint or external telemetry
+export is selected.
+
+The tools discussed solve different problems:
+
+| Option | Benefit | Tradeoff / limit |
+|---|---|---|
+| OpenTelemetry | Standard instrumentation/export for service metrics and traces | Adds SDK/exporter configuration and possibly a collector; does not itself enumerate arbitrary job trees |
+| Prometheus client | Service counters/gauges and scrape-based monitoring | Adds an endpoint/scrape model; default process collectors are not portable whole-job accounting |
+| `expvar` | Standard-library JSON diagnostics for simple service counters | Small dependency cost, but limited metric conventions/export integration; published diagnostics can expose internal data |
+| `gops` | Go runtime/process diagnostics useful during service troubleshooting | Diagnostic agent/tooling is not a job-tree resource sampler or durable history store |
+| `gopsutil` | Convenient cross-platform OS/process API wrappers | Per-platform coverage and error behavior need verification; wrappers do not guarantee complete descendant accounting |
+| Direct OS sampling | Explicit control over process identity, errors and platform metrics | More native adapters, permissions and platform-specific maintenance/testing |
+
+**Recommendation.** Keep job sampling behind platform-specific adapters;
+evaluate a library only after verifying identities, error propagation and
+measurement definitions. Revisit service telemetry when there is a
+concrete diagnostic need, rather than treating it as a prerequisite for
+job history. No option in this table has been selected as the sampler.
+
+Two specific source caveats informed the discussion:
+
+- In [`gopsutil` v4.26.10's macOS `ChildrenWithContext`](https://github.com/shirou/gopsutil/blob/v4.26.10/process/process_darwin.go#L249-L259),
+  failure of `ProcessesWithContext` returns `nil, nil`, and parent-ID
+  lookup errors skip processes. Direct use cannot reliably distinguish
+  an empty child set from incomplete enumeration.
+- In [Prometheus client v1.25.0's macOS process collector](https://github.com/prometheus/client_golang/blob/v1.25.0/prometheus/process_collector_darwin.go#L94-L97),
+  collection is limited to the current process, not arbitrary job PIDs
+  or their trees.
+
+These are version-specific caveats, not blanket claims about later
+versions and not evidence that process-tree accounting has been solved.
+
+## 9. Migration and compatibility
+
+**Recommendation.** Plan a coordinated v1-to-v2 migration, including all
+invokers, monitors, scripts, skills and nested runs. Never silently fall
+back from the broker to independent v1 locks: two scheduling authorities
+could admit conflicting work. Preserve nesting semantics so nested commands
+do not wait on themselves, but do not invent cross-version compatibility.
+Do not delete shared lock files to upgrade.
+
+**Open.** Major-version rollout, environment/nesting marker contract,
+whether the broker retains any OS-lock coordination, draining upgrades,
+v1 monitor compatibility and duration, and whether any explicitly enabled
+fallback is both useful and safe. Emitting version-1 status for old
+monitors was an idea, not an approved compatibility promise.
+
+The current [migration warning](../README.md#migration) remains applicable
+to the current runner. This design document does not authorize mixed
+protocols or changes to live machine settings.
+
+## 10. Follow-on ideas, not committed scope
+
+Priorities, reservations, timeouts, ETA, thermal/battery or memory-pressure
+signals, notifications, job groups, a richer audit trail, and MCP/agent
+integration were suggested. None is an accepted additional v2 requirement
+merely because it appears here. Scheduling predictions from history remain
+a future possibility, not the v2 policy.
+
+**Recommendation for implementation verification.** Use a deterministic
+scheduler core with injected clock/resources/events to exercise strict
+FIFO, pause, force-start and grace expiry. Add integration coverage for
+shared-port APIs, process identity/cancellation, lost replies, disconnects,
+broker crashes, restart reconciliation and database failures. Verify
+platform-specific behavior rather than extrapolating from macOS.
+
+## Open decisions before implementation
+
+1. Pause/force-start interaction, forced-slot accounting, confirmation and
+   audit semantics, cancellation ownership/outcomes and control races.
+2. Queued grace duration, reconnect-ready timing, downtime accounting,
+   persisted grace and reconnect/expiry races; running disconnect behavior.
+3. Durable execution/recovery state machine, broker-instance exclusion,
+   process identity and descendant accounting, corruption/disk-full behavior.
+4. Default broker port, identity/version checks, shared-listener routing,
+   API contracts/versioning, REST controls and event delivery.
+5. Exact job metrics, completeness/error reporting, sampler choice,
+   platform parity and overhead.
+6. Metadata schema, required fields/tags, command rendering, history
+   deletion/storage handling and any optional redaction.
+7. SQLite driver, Go/protobuf tooling, distribution, supervision and
+   supported platforms.
+8. Admission option compatibility, oversized weights, capacity changes,
+   no-wait behavior and v1/nesting rollout.
+
+Resolve these with explicit decisions and update this record before
+treating a proposal as implementation policy.
