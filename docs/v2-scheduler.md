@@ -121,6 +121,10 @@ incarnation is acknowledged without a second allowance, a fenced or
 cancelled grant gets `GRANT_FENCED`, and claims are refused until
 `MarkReady`. Duplicate reports are idempotent.
 
+Grants advertise the 30-second launch-investigation timeout, but the
+investigation clock and its reconstruction after restart are not implemented
+yet (#15). A timeout is never release evidence.
+
 Every transition checks, in the same transaction, whether the fenced
 reservation can be released: every tracked command process must be verified
 exited by the `ProcessProbe` (darwin `sysctl` PID and start time), with a

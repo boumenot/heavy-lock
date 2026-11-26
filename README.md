@@ -422,6 +422,8 @@ are not provided. The runner:
 
 Only the command root is tracked, and process identity uses darwin
 `sysctl`; descendants that outlive the root are not discovered or verified.
+The advertised 30-second launch-investigation timeout does not yet trigger
+investigation; its clock and restart reconstruction are tracked in #15.
 Service identity, REST/CORS and submission equivalence are specified in the
 [v2 design](docs/v2-design.md#6-apis-port-and-local-access-risks).
 Both APIs are unauthenticated; any local process, and potentially any web
