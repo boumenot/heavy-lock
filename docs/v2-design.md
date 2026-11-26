@@ -309,6 +309,41 @@ Alternatives considered:
   and the risk of interrupting cleanup when grace expires. The exact grace
   clock start, platform handling and coordination remain open.
 
+**User clarification: jobs are disposable and can be rerun.** Preserving
+their results is less important than earlier cancellation tradeoffs assumed.
+This changes the priority of the recommendations below, not the already
+selected policies. Disposable results do not establish that every command
+is idempotent or that an old process has stopped: duplicate or unaccounted
+work can still consume resources, contend for files or repeat external
+effects.
+
+**Revised recommendations (not new user decisions):**
+- Reconsider **immediate force for explicit job cancellation**, rather than
+  the selected graceful-then-force policy. Losing a result matters less
+  here, so shorter cancellation latency may justify skipping the 20-second
+  grace. Force still needs verified identities, safe coordination and
+  descendant cleanup; it cannot guarantee immediate exit or release.
+- Reconsider **terminating and cleaning up a job after verified runner
+  death**, rather than preserving it. This could recover capacity sooner
+  when an outcome report is unlikely and the job can be rerun. It must not
+  act merely on a disconnect, and cannot release before the existing checks.
+- Keep **unknown-root holds and no unsafe override**. A disposable job may
+  still be alive and consume capacity. Prefer better identity evidence,
+  containment and verifiable cleanup over guessing it is gone. If any hold
+  is relaxed, that needs a separate decision explicitly accepting unaccounted
+  work or oversubscription; the clarification does not authorize it.
+- Consider **opt-in retry after verified cleanup**, with a fresh submission
+  and claim, for workloads whose duplicate effects are acceptable. Do not
+  replay the old one-shot claim or retry an ambiguous result while old work
+  may still be running. Unlimited automatic retry can loop on a persistent
+  failure; retry limits and eligibility need a separate decision. The chosen
+  immediate failure for an initially unavailable broker remains unchanged.
+
+These recommendations do not weaken global recovery blocking, durable
+claims, process-identity verification or reservation release. The unresolved
+clock, coordination and platform questions remain necessary even when the
+command's result has no preservation value.
+
 **User decision: blocked cancellation takeover.** If a cancellation deadline
 expires while the still-live runner holds the coordination needed for safe
 termination (for example, it owns the serialization of termination steps or
