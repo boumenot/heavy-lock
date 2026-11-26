@@ -1634,9 +1634,24 @@ itself. Reservation-to-release time would instead show how long capacity was
 occupied, including pre-launch and cleanup delays; submission-to-terminal
 time would also include queue wait. Those are different measurements.
 `finished_at_ns` records the terminal transition, not necessarily root exit.
-How the broker obtains reliable monotonic start and exit timing, including
-delayed reports, restarts and reboot, remains to be designed and verified.
-Do not derive the duration by subtracting wall-clock timestamps.
+Reliable monotonic start and exit timing is platform-dependent and can be
+lost if the runner or host is lost. Do not derive the duration by
+subtracting wall-clock timestamps.
+
+**macOS prototype implementation.** The runner observes root exit with
+`NOTE_EXIT` before reaping and reports the monotonic start-to-exit duration
+and the root's final wait CPU counter. If exit notification fails, it
+waits for unreaped-process evidence before reaping but leaves duration
+unknown. Delayed reports and broker restarts do not change that duration.
+The broker takes one process-table snapshot per sampling tick, using
+`sysctl` identity checks around `ps` CPU/RSS readings. A raced or
+unverified process cannot establish a new known identity, contribute
+metrics or introduce new descendant observations. Previously observed
+identities may remain visible after reparenting, but no snapshot or absence
+is proof of exit for signaling or reservation release.
+Summaries remain `partial` or `unavailable`, including after recovery.
+The measured snapshot overhead and its scope are recorded in the
+[prototype README](../README.md#v2-prototype-and-contract-bindings).
 
 **Recommendations.** Define measurement completeness and failure reasons
 alongside values, bound sampler overhead on large trees, and verify
@@ -2636,6 +2651,10 @@ message ReportFinishedRequest {
   Outcome outcome = 3;             // kind EXITED or SIGNALED
   RunnerIncarnation runner = 4;
   ProcessIdentity process = 5;     // root, even if ReportStarted was lost
+  // Runner-observed monotonic start-to-exit duration; absent when unknown.
+  optional int64 elapsed_ms = 6;
+  // CPU time returned by the root's wait operation; absent when unknown.
+  optional int64 root_cpu_time_ms = 7;
 }
 
 // ---------------------------------------------------------------- control
@@ -3668,11 +3687,11 @@ larger values may help some workloads at additional resource cost.
 
 #### Write volume
 
-Resource sampling every five seconds aggregates in memory. Each job’s
-summary row is written at most every 60 seconds and once at finish, so
-sampling does not add a write transaction per job per sample. If the broker
-crashes, recovery reports a running job’s summary as `partial` because
-samples since the last checkpoint are lost.
+Resource sampling every five seconds aggregates in memory. During a broker
+run each job’s summary row is written at most every 60 seconds and once at
+finish, so sampling does not add a write transaction per job per sample.
+Recovery immediately marks an active job's summary `partial` because samples
+since the last checkpoint may be lost.
 
 #### Versions and migrations
 

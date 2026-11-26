@@ -133,6 +133,38 @@ func TestFinishReleasesOnlyAfterVerifiedExit(t *testing.T) {
 	h.expectState(next, pb.JobState_JOB_STATE_RESERVED)
 }
 
+func TestFinishSummaryIsAtomicAndConflictsDoNotOverwrite(t *testing.T) {
+	h, _ := launchHarness(t, 2, &fakeProbe{})
+	l := h.granted(2)
+	h.start1(&l, 4242)
+	invalid := &pb.ResourceSummary{ElapsedMs: proto.Int64(500)}
+	if _, _, err := h.s.ReportFinishedWithResources(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(0), invalid); err == nil {
+		t.Fatal("invalid summary was accepted")
+	}
+	if job := h.job(l.id); job.Outcome != nil || job.Resources != nil || job.State != pb.JobState_JOB_STATE_RUNNING {
+		t.Fatalf("failed summary write committed a partial finish: %+v", job)
+	}
+	summary := &pb.ResourceSummary{ElapsedMs: proto.Int64(500), CpuTimeMs: proto.Int64(200),
+		Completeness: pb.MeasurementCompleteness_MEASUREMENT_COMPLETENESS_PARTIAL}
+	if _, _, err := h.s.ReportFinishedWithResources(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(0), summary); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.s.ReportFinishedWithResources(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(0), summary); err != nil {
+		t.Fatalf("identical retry: %v", err)
+	}
+	conflict := proto.Clone(summary).(*pb.ResourceSummary)
+	conflict.ElapsedMs = proto.Int64(501)
+	if _, _, err := h.s.ReportFinishedWithResources(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(0), conflict); !errors.Is(err, storage.ErrIdentity) {
+		t.Fatalf("conflicting runtime: %v", err)
+	}
+	if _, _, err := h.s.ReportFinishedWithResources(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(1), summary); !errors.Is(err, storage.ErrIdentity) {
+		t.Fatalf("conflicting outcome: %v", err)
+	}
+	if job := h.job(l.id); job.Outcome.GetExitCode() != 0 || !proto.Equal(job.Resources, summary) {
+		t.Fatalf("rejected report overwrote the outcome or summary: %+v", job)
+	}
+}
+
 func TestMissingProbeFailsClosed(t *testing.T) {
 	h, _ := launchHarness(t, 2, nil)
 	l := h.granted(2)

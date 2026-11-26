@@ -2562,12 +2562,16 @@ func (x *ReportLaunchFailedRequest) GetRunner() *RunnerIncarnation {
 }
 
 type ReportFinishedRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	GrantId       string                 `protobuf:"bytes,2,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
-	Outcome       *Outcome               `protobuf:"bytes,3,opt,name=outcome,proto3" json:"outcome,omitempty"` // kind EXITED or SIGNALED
-	Runner        *RunnerIncarnation     `protobuf:"bytes,4,opt,name=runner,proto3" json:"runner,omitempty"`
-	Process       *ProcessIdentity       `protobuf:"bytes,5,opt,name=process,proto3" json:"process,omitempty"` // root, even if ReportStarted was lost
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	JobId   string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	GrantId string                 `protobuf:"bytes,2,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
+	Outcome *Outcome               `protobuf:"bytes,3,opt,name=outcome,proto3" json:"outcome,omitempty"` // kind EXITED or SIGNALED
+	Runner  *RunnerIncarnation     `protobuf:"bytes,4,opt,name=runner,proto3" json:"runner,omitempty"`
+	Process *ProcessIdentity       `protobuf:"bytes,5,opt,name=process,proto3" json:"process,omitempty"` // root, even if ReportStarted was lost
+	// Runner-observed monotonic start-to-exit duration; absent when unknown.
+	ElapsedMs *int64 `protobuf:"varint,6,opt,name=elapsed_ms,json=elapsedMs,proto3,oneof" json:"elapsed_ms,omitempty"`
+	// CPU time returned by the root's wait operation; absent when unknown.
+	RootCpuTimeMs *int64 `protobuf:"varint,7,opt,name=root_cpu_time_ms,json=rootCpuTimeMs,proto3,oneof" json:"root_cpu_time_ms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2635,6 +2639,20 @@ func (x *ReportFinishedRequest) GetProcess() *ProcessIdentity {
 		return x.Process
 	}
 	return nil
+}
+
+func (x *ReportFinishedRequest) GetElapsedMs() int64 {
+	if x != nil && x.ElapsedMs != nil {
+		return *x.ElapsedMs
+	}
+	return 0
+}
+
+func (x *ReportFinishedRequest) GetRootCpuTimeMs() int64 {
+	if x != nil && x.RootCpuTimeMs != nil {
+		return *x.RootCpuTimeMs
+	}
+	return 0
 }
 
 type GetHealthRequest struct {
@@ -4249,13 +4267,18 @@ const file_heavylock_proto_rawDesc = "" +
 	"\bgrant_id\x18\x02 \x01(\tR\agrantId\x12\x14\n" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x12\x1c\n" +
 	"\tcancelled\x18\x04 \x01(\bR\tcancelled\x127\n" +
-	"\x06runner\x18\x05 \x01(\v2\x1f.heavylock.v2.RunnerIncarnationR\x06runner\"\xec\x01\n" +
+	"\x06runner\x18\x05 \x01(\v2\x1f.heavylock.v2.RunnerIncarnationR\x06runner\"\xe2\x02\n" +
 	"\x15ReportFinishedRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x19\n" +
 	"\bgrant_id\x18\x02 \x01(\tR\agrantId\x12/\n" +
 	"\aoutcome\x18\x03 \x01(\v2\x15.heavylock.v2.OutcomeR\aoutcome\x127\n" +
 	"\x06runner\x18\x04 \x01(\v2\x1f.heavylock.v2.RunnerIncarnationR\x06runner\x127\n" +
-	"\aprocess\x18\x05 \x01(\v2\x1d.heavylock.v2.ProcessIdentityR\aprocess\"\x12\n" +
+	"\aprocess\x18\x05 \x01(\v2\x1d.heavylock.v2.ProcessIdentityR\aprocess\x12\"\n" +
+	"\n" +
+	"elapsed_ms\x18\x06 \x01(\x03H\x00R\telapsedMs\x88\x01\x01\x12,\n" +
+	"\x10root_cpu_time_ms\x18\a \x01(\x03H\x01R\rrootCpuTimeMs\x88\x01\x01B\r\n" +
+	"\v_elapsed_msB\x13\n" +
+	"\x11_root_cpu_time_ms\"\x12\n" +
 	"\x10GetHealthRequest\"\x95\x03\n" +
 	"\x06Health\x12\x12\n" +
 	"\x04live\x18\x01 \x01(\bR\x04live\x12\x14\n" +
@@ -4679,6 +4702,7 @@ func file_heavylock_proto_init() {
 		(*JobEvent_Heartbeat)(nil),
 	}
 	file_heavylock_proto_msgTypes[18].OneofWrappers = []any{}
+	file_heavylock_proto_msgTypes[24].OneofWrappers = []any{}
 	file_heavylock_proto_msgTypes[26].OneofWrappers = []any{}
 	file_heavylock_proto_msgTypes[28].OneofWrappers = []any{}
 	file_heavylock_proto_msgTypes[31].OneofWrappers = []any{}
