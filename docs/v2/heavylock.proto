@@ -1,8 +1,8 @@
 // heavy-lock v2 broker API.
 //
 // Conventions:
-// - Every timestamp is UTC Unix microseconds in an int64 field ending in
-//   "_unix_us". Every duration ends in "_us" or "_ms" and is measured by the
+// - Every timestamp is UTC Unix nanoseconds in an int64 field ending in
+//   "_unix_ns". Every duration ends in "_us" or "_ms" and is measured by the
 //   broker's monotonic clock; durations are never derived from wall-clock
 //   subtraction. Wall-clock timestamps are informational: the system clock
 //   can move backwards, so they never order events or validate transitions.
@@ -31,7 +31,7 @@ service RunnerService {
   // changes: queue position, grant, cancellation and terminal state. The
   // runner treats the snapshot as level-triggered: a present grant that it
   // has not yet acted on means launch (at most once per grant_id), and a
-  // present cancel_requested_at_unix_us means cancel. An open stream is the
+  // present cancel_requested_at_unix_ns means cancel. An open stream is the
   // runner's connection signal for the queued-runner grace period, and the
   // broker sends a heartbeat at least every heartbeat_interval_ms so the
   // runner can detect a dead broker. Closing the stream while queued starts
@@ -206,17 +206,17 @@ message Attribution {
 
 message ProcessIdentity {
   int64 pid = 1;
-  // Platform process start time in UTC Unix microseconds; with pid it
+  // Platform process start time in UTC Unix nanoseconds; with pid it
   // distinguishes PID reuse. Precision is platform-dependent, so identities
   // are compared only with values derived by the same platform method.
-  int64 start_time_unix_us = 2;
+  int64 start_time_unix_ns = 2;
 }
 
 message Grant {
   string grant_id = 1;
   uint32 weight = 2;
   bool forced = 3;
-  int64 granted_at_unix_us = 4;
+  int64 granted_at_unix_ns = 4;
   // The runner should call ReportStarted or ReportLaunchFailed before this
   // monotonic deadline elapses. Expiry alone never releases capacity: the
   // broker must verify that no command was launched under this grant.
@@ -254,11 +254,11 @@ message Job {
   Attribution attribution = 9;
   string service_version = 10;
 
-  int64 queued_at_unix_us = 11;
-  optional int64 admitted_at_unix_us = 12;
-  optional int64 started_at_unix_us = 13;
-  optional int64 finished_at_unix_us = 14;
-  optional int64 cancel_requested_at_unix_us = 15;
+  int64 queued_at_unix_ns = 11;
+  optional int64 admitted_at_unix_ns = 12;
+  optional int64 started_at_unix_ns = 13;
+  optional int64 finished_at_unix_ns = 14;
+  optional int64 cancel_requested_at_unix_ns = 15;
 
   // Present only while QUEUED; 0 is the head.
   optional uint32 queue_position = 16;
@@ -298,7 +298,7 @@ message JobEvent {
   // message. Per-job streams are filtered, so values are not contiguous.
   // Snapshots and heartbeats reuse the current value rather than allocating.
   int64 event_seq = 1;
-  int64 at_unix_us = 2;
+  int64 at_unix_ns = 2;
   oneof event {
     Job snapshot = 10;             // always first on every call
     QueuePositionChanged queue_position_changed = 11;
@@ -356,7 +356,7 @@ message Health {
   bool live = 1;
   bool ready = 2;                  // false while recovery runs
   string service_version = 3;
-  int64 started_at_unix_us = 4;
+  int64 started_at_unix_ns = 4;
   int64 schema_version = 5;
   optional string recovery_detail = 6;
 }
@@ -367,7 +367,7 @@ message BrokerStatus {
   uint32 capacity = 1;
   uint32 occupied = 2;             // may exceed capacity after force-start
   bool paused = 3;
-  optional int64 paused_at_unix_us = 4;
+  optional int64 paused_at_unix_ns = 4;
   bool recovering = 5;
   uint32 queued_jobs = 6;
   uint32 running_jobs = 7;
@@ -387,14 +387,14 @@ message ListJobsRequest {
   repeated JobState states = 1;            // empty means all
   optional string repository = 2;
   optional string client_name = 3;
-  optional int64 queued_after_unix_us = 4; // inclusive
-  optional int64 queued_before_unix_us = 5; // exclusive
+  optional int64 queued_after_unix_ns = 4; // inclusive
+  optional int64 queued_before_unix_ns = 5; // exclusive
   uint32 page_size = 6;                    // 0 means 50; maximum 500
   string page_token = 7;
 }
 
 message ListJobsResponse {
-  // Newest first by (queued_at_unix_us, job_id). Keyset pagination: the
+  // Newest first by (queued_at_unix_ns, job_id). Keyset pagination: the
   // token encodes the last key and filters, so pages are stable under
   // concurrent inserts.
   repeated Job jobs = 1;
@@ -434,7 +434,7 @@ message DeleteJobRequest {
 message DeleteJobResponse {}
 
 message DeleteHistoryRequest {
-  int64 finished_before_unix_us = 1;
+  int64 finished_before_unix_ns = 1;
 }
 
 message DeleteHistoryResponse {
@@ -456,7 +456,7 @@ message BrokerEvent {
   // Equals the stored event's sequence; snapshots and heartbeats carry the
   // last committed sequence they reflect.
   int64 event_seq = 1;
-  int64 at_unix_us = 2;
+  int64 at_unix_ns = 2;
   oneof event {
     BrokerSnapshot snapshot = 10;
     Job job_changed = 11;

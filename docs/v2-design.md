@@ -52,6 +52,7 @@ users' jobs or machines.
 | Recovery | SQLite persists queue and active state; reconcile verified live jobs and occupied slots before admitting new work |
 | Database typing | SQLite STRICT tables |
 | SQLite journal | WAL |
+| Timestamp encoding | UTC Unix nanoseconds in signed `int64` on the wire and SQLite `INTEGER`; supersedes microseconds |
 | Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes and API parity; see [section 11](#11-interface-and-schema-design) |
 | Queued-runner disconnect | Preserve place during a grace period, then remove if still disconnected; service downtime does not count |
 | Job history | Sample every five seconds, retain summaries rather than raw timestamped samples, keep indefinitely until explicitly deleted |
@@ -474,7 +475,8 @@ ever differ, the files are authoritative.
 
 This is a design specification, not authorization to implement. The table
 below lists recommendations made earlier in the discussion that the user
-approved, plus WAL, which the user specified directly. Everything else in
+approved, the subsequent nanosecond timestamp decision, and WAL, which the
+user specified directly. Everything else in
 these files is a **new proposal**. It was drafted during the design
 discussion and then revised in this record for consistency and safety. It
 is a complete baseline, but the user has not separately approved it.
@@ -494,9 +496,9 @@ These proposals include:
   sizes
 - the pause/force-start interaction (section 3)
 
-| Area | User decision (approved recommendation) |
+| Area | User decision |
 |---|---|
-| Timestamps | Every persisted timestamp is UTC Unix microseconds in SQLite `INTEGER` (`*_at_us`); the wire contract proposes the same `int64` encoding (`*_unix_us`) |
+| Timestamps | Every persisted and wire timestamp is UTC Unix nanoseconds: SQLite `INTEGER` (`*_at_ns`, `start_time_ns`, `at_ns`) and protobuf `int64` (`*_unix_ns`); replaces the earlier microsecond encoding |
 | Durations | Measured with the broker's monotonic clock (`*_us`, `*_ms`), never by subtracting wall-clock timestamps |
 | Queue order | Explicit `queue_entries.queue_seq`, never timestamp order |
 | Metadata | Dedicated columns for known fields plus a validated `metadata_json` object for extras; replaces the earlier `job_tags` table |
@@ -505,6 +507,25 @@ These proposals include:
 | Outcome | Native `int64` exit code, optional POSIX signal number and name, and `outcome_kind` |
 | API parity | One-way REST-to-gRPC parity: every REST endpoint maps to a `ControlService` RPC |
 | SQLite journal | WAL (direct user instruction, with performance-oriented options considered) |
+
+**Timestamp decision and tradeoffs.** The user chose UTC Unix nanoseconds
+for all persisted and wire timestamps, replacing the earlier approved
+microsecond recommendation. Go uses `time.Time.UnixNano()` (for example,
+`time.Now().UTC().UnixNano()`); `1764121200000000000` represents
+`2025-11-26T01:40:00Z`. This preserves Windows 100 ns FILETIME ticks and
+nanosecond values supplied by macOS/Linux without microsecond truncation.
+Encoding cannot improve the precision of an underlying clock or process
+API; process identity comparisons still require the same platform method.
+Converting FILETIME also requires its 1601-to-1970 epoch offset.
+
+Signed `int64` nanoseconds span approximately 1677 through
+`2262-04-11T23:47:16.854775807Z`, a shorter range than microseconds. Reject
+out-of-range inputs or conversions rather than overflowing. Storage cost
+is negligible: contemporary timestamps in either unit use eight-byte
+SQLite integers; protobuf `int64` varints grow from eight to nine bytes.
+Protojson continues to encode them as strings, avoiding JavaScript number
+precision loss.
+Duration fields keep their existing units and monotonic-clock semantics.
 
 ### 11.1 gRPC contract
 
@@ -542,7 +563,7 @@ starts with a snapshot of the job's current durable state; there is no
 per-job resume token. The runner treats the snapshot as level-triggered:
 - A present `grant` it has not acted on means launch. The runner launches
   at most once per `grant_id`, and `ReportStarted` is idempotent.
-- A present `cancel_requested_at_unix_us` means cancel.
+- A present `cancel_requested_at_unix_ns` means cancel.
 
 Missed transitions are recovered from current state rather than replayed.
 Pushed messages carry the broker-wide `event_seq`. Per-job values are not
@@ -579,7 +600,7 @@ carries a `google.rpc.ErrorInfo` with domain `heavylock.v2` and an
 until reconciliation completes.
 
 **Listing.** `ListJobs` covers queued, running and finished jobs, newest
-first by `(queued_at_unix_us, job_id)`. It filters by state, repository,
+first by `(queued_at_unix_ns, job_id)`. It filters by state, repository,
 client name and a queue-time range. It uses keyset pagination with opaque
 tokens; the proposed default page size is 50 and the maximum 500.
 `GetQueue` separately returns current FIFO order, including manual moves.
@@ -593,8 +614,8 @@ and loopback is not user isolation.
 // heavy-lock v2 broker API.
 //
 // Conventions:
-// - Every timestamp is UTC Unix microseconds in an int64 field ending in
-//   "_unix_us". Every duration ends in "_us" or "_ms" and is measured by the
+// - Every timestamp is UTC Unix nanoseconds in an int64 field ending in
+//   "_unix_ns". Every duration ends in "_us" or "_ms" and is measured by the
 //   broker's monotonic clock; durations are never derived from wall-clock
 //   subtraction. Wall-clock timestamps are informational: the system clock
 //   can move backwards, so they never order events or validate transitions.
@@ -623,7 +644,7 @@ service RunnerService {
   // changes: queue position, grant, cancellation and terminal state. The
   // runner treats the snapshot as level-triggered: a present grant that it
   // has not yet acted on means launch (at most once per grant_id), and a
-  // present cancel_requested_at_unix_us means cancel. An open stream is the
+  // present cancel_requested_at_unix_ns means cancel. An open stream is the
   // runner's connection signal for the queued-runner grace period, and the
   // broker sends a heartbeat at least every heartbeat_interval_ms so the
   // runner can detect a dead broker. Closing the stream while queued starts
@@ -798,17 +819,17 @@ message Attribution {
 
 message ProcessIdentity {
   int64 pid = 1;
-  // Platform process start time in UTC Unix microseconds; with pid it
+  // Platform process start time in UTC Unix nanoseconds; with pid it
   // distinguishes PID reuse. Precision is platform-dependent, so identities
   // are compared only with values derived by the same platform method.
-  int64 start_time_unix_us = 2;
+  int64 start_time_unix_ns = 2;
 }
 
 message Grant {
   string grant_id = 1;
   uint32 weight = 2;
   bool forced = 3;
-  int64 granted_at_unix_us = 4;
+  int64 granted_at_unix_ns = 4;
   // The runner should call ReportStarted or ReportLaunchFailed before this
   // monotonic deadline elapses. Expiry alone never releases capacity: the
   // broker must verify that no command was launched under this grant.
@@ -846,11 +867,11 @@ message Job {
   Attribution attribution = 9;
   string service_version = 10;
 
-  int64 queued_at_unix_us = 11;
-  optional int64 admitted_at_unix_us = 12;
-  optional int64 started_at_unix_us = 13;
-  optional int64 finished_at_unix_us = 14;
-  optional int64 cancel_requested_at_unix_us = 15;
+  int64 queued_at_unix_ns = 11;
+  optional int64 admitted_at_unix_ns = 12;
+  optional int64 started_at_unix_ns = 13;
+  optional int64 finished_at_unix_ns = 14;
+  optional int64 cancel_requested_at_unix_ns = 15;
 
   // Present only while QUEUED; 0 is the head.
   optional uint32 queue_position = 16;
@@ -890,7 +911,7 @@ message JobEvent {
   // message. Per-job streams are filtered, so values are not contiguous.
   // Snapshots and heartbeats reuse the current value rather than allocating.
   int64 event_seq = 1;
-  int64 at_unix_us = 2;
+  int64 at_unix_ns = 2;
   oneof event {
     Job snapshot = 10;             // always first on every call
     QueuePositionChanged queue_position_changed = 11;
@@ -948,7 +969,7 @@ message Health {
   bool live = 1;
   bool ready = 2;                  // false while recovery runs
   string service_version = 3;
-  int64 started_at_unix_us = 4;
+  int64 started_at_unix_ns = 4;
   int64 schema_version = 5;
   optional string recovery_detail = 6;
 }
@@ -959,7 +980,7 @@ message BrokerStatus {
   uint32 capacity = 1;
   uint32 occupied = 2;             // may exceed capacity after force-start
   bool paused = 3;
-  optional int64 paused_at_unix_us = 4;
+  optional int64 paused_at_unix_ns = 4;
   bool recovering = 5;
   uint32 queued_jobs = 6;
   uint32 running_jobs = 7;
@@ -979,14 +1000,14 @@ message ListJobsRequest {
   repeated JobState states = 1;            // empty means all
   optional string repository = 2;
   optional string client_name = 3;
-  optional int64 queued_after_unix_us = 4; // inclusive
-  optional int64 queued_before_unix_us = 5; // exclusive
+  optional int64 queued_after_unix_ns = 4; // inclusive
+  optional int64 queued_before_unix_ns = 5; // exclusive
   uint32 page_size = 6;                    // 0 means 50; maximum 500
   string page_token = 7;
 }
 
 message ListJobsResponse {
-  // Newest first by (queued_at_unix_us, job_id). Keyset pagination: the
+  // Newest first by (queued_at_unix_ns, job_id). Keyset pagination: the
   // token encodes the last key and filters, so pages are stable under
   // concurrent inserts.
   repeated Job jobs = 1;
@@ -1026,7 +1047,7 @@ message DeleteJobRequest {
 message DeleteJobResponse {}
 
 message DeleteHistoryRequest {
-  int64 finished_before_unix_us = 1;
+  int64 finished_before_unix_ns = 1;
 }
 
 message DeleteHistoryResponse {
@@ -1048,7 +1069,7 @@ message BrokerEvent {
   // Equals the stored event's sequence; snapshots and heartbeats carry the
   // last committed sequence they reflect.
   int64 event_seq = 1;
-  int64 at_unix_us = 2;
+  int64 at_unix_ns = 2;
   oneof event {
     BrokerSnapshot snapshot = 10;
     Job job_changed = 11;
@@ -1162,8 +1183,8 @@ validation; the schema uses all of them.
 -- Requirements: SQLite 3.38.0 or later (STRICT tables and built-in JSON).
 -- Conventions:
 --   * All tables are STRICT.
---   * Every *_at_us column is UTC Unix microseconds (Go int64,
---     time.Now().UTC().UnixMicro()). Durations (*_us, *_ms) come from the
+--   * Every timestamp (*_at_ns, start_time_ns, at_ns) is UTC Unix nanoseconds (Go int64,
+--     time.Now().UTC().UnixNano()). Durations (*_us, *_ms) come from the
 --     broker's monotonic clock, never from subtracting wall-clock columns.
 --   * Wall-clock values are informational. The clock can move backwards, so
 --     no CHECK compares one timestamp with another.
@@ -1187,7 +1208,7 @@ BEGIN IMMEDIATE;
 
 CREATE TABLE schema_migrations (
   version        INTEGER PRIMARY KEY,   -- e.g. 1
-  applied_at_us  INTEGER NOT NULL,      -- e.g. 1764121200000000 (2025-11-26T01:40:00Z)
+  applied_at_ns  INTEGER NOT NULL,      -- e.g. 1764121200000000000 (2025-11-26T01:40:00Z)
   description    TEXT    NOT NULL       -- e.g. 'initial v2 schema'
 ) STRICT;
 
@@ -1195,12 +1216,12 @@ CREATE TABLE schema_migrations (
 CREATE TABLE broker_state (
   id                INTEGER PRIMARY KEY CHECK (id = 1),
   paused            INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
-  paused_at_us      INTEGER,              -- NULL when not paused
+  paused_at_ns      INTEGER,              -- NULL when not paused
   next_queue_seq    INTEGER NOT NULL DEFAULT 1, -- next back-of-queue sequence
   last_event_seq    INTEGER NOT NULL DEFAULT 0, -- last issued events.seq; never decreases
   event_floor_seq   INTEGER NOT NULL DEFAULT 0, -- resume after a lower seq is refused
   CHECK (event_floor_seq BETWEEN 0 AND last_event_seq),
-  CHECK ((paused = 0 AND paused_at_us IS NULL) OR (paused = 1 AND paused_at_us IS NOT NULL))
+  CHECK ((paused = 0 AND paused_at_ns IS NULL) OR (paused = 1 AND paused_at_ns IS NOT NULL))
 ) STRICT;
 
 -- One row per broker process lifetime; used to exclude downtime from grace
@@ -1209,9 +1230,9 @@ CREATE TABLE service_runs (
   id               INTEGER PRIMARY KEY,   -- rowid sequence
   service_version  TEXT    NOT NULL,      -- e.g. '2.0.0'
   pid              INTEGER NOT NULL,      -- e.g. 48213
-  started_at_us    INTEGER NOT NULL,
-  ready_at_us      INTEGER,               -- NULL until recovery completed
-  stopped_at_us    INTEGER,               -- NULL while running or after a crash
+  started_at_ns    INTEGER NOT NULL,
+  ready_at_ns      INTEGER,               -- NULL until recovery completed
+  stopped_at_ns    INTEGER,               -- NULL while running or after a crash
   clean_shutdown   INTEGER NOT NULL DEFAULT 0 CHECK (clean_shutdown IN (0, 1))
 ) STRICT;
 
@@ -1243,20 +1264,20 @@ CREATE TABLE jobs (
                       -- e.g. 'running'
   forced              INTEGER NOT NULL DEFAULT 0 CHECK (forced IN (0, 1)),
                       -- 1 when admitted by force-start, e.g. 0
-  queued_at_us        INTEGER NOT NULL,
-                      -- e.g. 1764121200000000 (2025-11-26T01:40:00.000000Z)
-  admitted_at_us      INTEGER,
+  queued_at_ns        INTEGER NOT NULL,
+                      -- e.g. 1764121200000000000 (2025-11-26T01:40:00.000000000Z)
+  admitted_at_ns      INTEGER,
                       -- reservation committed; NULL if never admitted,
-                      -- e.g. 1764121230000000 (2025-11-26T01:40:30.000000Z)
-  started_at_us       INTEGER,
+                      -- e.g. 1764121230000000000 (2025-11-26T01:40:30.000000000Z)
+  started_at_ns       INTEGER,
                       -- ReportStarted received; NULL if never launched,
-                      -- e.g. 1764121230250000 (2025-11-26T01:40:30.250000Z)
-  finished_at_us      INTEGER,
+                      -- e.g. 1764121230250000000 (2025-11-26T01:40:30.250000000Z)
+  finished_at_ns      INTEGER,
                       -- terminal transition; NULL until finished,
-                      -- e.g. 1764121815000000 (2025-11-26T01:50:15.000000Z)
-  cancel_requested_at_us INTEGER,
+                      -- e.g. 1764121815000000000 (2025-11-26T01:50:15.000000000Z)
+  cancel_requested_at_ns INTEGER,
                       -- NULL unless cancellation was requested,
-                      -- e.g. 1764121500000000 (2025-11-26T01:45:00.000000Z)
+                      -- e.g. 1764121500000000000 (2025-11-26T01:45:00.000000000Z)
   cancel_reason       TEXT,     -- e.g. 'cancelled from monitor'
 
   -- Who submitted it (unauthenticated client claims) ------------------------
@@ -1301,25 +1322,25 @@ CREATE TABLE jobs (
   outcome_detail      TEXT,     -- e.g. 'process tree not found during recovery'
 
   -- State consistency (presence only; wall-clock values are not compared) --
-  CHECK (started_at_us IS NULL OR admitted_at_us IS NOT NULL),
-  CHECK ((state = 'finished') = (finished_at_us IS NOT NULL)),
+  CHECK (started_at_ns IS NULL OR admitted_at_ns IS NOT NULL),
+  CHECK ((state = 'finished') = (finished_at_ns IS NOT NULL)),
   -- ReportFinished stores the outcome while finishing (awaiting verified exit).
   CHECK ((state IN ('finishing', 'finished')) = (outcome_kind IS NOT NULL)),
   CHECK (state <> 'finishing' OR outcome_kind IN ('exited', 'signaled')),
-  CHECK (state NOT IN ('reserved', 'running', 'finishing') OR admitted_at_us IS NOT NULL),
-  CHECK (state NOT IN ('running', 'finishing') OR started_at_us IS NOT NULL),
+  CHECK (state NOT IN ('reserved', 'running', 'finishing') OR admitted_at_ns IS NOT NULL),
+  CHECK (state NOT IN ('running', 'finishing') OR started_at_ns IS NOT NULL),
   CHECK (outcome_kind IS NOT 'exited' OR (exit_code IS NOT NULL AND signal_number IS NULL)),
   CHECK (outcome_kind IS NOT 'signaled' OR signal_number IS NOT NULL),
   CHECK (signal_name IS NULL OR signal_number IS NOT NULL)
 ) STRICT;
 
-CREATE INDEX jobs_state_queued ON jobs (state, queued_at_us DESC, id);
-CREATE INDEX jobs_queued ON jobs (queued_at_us DESC, id);
-CREATE INDEX jobs_repository ON jobs (repository, queued_at_us DESC, id)
+CREATE INDEX jobs_state_queued ON jobs (state, queued_at_ns DESC, id);
+CREATE INDEX jobs_queued ON jobs (queued_at_ns DESC, id);
+CREATE INDEX jobs_repository ON jobs (repository, queued_at_ns DESC, id)
   WHERE repository IS NOT NULL;
-CREATE INDEX jobs_client_name ON jobs (client_name, queued_at_us DESC, id)
+CREATE INDEX jobs_client_name ON jobs (client_name, queued_at_ns DESC, id)
   WHERE client_name IS NOT NULL;
-CREATE INDEX jobs_finished ON jobs (finished_at_us)
+CREATE INDEX jobs_finished ON jobs (finished_at_ns)
   WHERE state = 'finished';
 
 -- Waiting jobs only. Explicit order; reorder rewrites queue_seq. Because
@@ -1331,12 +1352,12 @@ CREATE TABLE queue_entries (
   runner_connected    INTEGER NOT NULL DEFAULT 1 CHECK (runner_connected IN (0, 1)),
   grace_elapsed_us    INTEGER NOT NULL DEFAULT 0 CHECK (grace_elapsed_us >= 0),
                       -- monotonic grace consumed, checkpointed
-  grace_started_at_us INTEGER,  -- wall time of current disconnect, informational
+  grace_started_at_ns INTEGER,  -- wall time of current disconnect, informational
   grace_service_run_id INTEGER REFERENCES service_runs (id),
                       -- run in which grace was last counted; a different run
                       -- means the start time is stale (downtime excluded)
   CHECK (runner_connected = 1 OR grace_service_run_id IS NOT NULL),
-  CHECK (runner_connected = 0 OR (grace_started_at_us IS NULL AND grace_service_run_id IS NULL))
+  CHECK (runner_connected = 0 OR (grace_started_at_ns IS NULL AND grace_service_run_id IS NULL))
 ) STRICT;
 
 -- Durable capacity reservations. A grant is sent only after this row commits.
@@ -1345,34 +1366,34 @@ CREATE TABLE reservations (
   grant_id          TEXT    NOT NULL UNIQUE CHECK (length(grant_id) = 36),
   weight            INTEGER NOT NULL CHECK (weight >= 1),
   forced            INTEGER NOT NULL DEFAULT 0 CHECK (forced IN (0, 1)),
-  granted_at_us     INTEGER NOT NULL,
+  granted_at_ns     INTEGER NOT NULL,
   service_run_id    INTEGER NOT NULL REFERENCES service_runs (id),
-  released_at_us    INTEGER,  -- NULL while capacity is held
+  released_at_ns    INTEGER,  -- NULL while capacity is held
   release_reason    TEXT CHECK (release_reason IN (
                       'processes_exited', 'launch_failed', 'cancelled_before_start',
                       'recovery_verified_gone')),
-  CHECK ((released_at_us IS NULL) = (release_reason IS NULL))
+  CHECK ((released_at_ns IS NULL) = (release_reason IS NULL))
 ) STRICT;
 
 -- Occupied capacity = SUM(weight) over this index.
 CREATE INDEX reservations_active ON reservations (job_id, weight)
-  WHERE released_at_us IS NULL;
+  WHERE released_at_ns IS NULL;
 
 -- Tracked processes for recovery and sampling.
 CREATE TABLE job_processes (
   job_id              TEXT    NOT NULL REFERENCES jobs (id),
   pid                 INTEGER NOT NULL CHECK (pid > 0),
-  start_time_us       INTEGER NOT NULL,  -- platform process start time; with pid
+  start_time_ns       INTEGER NOT NULL,  -- platform process start time; with pid
                                          -- distinguishes PID reuse
   role                TEXT    NOT NULL CHECK (role IN ('runner', 'command', 'descendant')),
-  first_seen_at_us    INTEGER NOT NULL,
-  last_seen_at_us     INTEGER,
-  exited_verified_at_us INTEGER,  -- NULL until the broker verified the process is gone
-  PRIMARY KEY (job_id, pid, start_time_us)
+  first_seen_at_ns    INTEGER NOT NULL,
+  last_seen_at_ns     INTEGER,
+  exited_verified_at_ns INTEGER,  -- NULL until the broker verified the process is gone
+  PRIMARY KEY (job_id, pid, start_time_ns)
 ) STRICT, WITHOUT ROWID;
 
-CREATE INDEX job_processes_live ON job_processes (pid, start_time_us)
-  WHERE exited_verified_at_us IS NULL;
+CREATE INDEX job_processes_live ON job_processes (pid, start_time_ns)
+  WHERE exited_verified_at_ns IS NULL;
 
 -- One summary per job; updated in place from five-second samples.
 CREATE TABLE job_resource_summaries (
@@ -1385,7 +1406,7 @@ CREATE TABLE job_resource_summaries (
   measurement_completeness TEXT    NOT NULL
                            CHECK (measurement_completeness IN ('complete', 'partial', 'unavailable')),
   incompleteness_reason    TEXT,
-  updated_at_us            INTEGER NOT NULL
+  updated_at_ns            INTEGER NOT NULL
 ) STRICT;
 
 -- Bounded log backing WatchEvents resume. seq is assigned from
@@ -1397,7 +1418,7 @@ CREATE TABLE job_resource_summaries (
 -- without raising the floor. Payloads can contain command lines.
 CREATE TABLE events (
   seq           INTEGER PRIMARY KEY CHECK (seq >= 1), -- event_seq on the wire
-  at_us         INTEGER NOT NULL,
+  at_ns         INTEGER NOT NULL,
   job_id        TEXT,                  -- subject job, if any
   kind          TEXT    NOT NULL CHECK (kind IN (
                   'job_changed', 'queue_changed', 'status_changed', 'job_deleted')),
@@ -1405,11 +1426,16 @@ CREATE TABLE events (
 ) STRICT;
 
 CREATE INDEX events_job ON events (job_id, seq) WHERE job_id IS NOT NULL;
-CREATE INDEX events_at ON events (at_us);
+CREATE INDEX events_at ON events (at_ns);
 
 INSERT INTO broker_state (id) VALUES (1);
-INSERT INTO schema_migrations (version, applied_at_us, description)
-  VALUES (1, CAST((julianday('now') - 2440587.5) * 86400000000 AS INTEGER), 'initial v2 schema');
+-- SQLite's bootstrap clock has millisecond precision. Integer arithmetic
+-- encodes it as nanoseconds without floating-point rounding; normal broker
+-- writes bind Go time.Time.UnixNano() values at their available source precision.
+INSERT INTO schema_migrations (version, applied_at_ns, description)
+  VALUES (1, CAST(strftime('%s', 'now') AS INTEGER) * 1000000000
+             + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) * 1000000,
+          'initial v2 schema');
 PRAGMA user_version = 1;
 
 COMMIT;
@@ -1458,7 +1484,10 @@ All `Attribution` values are unauthenticated declarations.
 - **Wall-clock timestamps.** The system clock can move backwards, so the
   schema checks only that timestamps are present for a state, never their
   order. Monotonic durations, `queue_seq` and event sequences provide
-  ordering.
+  ordering. The bootstrap migration timestamp uses SQLite's
+  millisecond-precision clock converted to integer nanoseconds without a
+  floating-point intermediate; subsequent broker writes bind Go
+  `time.Time.UnixNano()` values, preserving available source precision.
 - **Event sequences.** Each change allocates
   `broker_state.last_event_seq + 1` in its own transaction, so a sequence
   is never reused, even after its rows are pruned or deleted. Deleting
@@ -1482,14 +1511,14 @@ All `Attribution` values are unauthenticated declarations.
     broker fails closed.
 - **Grace and downtime.** `grace_elapsed_us` checkpoints monotonic grace
   consumed. `grace_service_run_id` records the broker run that last counted
-  it. A different current run means `grace_started_at_us` is stale and
+  it. A different current run means `grace_started_at_ns` is stale and
   wall-clock time since it, which may include downtime, is not charged.
   Grace resumes from the persisted `grace_elapsed_us` once the broker
   accepts reconnections. This can extend grace by time that was not
   checkpointed before a crash.
 - **History deletion.** In one transaction:
   1. Check that the job is `finished`, has no queue entry, no active
-     reservation, and no process lacking `exited_verified_at_us`.
+     reservation, and no process lacking `exited_verified_at_ns`.
   2. Delete its released reservation and verified process rows. Delete its
      events, and raise the event floor to the highest deleted sequence.
   3. Delete the `jobs` row; its summary cascades.
