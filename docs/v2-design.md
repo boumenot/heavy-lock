@@ -173,9 +173,9 @@ adapters explicit and the scheduler independently testable.
 
 **Open.** The selected SQLite driver's version and validation, native-library
 needs for other dependencies, cross-compilation, binary distribution,
-supported macOS versions and architectures, later Linux and Windows release
-plans, and runner/service version compatibility. No complete dependency set
-is selected here.
+validation of the macOS 13+ Apple Silicon target, possible later Intel macOS
+support, Linux and Windows release plans, and runner/service version
+compatibility. No complete dependency set is selected here.
 
 ## 2. Queue and admission policy
 
