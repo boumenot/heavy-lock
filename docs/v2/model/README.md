@@ -126,7 +126,11 @@ termination. The user chose runner-first termination with a broker fallback
 on verified identities after either a configurable acknowledgment deadline
 or completion deadline expires, or after verified runner death. Acknowledgment
 does not mean completion, and neither deadline expiry is release evidence.
-Durations, clock starts and recovery/clock handling remain open.
+Configurable, unmeasured starting defaults are 5 seconds for acknowledgment
+and 30 seconds for completion after acknowledgment. Explicit cancellation
+requests graceful shutdown, then force termination after a configurable
+20-second starting grace. This does not guarantee a 10-second cleanup
+window; exact clock starts, platform handling and coordination remain open.
 The model abstracts who terminates: root and child
 exits are nondeterministic, so release safety is checked whichever party
 causes them. It does not model either deadline, acknowledgments, explicit

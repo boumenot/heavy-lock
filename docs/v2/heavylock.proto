@@ -97,7 +97,11 @@ service ControlService {
   // request and push CancelRequested to the runner, which attempts
   // termination first. Separate configurable runner acknowledgment and
   // termination-completion deadlines apply; acknowledgment is not completion.
-  // Durations and clock starts are not yet specified.
+  // Configurable, unmeasured starting defaults: 5 s acknowledgment and
+  // 30 s completion after acknowledgment. Job termination requests graceful
+  // shutdown, then force termination after a configurable 20 s grace.
+  // Exact clock starts, platform mechanisms and coordination remain open;
+  // the completion deadline does not guarantee a 10 s cleanup window.
   // If either expires, or runner death is verified, the broker may fall back
   // on verified process identities, subject to safe coordination.
   // Expiry proves neither runner death nor process exit and never permits
