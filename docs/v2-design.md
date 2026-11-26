@@ -54,6 +54,7 @@ other row is an explicit user decision.
 | Language and packaging | Go runner and broker; one executable with a service mode |
 | Initial platforms | Apple Silicon macOS 13+ first *(minimum version delegated)*; Intel macOS is not required initially; Linux and Windows are later targets |
 | V1 switch | Stop using v1 and switch to v2; no mixed v1/v2 admission or nesting, migration plan, or legacy compatibility requirement |
+| Runner CLI | Retain the common v1 command separator, weight and worklog options *(delegated)*, plus the already-decided `--no-wait`; an explicit broker port is still required |
 | APIs | gRPC for runner, Swift monitor and other clients; REST queries and controls for `curl`, with polling rather than REST streaming |
 | Runner updates | Push over `WatchJob`, with a current-state snapshot on reconnect |
 | Monitor event replay | Configurable bounded replay; initial limits are 24 hours and 100,000 events |
@@ -245,9 +246,10 @@ The current defaults are capacity
 `min(processors ~/ 3, totalMemoryGiB ~/ 4)`, clamped to 2-8, with 25% free
 memory, at most 50% CPU load, and 60 seconds since the previous admission
 for sharing. See the [current behavior](../README.md#capacity-resources-and-priority).
-Exact v2 option names and numeric-weight normalization still need a
-contract; this document does not invent replacements for the current
-settings. Capacity changes are covered by the delegated decision below.
+The familiar weight option and its values are retained by the delegated
+CLI decision in section 9, but oversized weights are rejected rather than
+clamped. Other configuration option names remain open. Capacity changes
+are covered by the delegated decision below.
 
 **Historical recommendation, later adopted by delegation.** The assistant
 initially recommended bounded backfill; the user chose strict FIFO. The
@@ -1680,6 +1682,22 @@ publishing old-format JSON alone would not establish compatibility.
 Requiring and verifying a legacy read-only view would ease a transition that
 the user does not need, at the cost of additional compatibility machinery.
 The form of any v2 status CLI is a separate question.
+
+**Delegated decision: familiar runner CLI.** Keep the command separator
+`--` and the existing `--weight heavy|light|<positive integer>` and
+`--worklog <positive integer>` options. As in v1, `heavy` means two slots,
+`light` one and the default is `heavy`. Pass the command and its arguments
+without an implicit shell. `--no-wait` and its definite-busy exit code 75
+were already retained (section 2). The worklog value is explicitly supplied
+attribution; do not infer its repository.
+
+This adopts the assistant's recommendation under the user's delegation, not
+an individual user selection. Familiar option names ease updating scripts,
+but do not make v1 and v2 interchangeable: the broker port must still be
+supplied explicitly, and v2 rejects a weight above capacity rather than
+silently clamping it. Redesigning those options would allow a cleaner break
+but require more script changes. The port option's spelling, other
+configuration and environment-variable compatibility remain open.
 
 The macOS-first v2 rollout leaves the existing v1 runner available on Linux
 and Windows until their v2 support is ready; it does not make mixed v1/v2
@@ -3660,10 +3678,11 @@ current results from historical runs and list bounds and unchecked cases.
     release plans, and monotonic launch-timeout reconstruction across broker
     restarts. The initial architecture and minimum macOS version are decided
     (section 1); macOS login startup is delegated (section 4).
-12. The v2 nesting marker, retry delay and CLI option spelling. The simple
-    v1/v2 switch and lack of legacy status compatibility are decided
-    (section 9); no-wait, oversized weights and capacity fixed per broker
-    run are delegated decisions (section 2).
+12. The v2 nesting marker, retry delay, port-option spelling and other CLI
+    configuration. The simple v1/v2 switch and lack of legacy status
+    compatibility are decided, and common runner options are retained by
+    delegation (section 9); no-wait, oversized weights and capacity fixed per
+    broker run are delegated decisions (section 2).
 13. The [formal review gaps](v2/model/README.md#outcomes-and-actionable-gaps):
     verification under realistic OS/process assumptions, discovery of a
     formerly untracked child after release, and safety versus progress when
