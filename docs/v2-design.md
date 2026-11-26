@@ -60,11 +60,11 @@ users' jobs or machines.
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
 | Blocked cancel takeover | On deadline expiry with a live runner blocking safe coordination, broker tries to terminate that verified runner; takes over only after its exact incarnation is verified dead and coordination is safe; otherwise waits holding the reservation. Explicit cancel only |
 | Cancel confirmation | Monitor confirms every cancel (queued, reserved or running); direct API clients get no prompt |
-| Running-job cancellation | Explicit cancel: runner first; graceful shutdown, then force termination after a configurable 20 s grace; broker may take over on verified identities after acknowledgment/completion deadline expiry or verified runner death; expiry is not release evidence |
+| Running-job cancellation | Explicit cancel: runner first; immediately force-stop verified job processes (no graceful phase; supersedes graceful-then-force); broker may take over on verified identities after acknowledgment/completion deadline expiry or verified runner death; expiry is not release evidence |
 | Timestamp encoding | UTC Unix nanoseconds in signed `int64` on the wire and SQLite `INTEGER`; supersedes microseconds |
 | Interface and schema details | Approved recommendations on timestamps, durations, queue order, metadata storage, `ClientInfo`, idempotency keys, outcomes and API parity; see [section 11](#11-interface-and-schema-design) |
 | Initial timers | Configurable: 30 s queued-disconnect grace, 5 s broker-to-runner heartbeat, 30 s launch investigation from reservation commit |
-| Cancellation timers | Configurable, unmeasured starting defaults: 5 s acknowledgment, 30 s completion after acknowledgment, 20 s graceful shutdown before force escalation |
+| Cancellation timers | Configurable, unmeasured starting defaults: 5 s acknowledgment, 30 s completion after acknowledgment; no graceful-shutdown grace (immediate force) |
 | Queued-runner disconnect | Keep place during grace; successful reconnect resets it, and service downtime does not count |
 | Job history | Sample every five seconds, retain summaries rather than raw timestamped samples, keep indefinitely until explicitly deleted |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
@@ -271,58 +271,60 @@ Deadline alternatives:
 Short deadlines improve responsiveness but can trigger premature takeover
 while a live runner is still receiving the request or cleaning up, increasing
 overlap between termination attempts. Longer deadlines reduce that risk but
-delay cancellation when the runner is hung. The selected 20-second shutdown
-grace matches `_stopGrace` in `lib/heavy_lock.dart`. The 30-second
-post-acknowledgment completion deadline does **not** guarantee a 10-second
-cleanup window: acknowledgment, signal delivery, process cleanup and
-scheduling need not align, and the grace clock's exact start is not yet
-specified. None of these starting defaults has been measured for v2.
+delay cancellation when the runner is hung. With immediate force (below),
+the 30-second post-acknowledgment completion deadline covers force delivery,
+process exit and the runner's verification, not an application cleanup
+window. Neither starting default has been measured for v2.
 
 Still open: the acknowledgment clock start, the precise timing/clock rules
-for completion after acknowledgment and shutdown grace, recovery/clock handling,
+for completion after acknowledgment, recovery/clock handling,
 response/reset rules, handling an explicit failed termination result,
 coordination or fencing of a still-live runner, platform termination
 mechanisms, and how a fallback result is recorded.
 The acknowledgment wire message/RPC and any persistent deadline state
 remain contract-design gaps; this decision does not select those mechanisms.
 
-**User decision: graceful shutdown, then force termination.** Explicit job
-cancellation first requests graceful shutdown; if the processes have not
-exited by the end of a grace period, termination escalates to force. The
-user selected a configurable **20-second starting grace**, matching the
-existing runner. The policy applies to job termination by the runner and
-any safely coordinated broker takeover. It does not select the specific
-OS signals, process-tree operations or mechanisms used to terminate a
-runner that blocks coordination. Neither the grace expiring nor a force
-attempt proves exit; the reservation remains held until the approved
-release checks pass.
+**User decision: immediately force-stop on explicit cancellation.** An
+explicit job cancellation force-stops the verified job processes (root and
+known descendants) immediately, with no graceful-shutdown phase. This
+supersedes the earlier user choice of graceful shutdown then force after a
+grace period, together with the previously recorded 20-second grace; it
+follows the clarification below that jobs are disposable. The policy applies
+to job termination by the runner and to any safely coordinated broker
+takeover. Launch fencing, runner/broker coordination, identity verification
+and the approved release checks are unchanged. A force attempt is not proof
+of exit: it can fail (permissions, uninterruptible state), race a fork, or
+miss untracked descendants, which are not guaranteed to be stopped. The
+reservation stays held until the release checks pass. Specific OS signals,
+process-tree operations and the mechanism for killing a runner that blocks
+coordination remain open.
 
 Alternatives considered:
 - **Graceful only.** Gives the command a chance to save state and clean up,
   without forced interruption, but a command that ignores or cannot handle
   the request can hold capacity indefinitely.
-- **Immediate force.** Avoids waiting for graceful cleanup, but can lose
-  unsaved work, interrupt writes and skip application cleanup. Force can
-  still fail or leave descendants alive; it is not release evidence.
-- **Graceful, then force (chosen).** Allows ordinary cleanup while providing
-  escalation for an uncooperative command, at the cost of cancellation delay
-  and the risk of interrupting cleanup when grace expires. The exact grace
-  clock start, platform handling and coordination remain open.
+- **Graceful, then force (previous choice, superseded).** Allows ordinary
+  cleanup while escalating against an uncooperative command, at the cost of
+  cancellation delay (the grace period) and of interrupting cleanup when the
+  grace expires.
+- **Immediate force (chosen).** Shortest cancellation latency and no grace
+  timer to tune; acceptable because results are disposable. It can lose
+  unsaved work, leave partial files, temporary state or lock files behind,
+  and skip application cleanup such as child servers a command would have
+  shut down itself, so the next run may need to tolerate leftovers.
 
 **User clarification: jobs are disposable and can be rerun.** Preserving
 their results is less important than earlier cancellation tradeoffs assumed.
-This changes the priority of the recommendations below, not the already
-selected policies. Disposable results do not establish that every command
+This changed the priority of the recommendations below; the user has since
+adopted the first one (immediate force) as a decision. Disposable results do not establish that every command
 is idempotent or that an old process has stopped: duplicate or unaccounted
 work can still consume resources, contend for files or repeat external
 effects.
 
 **Revised recommendations (not new user decisions):**
-- Reconsider **immediate force for explicit job cancellation**, rather than
-  the selected graceful-then-force policy. Losing a result matters less
-  here, so shorter cancellation latency may justify skipping the 20-second
-  grace. Force still needs verified identities, safe coordination and
-  descendant cleanup; it cannot guarantee immediate exit or release.
+- ~~Reconsider immediate force for explicit job cancellation~~ — adopted
+  as a user decision above. Force still needs verified identities, safe
+  coordination and descendant cleanup; it cannot guarantee exit or release.
 - Reconsider **terminating and cleaning up a job after verified runner
   death**, rather than preserving it. This could recover capacity sooner
   when an outcome report is unlikely and the job can be rerun. It must not
@@ -383,8 +385,8 @@ the resulting outcome is recorded.
 visibly and with an audit entry. Cancel a waiting job by removing it and
 returning a distinct runner outcome. For the runner's own termination
 mechanism, preserve the current process-tree approach: freeze/snapshot on
-POSIX, signal and resume appropriately. Graceful-then-force policy and its
-20-second starting grace are selected; these platform mechanisms are not.
+POSIX, signal and resume appropriately. Immediate force is selected; these
+platform mechanisms are not.
 Untracked descendants are an explicitly accepted exception to complete tree
 verification (section 5).
 
@@ -1180,10 +1182,11 @@ service ControlService {
   // termination first. Separate configurable runner acknowledgment and
   // termination-completion deadlines apply; acknowledgment is not completion.
   // Configurable, unmeasured starting defaults: 5 s acknowledgment and
-  // 30 s completion after acknowledgment. Job termination requests graceful
-  // shutdown, then force termination after a configurable 20 s grace.
-  // Exact clock starts, platform mechanisms and coordination remain open;
-  // the completion deadline does not guarantee a 10 s cleanup window.
+  // 30 s completion after acknowledgment. Job termination immediately
+  // force-stops verified job processes, with no graceful-shutdown phase;
+  // a force attempt is not proof of exit and untracked descendants may
+  // survive. Exact clock starts, platform mechanisms and coordination
+  // remain open.
   // If either expires, or runner death is verified, the broker may fall back
   // on verified process identities, subject to safe coordination.
   // Expiry proves neither runner death nor process exit and never permits
@@ -2287,8 +2290,8 @@ current results from historical runs and list bounds and unchecked cases.
 1. Confirmation and audit semantics for other controls; concurrent control
    races. Running-job cancellation is runner-first with verified-identity
    broker fallback after acknowledgment/completion deadline expiry or verified
-   runner death. Starting defaults are 5 s acknowledgment, 30 s completion
-   after acknowledgment and 20 s graceful shutdown before force escalation.
+   runner death. Starting defaults are 5 s acknowledgment and 30 s completion
+   after acknowledgment; termination force-stops immediately.
    Precise clock starts and recovery/clock handling,
    explicit failed-result handling, coordination/fencing of a still-live
    runner and platform termination mechanisms remain open. When a live
