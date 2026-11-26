@@ -450,6 +450,9 @@ something accidentally, we have to rerun a build - it's all fine." The
 realistic cost of a failure is a slower laptop, a rerun build or capacity
 held until manual cleanup. The first release may ship simpler best-effort
 mechanisms and document their known limits instead of claiming guarantees.
+This later decision supersedes earlier recommendations in the design to
+validate process mechanisms and physical SQLite durability before
+implementation; it does not change the recorded safety rules themselves.
 The follow-ups are tracked as worklogs:
 
 - [#5](https://github.com/boumenot/heavy-lock/issues/5): process identity,
