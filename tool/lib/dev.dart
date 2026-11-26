@@ -584,6 +584,7 @@ class SwiftContractApp extends App {
   @override
   Future<int> build(DevContext context) => context.shell.run('swift', [
     'build',
+    resolvedOnly,
     '--package-path',
     this._package(context),
   ]);
@@ -591,6 +592,7 @@ class SwiftContractApp extends App {
   @override
   Future<int> test(DevContext context) => context.shell.run('swift', [
     'test',
+    resolvedOnly,
     '--package-path',
     this._package(context),
   ]);
@@ -598,6 +600,10 @@ class SwiftContractApp extends App {
   @override
   Future<int> install(DevContext context, String? destination) async =>
       unavailableExitCode;
+
+  /// Builds only the dependency versions in Package.resolved, which flake.nix
+  /// verifies against its Swift pins.
+  static const resolvedOnly = '--only-use-versions-from-resolved-file';
 }
 
 /// Moves [source] to [target], replacing an existing directory so a failure

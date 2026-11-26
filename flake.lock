@@ -1,5 +1,39 @@
 {
   "nodes": {
+    "grpc-swift-2": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791815882,
+        "narHash": "sha256-vLbsUHFr/Ldx5j1lQrIVtGueVoxUMKE94XbKrcr9OYQ=",
+        "owner": "grpc",
+        "repo": "grpc-swift-2",
+        "rev": "e31eb485c4575e0dbed3d1925e24084f755ac6e8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "grpc",
+        "ref": "2.4.4",
+        "repo": "grpc-swift-2",
+        "type": "github"
+      }
+    },
+    "grpc-swift-protobuf": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791904379,
+        "narHash": "sha256-61ANOmT9WNEvyeBUAnTR6YR2Hg05bCnd2/6eWHoxjQc=",
+        "owner": "grpc",
+        "repo": "grpc-swift-protobuf",
+        "rev": "83f5cdb2f8b4c7b57ed9419c6f4f6380b683500e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "grpc",
+        "ref": "2.5.0",
+        "repo": "grpc-swift-protobuf",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1795371335,
@@ -18,7 +52,45 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "grpc-swift-2": "grpc-swift-2",
+        "grpc-swift-protobuf": "grpc-swift-protobuf",
+        "nixpkgs": "nixpkgs",
+        "swift-collections": "swift-collections",
+        "swift-protobuf": "swift-protobuf"
+      }
+    },
+    "swift-collections": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794338180,
+        "narHash": "sha256-uqToq9UXZn9no3JaWuF3/ouClG1r0f02mFnayWdqk0Y=",
+        "owner": "apple",
+        "repo": "swift-collections",
+        "rev": "88754449ab766a739610b660e117762115fabc9c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.7.6",
+        "repo": "swift-collections",
+        "type": "github"
+      }
+    },
+    "swift-protobuf": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794598388,
+        "narHash": "sha256-DEXskoBnd2M64QP0hKyzMDQRQNRetKE3NpNO8CgyaPA=",
+        "owner": "apple",
+        "repo": "swift-protobuf",
+        "rev": "fed2f76413026cb0ae90999a8c9116949dfe6aa6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "apple",
+        "ref": "1.41.0",
+        "repo": "swift-protobuf",
+        "type": "github"
       }
     }
   },

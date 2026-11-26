@@ -184,6 +184,7 @@ void main() {
       expect(await dev(['test', 'all']), 0);
       expect(shell.steps, ['dart test', 'swift test', 'go test', 'swift test']);
       expect(shell.calls.last.last, '$root/packages/heavylock-v2-swift');
+      expect(shell.calls.last, contains(SwiftContractApp.resolvedOnly));
     });
 
     test('tuna builds atomically and is never installed', () async {

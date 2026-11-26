@@ -5,8 +5,9 @@
 #   heavy-lock -- nix develop -c tool/generate_v2.sh --check  # verify only
 #
 # protoc and the Go plugins come from the Nix dev shell. The Swift plugins are
-# built with Xcode's swift from packages/heavylock-v2-swift, whose pinned
-# dependencies also provide the Swift runtime libraries. Building them is
+# built with Xcode's swift from packages/heavylock-v2-swift, whose dependencies
+# (pinned in flake.nix and checked against Package.resolved) also provide the
+# Swift runtime libraries. Building them is
 # heavy, so run this script through the shared heavy-work gate.
 set -euo pipefail
 
@@ -33,10 +34,13 @@ for tool in protoc protoc-gen-go protoc-gen-go-grpc swift; do
   fi
 done
 
+# Only the Package.resolved versions, which flake.nix verifies, are used.
+swift_build=(swift build --package-path "$swift_package" -c release
+  --only-use-versions-from-resolved-file)
 for product in protoc-gen-swift protoc-gen-grpc-swift-2; do
-  swift build --package-path "$swift_package" -c release --product "$product"
+  "${swift_build[@]}" --product "$product"
 done
-plugins="$(swift build --package-path "$swift_package" -c release --show-bin-path)"
+plugins="$("${swift_build[@]}" --show-bin-path)"
 
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT

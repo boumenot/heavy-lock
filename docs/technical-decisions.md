@@ -222,8 +222,18 @@ the proto there with an `M` option, so the canonical contract's
 
 Swift bindings live in a separate library package,
 `packages/heavylock-v2-swift`, isolated from the v1 monitor (macOS 13+). It
-pins grpc-swift-2 2.4.4, grpc-swift-protobuf 2.5.0 and swift-protobuf
-1.41.0 exactly; gRPC Swift 2 documents macOS 15+, below the v2 floor. The
+uses grpc-swift-2 2.4.4, grpc-swift-protobuf 2.5.0 and swift-protobuf
+1.41.0 exactly; gRPC Swift 2 documents macOS 15+, below the v2 floor. Every
+resolved Swift dependency, including transitive swift-collections 1.7.6, is
+defined in `flake.nix` as a non-flake input pinned by tag, so `flake.lock`
+records its commit. SwiftPM cannot consume Nix store sources without
+replacing URL requirements with local paths, which would break plain
+`swift`/Xcode builds, so `Package.swift` and `Package.resolved` remain and
+must agree with the flake: flake evaluation (`nix develop`, `nix flake
+check`) throws on any difference in the pin set, location, tag, commit or
+`exact:` requirement, and `tool/dev.dart` and `tool/generate_v2.sh` build
+with `--only-use-versions-from-resolved-file`, so SwiftPM cannot drift from
+the verified file. The
 Swift protoc plugins are built with Xcode's Swift from those same pinned
 packages rather than taken from Nix. Only messages and clients are
 generated: the monitor never serves the API. Generated files in both
@@ -236,11 +246,16 @@ generator, and realizing it required ~1.3 GiB of downloads for a Nix Swift
 toolchain that could drift from both Xcode and the runtime libraries. A
 SwiftPM build plugin would regenerate on every monitor build, needing
 `protoc` at build time outside the dev shell. A root `go.mod` contradicts
-the `apps/` layout.
+the `apps/` layout. Feeding the flake's Swift sources to SwiftPM via
+`.package(path:)` or mirrors would make the package unbuildable outside the
+dev shell, and pinning only in SwiftPM would leave the flake silent about
+the Swift inputs, contrary to the user's direction.
 
-**Limits.** Swift package dependencies are pinned by `Package.swift` and
-`Package.resolved`, not by the flake, so the flake does not fully describe
-the Swift inputs; Xcode remains a system prerequisite. The transport
+**Limits.** SwiftPM, not Nix, still fetches and builds the Swift
+dependencies; the flake defines and enforces their versions but the Swift
+manifests must be updated alongside it. Xcode and its Swift toolchain
+remain a system prerequisite. New Swift dependencies (for example the #10
+transport) must be added as flake inputs too, or flake evaluation fails. The
 (grpc-swift-nio-transport), REST routing and service identity are left to
 #10. The `vendorHash` must be updated whenever `go.sum` changes. Only this
 Mac has been exercised.

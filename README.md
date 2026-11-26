@@ -385,11 +385,18 @@ are generated and committed; do not edit them by hand:
   `protoc-gen-go-grpc` 1.6.2 from the flake; runtime modules pinned in
   `apps/tuna/go.mod`).
 - Swift: `packages/heavylock-v2-swift/Sources/HeavyLockV2/` (messages plus
-  gRPC clients only), the library the future v2 monitor will use.
-  `Package.swift` pins grpc-swift-2 2.4.4, grpc-swift-protobuf 2.5.0 and
-  swift-protobuf 1.41.0 exactly, with `Package.resolved` committed. The
-  `protoc-gen-swift` and `protoc-gen-grpc-swift-2` plugins are built from those
-  same dependencies, so generated code always matches the runtime.
+  gRPC clients only), the library the future v2 monitor will use. Its
+  dependencies (grpc-swift-2 2.4.4, grpc-swift-protobuf 2.5.0, swift-protobuf
+  1.41.0 and transitive swift-collections 1.7.6) are pinned as non-flake
+  inputs in `flake.nix`, with their commits in `flake.lock`. SwiftPM still
+  needs `Package.swift` (exact requirements) and the committed
+  `Package.resolved`; evaluating the flake (`nix develop`, `nix flake check`)
+  fails if either differs from the flake pins, and `tool/dev.dart` and the
+  generator build with `--only-use-versions-from-resolved-file`. To update a
+  pin, change its tag in `flake.nix` and `Package.swift`, run `nix flake lock`
+  and `swift package resolve`, and commit all three. The `protoc-gen-swift`
+  and `protoc-gen-grpc-swift-2` plugins are built from those same
+  dependencies, so generated code always matches the runtime.
 
 Regenerate after changing the contract, or verify the committed files:
 
