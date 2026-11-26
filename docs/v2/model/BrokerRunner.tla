@@ -3,11 +3,12 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Jobs, Weight, Capacity, MaxBrokerCrashes, MaxRunnerCrashes,
           MaxDisconnects, GraceLimit, DurableFence, SafeAbsence,
-          CompleteTracking, ForceWhilePaused, RecoveryRPCs
+          CompleteTracking, ForceWhilePaused, RecoveryRPCs, BackfillLimit
 
 ASSUME /\ Jobs # {}
        /\ Weight \in [Jobs -> (Nat \ {0})]
        /\ Capacity \in (Nat \ {0})
+       /\ BackfillLimit \in Nat
 
 VARIABLES db, queue, runner, roots, children, tracked, launches, grants,
           reports, broker, paused, reconciled, absent, probes, brokerCrashes,
@@ -50,7 +51,7 @@ Init ==
                            noLaunch |-> FALSE, knownChild |-> FALSE,
                            rootId |-> 0, exit |-> 0, fromFinish |-> FALSE,
                            reportedDuringRecovery |-> FALSE, graceReset |-> FALSE,
-                           outcome |-> "pending"]]
+                           bypass |-> 0, outcome |-> "pending"]]
   /\ queue = <<>>
   /\ runner = [j \in Jobs |-> [up |-> TRUE, connected |-> TRUE,
                                grant |-> FALSE, cancel |-> FALSE,
@@ -89,22 +90,40 @@ Submit(j) ==
                  broker, paused, reconciled, absent, probes, brokerCrashes,
                  runnerCrashes, disconnects, grace, normalOK, recoveryOK>>
 
+Fits(k) == Occupied + Weight[k] <= Capacity
+
+\* Bounded backfill: only when the connected head is blocked solely by slot
+\* capacity, admit the earliest later job that fits; each head may be
+\* bypassed at most BackfillLimit times (0 is strict FIFO).
+Backfill(j) ==
+  /\ Len(queue) > 1 /\ Head(queue) # j
+  /\ LET h == Head(queue)
+     IN /\ runner[h].up /\ runner[h].connected
+        /\ ~Fits(h) /\ db[h].bypass < BackfillLimit
+  /\ \E i \in 2..Len(queue) :
+       /\ queue[i] = j
+       /\ \A p \in 2..(i - 1) : ~Fits(queue[p])
+
+NormalAdmit(j, resourcePass) ==
+  /\ ~paused /\ (Head(queue) = j \/ Backfill(j))
+  /\ Fits(j) /\ (Occupied = 0 \/ resourcePass)
+
 Reserve(j, forced, resourcePass) ==
   /\ broker = "ready" /\ db[j].phase = "queued"
   /\ runner[j].up /\ runner[j].connected
   /\ IF forced THEN (~paused \/ ForceWhilePaused)
-               ELSE /\ ~paused /\ Head(queue) = j
-                    /\ Occupied + Weight[j] <= Capacity
-                    /\ (Occupied = 0 \/ resourcePass)
-  /\ db' = [db EXCEPT ![j].phase = "reserved", ![j].held = TRUE,
-                     ![j].issued = TRUE, ![j].forced = forced,
-                     ![j].forcedWhilePaused = forced /\ paused,
-                     ![j].assigned = runner[j].incarnation]
+               ELSE NormalAdmit(j, resourcePass)
+  /\ db' = [k \in Jobs |->
+              IF k = j
+                 THEN [db[j] EXCEPT !.phase = "reserved", !.held = TRUE,
+                                    !.issued = TRUE, !.forced = forced,
+                                    !.forcedWhilePaused = forced /\ paused,
+                                    !.assigned = runner[j].incarnation]
+              ELSE IF ~forced /\ k = Head(queue)
+                 THEN [db[k] EXCEPT !.bypass = @ + 1]
+              ELSE db[k]]
   /\ queue' = Remove(queue, j)
-  /\ normalOK' = normalOK /\
-       (forced \/ (~paused /\ Head(queue) = j
-                   /\ Occupied + Weight[j] <= Capacity
-                   /\ (Occupied = 0 \/ resourcePass)))
+  /\ normalOK' = normalOK /\ (forced \/ NormalAdmit(j, resourcePass))
   /\ recoveryOK' = recoveryOK /\ broker = "ready"
   /\ UNCHANGED <<runner, roots, children, tracked, launches, grants, reports,
                  broker, paused, reconciled, absent, probes, brokerCrashes,
@@ -392,6 +411,19 @@ VerifyRunnerDead(j) ==
                  brokerCrashes, runnerCrashes, disconnects, grace,
                  normalOK, recoveryOK>>
 
+\* After OS verification that the assigned runner incarnation is dead, the
+\* broker force-stops the verified root and known children. An untracked
+\* child is outside its reach; capacity is still released only by Release.
+BrokerForceStop(j) ==
+  /\ broker \in {"ready", "recovering"} /\ db[j].held
+  /\ db[j].proof = "runner_dead" /\ j \in tracked
+  /\ (j \in roots \/ (db[j].knownChild /\ j \in children))
+  /\ roots' = roots \ {j}
+  /\ children' = IF db[j].knownChild THEN children \ {j} ELSE children
+  /\ UNCHANGED <<db, queue, runner, tracked, launches, grants, reports,
+                 broker, paused, reconciled, absent, probes, brokerCrashes,
+                 runnerCrashes, disconnects, grace, normalOK, recoveryOK>>
+
 MarkUnknown(j) ==
   /\ broker \in {"ready", "recovering"} /\ db[j].held
   /\ db[j].phase \in {"reserved", "running"} /\ db[j].outcome = "pending"
@@ -472,9 +504,11 @@ Reconcile(j) ==
                  brokerCrashes, runnerCrashes, disconnects, grace,
                  normalOK, recoveryOK>>
 
+\* Reaching "recovering" abstracts trustworthy, complete durable accounting.
+\* Unreconciled reservations stay held and counted in Occupied; they no
+\* longer block readiness or unrelated admissions.
 RecoveryDone ==
   /\ broker = "recovering"
-  /\ Active \subseteq reconciled
   /\ broker' = "ready"
   /\ UNCHANGED <<db, queue, runner, roots, children, tracked, launches,
                  grants, reports, paused, reconciled, absent, probes,
@@ -559,6 +593,7 @@ Next ==
        \/ SendOutcomeConflict(j) \/ ReceiveAborted(j) \/ ReceiveSeal(j)
        \/ Cancel(j) \/ ProbeTimeout(j) \/ SealLaunch(j)
        \/ PreventClaim(j) \/ VerifyRunnerDead(j) \/ MarkUnknown(j)
+       \/ BrokerForceStop(j)
        \/ ObserveAbsent(j) \/ Release(j) \/ Reconcile(j)
        \/ RunnerCrash(j) \/ RunnerRestart(j) \/ Disconnect(j) \/ Reconnect(j)
        \/ TickGrace(j) \/ ExpireGrace(j)
@@ -590,8 +625,24 @@ FocusedNext ==
        \/ SendReport(j, "started") \/ SendReport(j, "finished")
        \/ SendReport(j, "aborted") \/ ReceiveAborted(j)
        \/ \E kind \in {"started", "finished"} : SendConflict(j, kind)
-       \/ SendOutcomeConflict(j) \/ Reconcile(j)
+       \/ SendOutcomeConflict(j) \/ Reconcile(j) \/ BrokerForceStop(j)
 FocusedSpec == Init /\ [][FocusedNext]_vars
+RunnerDeathNext ==
+  \/ ClaimNext
+  \/ \E m \in reports : ReceiveStarted(m)
+  \/ \E j \in Jobs :
+       \/ ExitRoot(j) \/ Fork(j) \/ TrackChild(j) \/ ExitChild(j)
+       \/ SendReport(j, "started") \/ BrokerForceStop(j)
+RunnerDeathSpec == Init /\ [][RunnerDeathNext]_vars
+\* Recovery readiness with held, unreconciled reservations; releases omitted.
+RecoverySchedulingNext ==
+  \/ BrokerCrash \/ BrokerRestart \/ RecoveryDone
+  \/ \E m \in grants : DeliverGrant(m)
+  \/ \E m \in reports : CommitClaim(m) \/ DeliverClaim(m)
+  \/ \E j \in Jobs :
+       \/ Submit(j) \/ Reserve(j, FALSE, TRUE) \/ SendGrant(j)
+       \/ RequestClaim(j) \/ Spawn(j) \/ Reconnect(j)
+RecoverySchedulingSpec == Init /\ [][RecoverySchedulingNext]_vars
 FinishNext ==
   \/ \E m \in grants : DeliverGrant(m) \/ DropGrant(m)
   \/ \E m \in reports : DropReport(m) \/ CommitClaim(m) \/ DeliverClaim(m)
@@ -651,7 +702,7 @@ TypeOK ==
                        noLaunch : BOOLEAN, knownChild : BOOLEAN,
                        rootId : 0..2, exit : 0..2, fromFinish : BOOLEAN,
                        reportedDuringRecovery : BOOLEAN, graceReset : BOOLEAN,
-                       outcome : Outcomes]]
+                       bypass : 0..BackfillLimit, outcome : Outcomes]]
   /\ runner \in [Jobs -> [up : BOOLEAN, connected : BOOLEAN, grant : BOOLEAN,
                            cancel : BOOLEAN, fence : Fences, ticket : BOOLEAN,
                            identity : BOOLEAN,
@@ -730,6 +781,10 @@ NeverHeadBlocked ==
   ~(Len(queue) > 1
     /\ Occupied + Weight[Head(queue)] > Capacity
     /\ \E i \in 2..Len(queue) : Occupied + Weight[queue[i]] <= Capacity)
+NeverBackfill == \A j \in Jobs : db[j].bypass = 0
+NeverReadyWithUnreconciled ==
+  ~(broker = "ready" /\ brokerCrashes > 0
+    /\ \E j \in Jobs : db[j].held /\ j \notin reconciled)
 RecoveryAcceptsPendingIdentity ==
   \A j \in Jobs :
     (broker = "recovering" /\ db[j].phase = "reserved"

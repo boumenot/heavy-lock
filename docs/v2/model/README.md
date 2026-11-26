@@ -26,6 +26,7 @@ nix develop -c bash -c \
    python3 docs/v2/model/check.py \
      Scheduling StorageSchedulingSafety GraceSafety ClaimSafety TimeoutSafety RecoveryClaimSafety \
      StorageRecoverySafety CompletionSafety KnownChildRace \
+     RecoverySchedulingSafety RunnerDeathCleanup \
      --logs /tmp/heavy-lock-tlc-focused'
 ```
 
@@ -40,7 +41,7 @@ nix develop -c bash -c \
      VolatileFence UnfencedAbsence IncompleteTracking RecoveryBlocked \
      ForcedOverload HeadBlocked CrashBeforeLaunch PreventedClaim SealNoSpawn \
      FinishFirst RecoveryReports RecoverySpawn StorageFailureSpawn \
-     ForcePaused GraceReset \
+     ForcePaused GraceReset Backfill ReadyWithUncertain \
      --logs /tmp/heavy-lock-tlc-witnesses'
 ```
 
@@ -75,12 +76,13 @@ Run `Stress` separately through the same gate when deliberately checking its
 larger bound. If a compatible installed runner is unavailable, the repository
 documents a same-checkout bootstrap *after* migration; otherwise report the
 checks as unrun. Do not execute another checkout's runner or bypass contention.
-`RecoveryReportSafety` can also be costly; run it separately through the
-shared gate when it may exceed a minute on the host.
+`RecoveryReportSafety` (about 70 seconds on the host for this revision) and
+`RunnerDeathCleanup` can also be costly; run them separately through the
+shared gate when they may exceed a minute on the host.
 
 ## Modeled boundaries and choices
 
-`db` and `queue` represent committed SQLite rows and explicit FIFO order.
+`db` and `queue` represent committed SQLite rows and explicit queue order.
 Every submit, reservation, claim, report, cancellation, release or move is a
 separate serialized transaction. Committing a reservation or claim, sending
 its message, actually spawning, reporting the result and verifying exit are
@@ -102,8 +104,12 @@ The selected no-future-launch fence is either the original runner's serialized
 seal or verified death of that exact incarnation. The additional no-launch
 case is an atomic broker prevention of an unclaimed grant, or an original
 runner's seal confirming no spawn. Process exit and no-future-launch are
-separate facts. A root and one child are independently modeled; runner death
-does not kill them. Start and finish messages may arrive in either order. The
+separate facts. A root and one child are independently modeled; a runner
+crash does not kill them. `BrokerForceStop` models the delegated policy of
+force-stopping verified job processes after **OS-verified** death of the
+assigned runner incarnation (`proof = "runner_dead"`) and a recorded root
+identity: it stops the root and a known child, but never an untracked child,
+and it changes no reservation. Disconnects and timeouts cannot enable it. Start and finish messages may arrive in either order. The
 finish-first transition records the root and outcome atomically; matching
 retries do not change state and conflicting subsequent reports cannot
 replace those values. First-report authenticity and exact RPC responses are
@@ -117,8 +123,12 @@ it does not model later discovery after release. Timeout, disconnect, an
 empty scan, an unknown outcome and ordinary reports do not by themselves
 free the reservation. There is no unsafe override for an unknown root.
 
-Normal admission requires a ready broker, an unpaused queue, the connected
-head, capacity and the abstract live resource check. Manual reorder and
+Normal admission requires a ready broker, an unpaused queue, capacity and
+the abstract live resource check, and either the connected head or bounded
+backfill. Backfill applies only when the connected head is blocked solely by
+capacity; it admits the earliest later job that fits and increments the
+head's durable bypass count, which `BackfillLimit` bounds (0 is strict
+FIFO; the delegated default is 1). Manual reorder and
 force are explicit exceptions; a forced job counts toward occupied capacity
 and may be admitted while paused, but not during recovery. Cancellation
 removes queued work or records a request for granted work; it does not prove
@@ -145,8 +155,13 @@ itself. Stopped descendants, lost reports and failed kills are not modeled.
 Recovery permits existing-job reports/rejoin but blocks new
 submissions, claims and admissions. The user explicitly permits an original
 runner to spawn under a previously committed claim even while recovery is
-underway or storage has failed; the reservation stays held. Recovery must
-reconcile the claim or fence it before readiness.
+underway or storage has failed; the reservation stays held. Under the
+delegated scoped-recovery policy, the `recovering` state abstracts storage
+that has been reopened and trusted with complete durable accounting:
+`RecoveryDone` no longer waits for every held reservation to be reconciled.
+Unreconciled reservations (including an unfenced pre-crash claim) stay held
+and counted in `Occupied`, so they constrain later admissions but no longer
+block unrelated ones. `Reconcile` remains an observation, not a release.
 
 `StorageFailure` moves the broker to a non-ready mode where it cannot commit
 new reservations or claims; `StorageRestored` re-enters recovery rather
@@ -184,7 +199,9 @@ The positive profiles check relevant subsets of:
   `UnknownOutcomeHeld`: persisted report consistency and uncertainty.
 - `NormalCapacity`, `NormalFIFO`, `NoReservationWhenNotReady`:
   normal scheduling guards, accounting for forced reservations, and no new
-  reservation while recovering or storage has failed.
+  reservation while recovering or storage has failed. `NormalFIFO` (name
+  kept for continuity) checks that each normal admission was either the
+  connected head or a bounded backfill within `BackfillLimit`.
 - `GraceResetWhenConnected`, `ExpiredJobNotRevived`: reconnect/expiry ordering.
 
 `ClaimSpec` omits child creation, lifecycle report receivers, pause, force,
@@ -195,7 +212,11 @@ start/finish delivery and conflicts without crashes, cancellation, seal or
 release. `RecoveryReportSpec` combines report ordering, cancellation, seal,
 release and one broker crash but omits runner crashes, children and force.
 `ObservationSpec` covers discovery versus release for one child but omits
-crashes and controls. `GraceSpec` omits admission; `SchedulingSpec` and
+crashes and controls. `RunnerDeathSpec` adds roots, children, start reports
+and broker force-stop to the claim subset with one runner crash, but omits
+finish reports and broker crashes. `RecoverySchedulingSpec` covers broker
+crash/restart, readiness, claims and admission of two jobs, but omits
+release, cancellation and runner crashes. `GraceSpec` omits admission; `SchedulingSpec` and
 `StorageSchedulingSpec` omit launch and release, and the latter does not
 reconcile held work. Their combined results are not a compositional proof.
 The full `Spec` includes the omitted interactions.
@@ -203,20 +224,23 @@ The full `Spec` includes the omitted interactions.
 ## Outcomes and actionable gaps
 
 The following runs used TLC 2.18, one worker and `-Xmx512m` on macOS on
-2026-11-25. Positive searches finished with no queued states. Witness
+2026-11-25, against the revision adding bounded backfill, scoped recovery and
+broker force-stop after verified runner death. Positive searches finished with no queued states. Witness
 counts stop at the first deliberately violated invariant.
 
 | Focused case | Bounds and scope | Generated / distinct states | Result |
 |---|---|---:|---|
-| `Scheduling` | 3 jobs, weights 2/1/1, capacity 2; queue/controls only | 9,091 / 1,388 | complete |
-| `StorageSchedulingSafety` | 3 jobs; force, normal scheduling and storage failure/restore | 13,331 / 4,164 | complete |
+| `Scheduling` | 3 jobs, weights 2/1/1, capacity 2, backfill limit 1; queue/controls only | 10,287 / 1,628 | complete |
+| `StorageSchedulingSafety` | 3 jobs, backfill limit 1; force, normal scheduling and storage failure/restore | 16,799 / 4,884 | complete |
 | `GraceSafety` | 1 job; 1 broker crash, 2 disconnects, 30 grace ticks | 949 / 488 | complete |
 | `ClaimSafety` | 1 job; 1 runner crash; claim/fence/cancel actions | 326,701 / 40,556 | complete |
 | `TimeoutSafety` | 1 job; 1 runner crash; timeout, claim and sealing actions | 773,669 / 84,116 | complete |
-| `RecoveryClaimSafety` | 1 job; 1 broker and 1 runner crash; claim/fence actions | 1,269,139 / 161,761 | complete |
-| `StorageRecoverySafety` | 1 job; 1 broker and 1 runner crash; storage failure/restore and claim/fence actions | 2,800,225 / 361,323 | complete |
+| `RecoveryClaimSafety` | 1 job; 1 broker and 1 runner crash; claim/fence actions | 1,449,063 / 176,153 | complete |
+| `StorageRecoverySafety` | 1 job; 1 broker and 1 runner crash; storage failure/restore and claim/fence actions | 3,209,665 / 393,163 | complete |
 | `CompletionSafety` | 1 job; reordered/lost/conflicting start and finish | 7,589 / 778 | complete |
-| `RecoveryReportSafety` | 1 job; 1 broker crash; report ordering, cancellation, seal and release | 10,089,258 / 746,960 | complete |
+| `RecoveryReportSafety` | 1 job; 1 broker crash; report ordering, cancellation, seal and release | 13,846,466 / 994,324 | complete |
+| `RecoverySchedulingSafety` | 2 unit jobs, capacity 1; 1 broker crash; readiness beside an unreconciled reservation | 1,533 / 362 | complete |
+| `RunnerDeathCleanup` | 1 job; 1 runner crash; child, start report and broker force-stop after verified death | 2,141,613 / 234,684 | complete |
 | `KnownChildRace` | 1 job; discovery between scan and release | 523 / 93 | complete |
 
 | Witness | Violated diagnostic invariant | Meaning |
@@ -228,7 +252,9 @@ counts stop at the first deliberately violated invariant.
 | `RecoverySpawn` | `NeverSpawnWhileRecovering` | A delayed pre-crash claim reply can start its original runner during recovery. |
 | `StorageFailureSpawn` | `NeverSpawnWhileStorageFailed` | A previously delivered claim can start its original runner after storage becomes untrusted. |
 | `ForcedOverload` | `NeverForcedOverload` | Force intentionally permits occupied weight above capacity. |
-| `HeadBlocked` | `NeverHeadBlocked` | Strict FIFO can block a smaller fitting follower. |
+| `HeadBlocked` | `NeverHeadBlocked` | A capacity-blocked head can still block a smaller fitting follower once its bypass limit is used (or with limit 0, strict FIFO). |
+| `Backfill` | `NeverBackfill` | With limit 1, a later fitting job can be admitted past a capacity-blocked head. |
+| `ReadyWithUncertain` | `NeverReadyWithUnreconciled` | After a broker crash, the broker can become ready while a held reservation is still unreconciled (and counted). |
 | `CrashBeforeLaunch` | `NeverCrashBeforeLaunchUnknown` | A committed claim followed by runner death before spawn can remain held with unknown outcome. |
 | `PreventedClaim` | `NeverReleasePreventedClaim` | Atomic prevention of an unclaimed grant can lead to release. |
 | `SealNoSpawn` | `NeverReleaseSealedNoSpawn` | A claimed grant can be released after a seal confirms no spawn. |
@@ -249,6 +275,10 @@ absolute no-start rule. They are expected under the approved in-flight-claim
 exception, not violations of the current policy. Preventing them would need
 a different launch/recovery synchronization protocol; blocking new RPCs
 alone is insufficient.
+
+Retries are not modeled: a retry is a fresh submission, so the model's
+finite job set would represent it as another job. The bypass count's
+interaction with crashes is not checked beyond its durable storage in `db`.
 
 The earlier `Safety` and `Recovery` results belonged to the prior model
 revision. Their current configurations, and `Stress`, have **not** completed

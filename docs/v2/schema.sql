@@ -101,6 +101,17 @@ CREATE TABLE jobs (
                       -- e.g. 1764121500000000000 (2025-11-26T01:45:00.000000000Z)
   cancel_reason       TEXT,     -- e.g. 'cancelled from monitor'
 
+  -- Scheduling and opt-in retry ---------------------------------------------
+  admitted_by_backfill INTEGER NOT NULL DEFAULT 0 CHECK (admitted_by_backfill IN (0, 1)),
+                      -- 1 when admitted past a capacity-blocked head, e.g. 0
+  backfill_bypass_count INTEGER NOT NULL DEFAULT 0 CHECK (backfill_bypass_count >= 0),
+                      -- later jobs backfilled past this job while it was the
+                      -- capacity-blocked head; kept across manual reorder, e.g. 1
+  retry_of_job_id     TEXT UNIQUE REFERENCES jobs (id),
+                      -- earlier failed attempt; at most one retry per attempt
+  attempt             INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
+                      -- 1 for an original submission, e.g. 2 for the first retry
+
   -- Who submitted it (unauthenticated client claims) ------------------------
   client_name         TEXT,     -- e.g. 'heavy-lock'
   client_version      TEXT,     -- e.g. '2.0.0'
@@ -144,6 +155,8 @@ CREATE TABLE jobs (
 
   -- State consistency (presence only; wall-clock values are not compared) --
   CHECK (started_at_ns IS NULL OR admitted_at_ns IS NOT NULL),
+  CHECK ((retry_of_job_id IS NULL) = (attempt = 1)),
+  CHECK (admitted_by_backfill = 0 OR (forced = 0 AND admitted_at_ns IS NOT NULL)),
   CHECK ((state = 'finished') = (finished_at_ns IS NOT NULL)),
   -- Unknown may be visible while the reservation remains held.
   CHECK ((state = 'queued' AND outcome_kind IS NULL)

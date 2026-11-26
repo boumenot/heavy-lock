@@ -13,6 +13,14 @@ discussion. **Recommendation** means assistant advice, not approval.
 **Open** means no final choice has been made. Historical recommendations
 are retained below for their rationale, not as active policy.
 
+**Delegated decision** means a choice the assistant made under the user's
+explicit delegation, "accept your recommendations for the questions, only
+focus on the ones that require me", applying the recommendations from the
+published design review. Delegated decisions are adopted policy for this
+design, but they are the assistant's choices, not choices the user made
+individually; the user can revisit any of them. Each records the user
+decision it supersedes, if any, and its alternatives and tradeoffs.
+
 No v2 code, Go toolchain migration, deployment, protocol change or machine
 configuration is part of this documentation work. The user authorized
 committing this document locally; push, PR, merge and issue changes are
@@ -38,7 +46,10 @@ users' jobs or machines.
 
 ## Current choices at a glance
 
-| Area | User decision |
+Rows marked *(delegated)* are delegated decisions as defined above; every
+other row is an explicit user decision.
+
+| Area | Decision |
 |---|---|
 | Language and packaging | Go runner and broker; one executable with a service mode |
 | APIs | gRPC for runner, Swift monitor and other clients; REST for `curl` |
@@ -46,11 +57,13 @@ users' jobs or machines.
 | Transport | Both APIs share a fixed, configurable loopback TCP port; runner takes an explicit port argument |
 | Access | No API authentication; no remote access |
 | Service | One independently supervised broker per OS user, protected by a port-independent OS singleton lock |
-| Admission | Strict FIFO, with explicit manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
+| Admission | FIFO with bounded backfill *(delegated; supersedes strict FIFO)*: a later fitting job may pass a head blocked only by slot capacity, at most K times per head (configurable, default 1; K = 0 is strict FIFO); manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
 | Pause | Pause normal admissions only; running jobs continue and confirmed force-start remains allowed |
 | Force-start | Bypass resource checks, including while paused; count toward occupied capacity, with monitor confirmation |
 | New submission while service unavailable | Fail immediately and clearly; do not auto-start, retry until restart, or run unscheduled |
-| Recovery | Persist valid existing-job rejoin/reports; block new reservations and claims until every uncertain reservation is reconciled |
+| Recovery | Persist valid existing-job rejoin/reports; become ready once trusted storage gives complete accounting, keeping each unreconciled reservation held and counted while normal scheduling continues *(delegated; supersedes global fail-closed blocking)*; never release or replay on uncertainty |
+| Runner death | After OS-verified death of the assigned runner incarnation, the broker force-stops the job's verified processes *(delegated; supersedes leaving them running)*; never on disconnect or timeout alone; reservation held until release checks pass |
+| Retry | Opt-in, runner-side, at most 3 retries (default none) as fresh submissions, only after a released attempt exited with a non-zero code *(delegated)* |
 | Launch | A durable, one-shot broker claim binds the grant to the original runner incarnation before spawn |
 | Runner identity | Fresh UUIDv4 per process, bound with OS process identity; same live process keeps it across reconnect |
 | Release | Fence future launch and verify root/known descendants, or establish the confirmed-no-launch exception; accept untracked-descendant risk but no unsafe unknown-root override |
@@ -58,7 +71,7 @@ users' jobs or machines.
 | SQLite journal | WAL with `synchronous = FULL` everywhere and `fullfsync = ON` on macOS; measure commit latency |
 | SQLite driver | Start with `modernc.org/sqlite`; pin and validate a version before implementation relies on it |
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
-| Blocked cancel takeover | On deadline expiry with a live runner blocking safe coordination, broker tries to terminate that verified runner; takes over only after its exact incarnation is verified dead and coordination is safe; otherwise waits holding the reservation. Explicit cancel only |
+| Blocked cancel takeover | On deadline expiry with a live runner blocking safe coordination, broker tries to terminate that verified runner; takes over only after its exact incarnation is verified dead and coordination is safe; otherwise waits holding the reservation. Explicit cancel only; the broker never kills a runner for runner-death cleanup |
 | Cancel confirmation | Monitor confirms every cancel (queued, reserved or running); direct API clients get no prompt |
 | Running-job cancellation | Explicit cancel: runner first; immediately force-stop verified job processes (no graceful phase; supersedes graceful-then-force); broker may take over on verified identities after acknowledgment/completion deadline expiry or verified runner death; expiry is not release evidence |
 | Timestamp encoding | UTC Unix nanoseconds in signed `int64` on the wire and SQLite `INTEGER`; supersedes microseconds |
@@ -111,11 +124,54 @@ dependency set is selected here.
 
 ## 2. Queue and admission policy
 
-**User decision.** Maintain a durable queue in arrival order and admit in
-**strict FIFO** order. If the head cannot fit, later jobs wait even if they
-could fit. Admit multiple jobs concurrently when capacity allows, in queue
-order. Manual reorder changes that order; force-start is an explicit
-exception. The scheduler does not automatically backfill.
+**User decision (admission order now superseded).** Maintain a durable
+queue in arrival order and admit in **strict FIFO** order. If the head
+cannot fit, later jobs wait even if they could fit. Admit multiple jobs
+concurrently when capacity allows, in queue order. Manual reorder changes
+that order; force-start is an explicit exception. The durable queue, manual
+reorder and force-start remain decided; the no-backfill rule is superseded
+by the delegated decision below.
+
+**Delegated decision: bounded backfill.** When the queue head is blocked
+**only by insufficient slots**, admit the earliest later waiting job whose
+weight fits the free slots and that passes the same live sharing checks as
+any normal admission. Each such admission increments the head's durable
+bypass count. Once the count reaches the configurable limit K, that head
+blocks later jobs as under strict FIFO until it is admitted. The delegated
+starting default is **K = 1**; K = 0 restores strict FIFO exactly.
+
+- Backfill applies only to a capacity-blocked head. It never applies while
+  normal admissions are paused, while the broker is not ready, while the head
+  fails a live sharing check (those checks are not weight-specific, so a
+  later job would face the same machine state), or while the head's runner is
+  disconnected (grace handling governs that head).
+- The bypass count belongs to the job and persists across broker restarts
+  and manual reorder; moving a job does not reset or transfer it.
+- Force-start and manual reorder are explicit operator exceptions and do not
+  count as bypasses. A force-started job's weight still counts toward
+  occupancy, which can delay the head further.
+- No job duration estimates are used; history-based scheduling remains out
+  of v2 scope.
+- Clients show the blocked-head reason, the head's bypass count and whether
+  a job was admitted by backfill.
+
+The bound is on the **number** of bypasses, not on time: each backfilled job
+may run for a long time, and a capacity-blocked head still waits for enough
+slots to free. With K = 1 the extra delay is at most one later job admitted
+per time the head is blocked by capacity, rather than unbounded overtaking.
+
+Alternatives considered:
+- **Strict FIFO (previous user decision).** Most predictable: queue position
+  fully explains order. But a large head idles capacity that smaller jobs
+  could use, the head-of-line blocking that the review flagged.
+- **Unbounded backfill.** Best utilization, but a stream of small jobs can
+  starve a large head indefinitely.
+- **Bounded backfill (adopted).** Recovers some idle capacity with a fixed,
+  visible fairness bound. Costs: queue position is less predictive, a
+  backfilled job can make the head wait for its completion, the bypass count
+  is extra durable state, and fairness depends on K. Because builds and
+  tests may not be safe to duplicate or interleave, backfill never relaxes
+  the sharing checks, the claim protocol or capacity accounting.
 
 **User decision.** Use weight-based slots rather than history-based
 predictions. Retain the current live free-memory, CPU-load and settling
@@ -131,18 +187,20 @@ Exact v2 option names, numeric-weight normalization and capacity
 reconfiguration semantics still need a contract; this document does not
 invent replacements for the current settings.
 
-**Historical recommendation, not selected.** Bounded backfill would let
-small jobs use spare capacity while a large head waits, with limits to
-prevent starvation. It improves utilization but complicates fairness and
-makes queue position less predictive. Strict FIFO favors predictability
-and explainability at the cost of head-of-line blocking and idle capacity.
+**Historical recommendation, later adopted by delegation.** The assistant
+initially recommended bounded backfill; the user chose strict FIFO. The
+published review again recommended bounded backfill, and the user's
+delegation adopted it as described above.
 
 **Recommendation.** Present the actual queue order, blocked-head reason,
 slot accounting and manual exceptions consistently in all clients.
 Use a single serialized scheduling authority and transactional transitions.
 
 **Open.** Priorities or reservations, if ever added, and their interaction
-with FIFO; oversized requests; capacity changes while jobs are active;
+with queue order and backfill; oversized requests (a weight above current
+capacity, for example after capacity reconfiguration, must not wait forever
+while backfill exhausts its count); whether K should be configurable per
+queue or per job; capacity changes while jobs are active;
 and precise semantics of a no-wait submission. These are not approved
 v2 features.
 
@@ -156,7 +214,7 @@ requests. Control state must not depend on the monitor staying alive.
 running jobs continue. This is not suspension of running processes.
 Resuming restores normal queue admission.
 
-**User decision: force-start.** Permit a manual start out of FIFO order,
+**User decision: force-start.** Permit a manual start out of queue order,
 bypassing normal resource-admission checks, including capacity,
 free-memory, CPU-load and settling checks. Count forced jobs toward
 occupied capacity so later normal admissions account for them, including
@@ -205,8 +263,10 @@ trigger for the fallback attempt: it does not prove runner death or process
 exit and does not authorize release. The reservation
 stays held until the already-approved release checks pass (section 5); an
 accepted cancel request, a termination attempt or a disconnect is not proof
-of exit. Cancellation is never triggered automatically by runner death or
-disconnection: the separately chosen runner-death policy leaves work running.
+of exit. Disconnection never triggers termination. Verified runner death is
+not a cancellation request, but the delegated runner-death policy
+(section 4) uses the same broker termination procedure to force-stop the
+job's verified processes.
 
 Alternatives considered:
 - **Runner-only.** Simplest ownership, with no concurrent termination
@@ -321,30 +381,45 @@ is idempotent or that an old process has stopped: duplicate or unaccounted
 work can still consume resources, contend for files or repeat external
 effects.
 
-**Revised recommendations (not new user decisions):**
+**Revised recommendations and their status:**
 - ~~Reconsider immediate force for explicit job cancellation~~ — adopted
   as a user decision above. Force still needs verified identities, safe
   coordination and descendant cleanup; it cannot guarantee exit or release.
-- Reconsider **terminating and cleaning up a job after verified runner
-  death**, rather than preserving it. This could recover capacity sooner
-  when an outcome report is unlikely and the job can be rerun. It must not
-  act merely on a disconnect, and cannot release before the existing checks.
+- ~~Reconsider terminating and cleaning up a job after verified runner
+  death~~ — adopted as a delegated decision (section 4). It does not act
+  merely on a disconnect or timeout, and cannot release before the existing
+  checks.
 - Keep **unknown-root holds and no unsafe override**. A disposable job may
   still be alive and consume capacity. Prefer better identity evidence,
   containment and verifiable cleanup over guessing it is gone. If any hold
   is relaxed, that needs a separate decision explicitly accepting unaccounted
   work or oversubscription; the clarification does not authorize it.
-- Consider **opt-in retry after verified cleanup**, with a fresh submission
-  and claim, for workloads whose duplicate effects are acceptable. Do not
-  replay the old one-shot claim or retry an ambiguous result while old work
-  may still be running. Unlimited automatic retry can loop on a persistent
-  failure; retry limits and eligibility need a separate decision. The chosen
-  immediate failure for an initially unavailable broker remains unchanged.
+- ~~Consider opt-in retry after verified cleanup~~ — adopted as a minimal
+  delegated decision (section 4). It never replays the old one-shot claim or
+  retries an ambiguous result while old work may still be running.
 
-These recommendations do not weaken global recovery blocking, durable
-claims, process-identity verification or reservation release. The unresolved
-clock, coordination and platform questions remain necessary even when the
-command's result has no preservation value.
+None of these weakens durable claims, process-identity verification or
+reservation release. The delegated scoped-recovery decision (section 5)
+replaces global recovery blocking but keeps every uncertain reservation held
+and counted. The unresolved clock, coordination and platform questions
+remain necessary even when the command's result has no preservation value.
+
+**Delegated review: cancellation simplification.** The review considered
+collapsing runner-first cancellation and its two deadlines into a single
+broker-owned or single-deadline design. It adopted no such simplification:
+runner-first termination, separate 5-second acknowledgment and 30-second
+completion deadlines, immediate force and blocked takeover are recent
+explicit user decisions, and the review found no safety defect that would
+justify reversing them. The adopted simplification is narrower: the broker
+uses **one termination procedure** for every case where it terminates job
+processes itself (cancellation takeover, takeover after a blocking runner is
+verified dead, and runner-death cleanup). That procedure targets only
+verified root and known-descendant identities, force-stops immediately,
+kills or resumes any stopped descendants, records what it observed, and
+never releases capacity itself. A single broker-owned design would remove
+the two-terminator race but duplicate the runner's tree knowledge and lose
+its exit status; a single deadline would be simpler but could not separate
+an unresponsive runner from a slow cleanup.
 
 **User decision: blocked cancellation takeover.** If a cancellation deadline
 expires while the still-live runner holds the coordination needed for safe
@@ -354,9 +429,9 @@ verified runner. It takes over termination of the job only once that exact
 runner incarnation (UUIDv4 plus OS process identity) is verified dead and
 safe coordination is then possible. If either cannot be established, the
 broker waits and retains the reservation. This applies only to an explicit
-job cancellation; it does not change the runner-death policy, which never
-terminates a job, and the broker never kills a runner merely because it
-disconnected. Killing the runner is not evidence that the job's processes
+job cancellation. The runner-death cleanup in section 4 starts only after
+death is already verified, so it never kills a runner, and the broker never
+kills a runner merely because it disconnected. Killing the runner is not evidence that the job's processes
 exited, and the approved release checks still apply.
 
 Alternative considered: **wait indefinitely** for the runner to finish or
@@ -467,18 +542,76 @@ provisional `runner_connected` default does not establish a live stream;
 initial registration and any resulting timeout require a separate rule.
 Running-runner disconnect handling must not treat disconnection as death.
 
-**User decision: runner death.** The broker leaves a running command and its
-children running when the original runner dies, and continues tracking them.
-It retains capacity until the release conditions below are met. The outcome
-can remain unknown if the runner could not report it. Disconnection alone
-is not proof of death or grounds for release. A separately requested
-cancellation uses runner-first termination with a verified-identity broker
-fallback (section 3); runner death alone never triggers it.
+**User decision (superseded): runner death.** The broker left a running
+command and its children running when the original runner died, continued
+tracking them, and retained capacity until the release conditions were met.
 
-The alternative is to attempt termination on runner death. That can reclaim
-resources sooner, but interrupts useful work and still requires reliable
-tree termination and verification. Leaving work running favors continuity,
-at the cost of longer occupied capacity and possibly missing its exit status.
+**Delegated decision: force-stop after verified runner death.** When the OS
+verifies that the exact runner incarnation bound to a job's reservation
+(UUIDv4 plus OS process identity) has died, the broker force-stops that
+job's verified root and known descendants using the shared broker
+termination procedure (section 3). This is not a cancellation request and
+needs no monitor confirmation.
+- **Trigger:** OS-verified death only. A disconnect, missed heartbeat,
+  expired launch or cancellation deadline, or ambiguous identity is not
+  death and never triggers it.
+- **Unknown root:** if the runner died before any root identity was recorded,
+  there is nothing verifiable to stop. The reservation stays held under the
+  approved rules, with no override; verified death does fence future launch.
+- **Targets:** only processes whose recorded identity still matches. Stopped
+  descendants are killed or resumed, never counted as exited. Untracked
+  descendants may survive, the already accepted risk.
+- **Outcome:** a valid earlier report is kept. Otherwise the outcome stays
+  unknown, with a detail recording broker cleanup after runner death; the
+  broker does not invent an exit code.
+- **Capacity:** stays held until the approved fence, root-exit and
+  known-descendant checks pass. A force attempt is not proof of exit.
+
+Why the previous decision changed: once its runner has died, a job has no
+consumer for its result or terminal status, and the user clarified that
+jobs are disposable and can be rerun. Leaving it running keeps capacity
+occupied for work no one will collect, delaying other jobs.
+
+Alternatives and tradeoffs:
+- **Leave running (previous user decision).** Preserves work that might
+  still finish usefully and avoids interrupting it, but holds capacity for
+  orphaned work, possibly for a long time, and its exit status is lost.
+- **Terminate on disconnect.** Reclaims capacity fastest, but a disconnect
+  is not death: it can kill work whose runner is alive and will reconnect.
+  Rejected as unsafe.
+- **Terminate after a timeout.** A timeout does not prove death either, and
+  would create a second terminator racing a live runner. Rejected.
+- **Force-stop after verified death (adopted).** Frees capacity sooner with
+  no live-runner race. Costs: it can kill work that would have completed,
+  leave partial artifacts or temporary files that the next run must
+  tolerate, and depends on reliable death detection, which remains open.
+  Duplicated or partial build output is not assumed harmless.
+
+**Delegated decision: opt-in bounded retry.** A runner may retry a failed
+command only when the invoking client opts in, with a retry count from 0
+(the default) to a fixed maximum of 3. A retry is allowed only after the
+previous attempt is `FINISHED` with an observed non-zero exit code and its
+reservation was released through the approved checks. It is never allowed
+for cancellation, queued-disconnect removal, launch failure, signal
+termination, unknown or forced outcomes, or after runner death (no runner
+remains to retry). Each retry is a fresh submission with a new idempotency
+key, a new grant and a new one-shot claim, linked to the previous attempt
+and appended to the **back** of the queue. It never replays a claim. The
+broker validates eligibility and the attempt limit but never resubmits or
+relaunches work itself. The runner exits with the final attempt's result.
+An initially unavailable broker still fails immediately; retry does not
+retry submission.
+
+Tradeoffs: retry can absorb transient failures without an outer script, but
+a deterministic failure consumes capacity again, and an untracked
+descendant of the failed attempt may still be running beside the retry.
+Duplicate effects are therefore not assumed harmless; retry stays off unless
+the caller opts in. Retrying signal terminations would cover out-of-memory
+kills but would also retry deliberate interruptions, so it is excluded.
+Automatic broker-side retry and unlimited retry were rejected: the broker
+cannot spawn, and unlimited retry can loop on a persistent failure. Retry
+delay, which outcomes a future policy might add, and CLI option spelling
+remain open.
 
 **Recommendation.** Make job submission and lifecycle reporting
 idempotent, using stable job/submission identifiers so a lost response does
@@ -500,20 +633,44 @@ partially started jobs and surviving children.
 
 **User decision.** Store queue order, active jobs and occupied slots in
 SQLite. Queued work survives broker restarts. Running jobs continue if the
-broker crashes. On restart, reconcile persisted state with verified live
-process identities and reconnecting runners **before new reservations or
-claims**. All uncertain reservations must be reconciled first, even if they
-are counted and spare capacity appears available. If the agreed release
-evidence cannot be established, retain the affected reservation. Force-start
-cannot bypass this global recovery gate. The approved in-flight-claim
-exception below permits some already-authorized starts during recovery.
+broker crashes. If the agreed release evidence cannot be established, retain
+the affected reservation.
 
-The rejected alternative would retain each uncertain reservation's weight
-and admit unrelated jobs into apparently spare capacity. That improves
-availability, but accepts more risk from incomplete recovery knowledge.
-Global fail-closed recovery is simpler and more conservative, at the cost
-of potentially idle capacity and indefinite blockage when evidence cannot
-be recovered.
+**User decision (superseded): global fail-closed recovery.** On restart,
+the broker reconciled persisted state with verified live process identities
+and reconnecting runners before any new reservation or claim; every
+uncertain reservation had to be reconciled first, even when its weight was
+counted and spare capacity existed.
+
+**Delegated decision: scoped recovery.** Recovery blocks new reservations
+and claims only until **durable accounting is trustworthy and complete**:
+- the singleton lock is held and the database opens, passes the integrity
+  checks chosen for implementation, and has a supported schema version;
+- every unreleased reservation, with its weight, forced flag, grant, claim
+  and fence state, is loaded and counted in occupied capacity;
+- queue order, pause state and bypass counts are loaded.
+
+The broker then becomes ready and schedules normally. Each reservation that
+is not yet reconciled stays **held and counted**, so it constrains later
+admissions exactly as a running job does, while reconciliation continues in
+the background. Live sharing checks also see actual usage by any surviving
+processes. Recovery never releases a reservation on uncertainty, never
+replays or transfers a claim, and never infers death from a timeout.
+Force-start remains impossible until ready. A storage failure or corruption
+(below) still keeps the broker not ready.
+
+Alternatives and tradeoffs:
+- **Global fail-closed (previous user decision).** Simplest to reason about,
+  but one unresolvable reservation, such as an unknown root with no
+  override, could stop all new work indefinitely even with spare capacity.
+- **Scoped, counted uncertainty (adopted).** Restores availability for
+  unrelated work while keeping the uncertain weight occupied. It relies on
+  the recovered accounting being complete: a reservation missing from
+  storage would be invisible, which is why untrusted or corrupt storage
+  still blocks. An uncertain reservation's real usage may differ from its
+  weight, as for any running job; live sharing checks partly cover that.
+- **Operator override to release uncertainty.** Rejected; it conflicts with
+  the user's no-unsafe-override decision.
 
 **User decision: durable one-shot claim.** Before the runner may spawn, the
 broker commits a claim in SQLite bound to the grant and one specific runner
@@ -549,7 +706,9 @@ incarnations logically but cannot resolve those OS ambiguities by itself.
 **User decision: recovery reports.** During recovery, accept and persist
 narrowly scoped, validated, idempotent rejoin and lifecycle reports for
 existing jobs and claims. New submissions, claims and admissions, including
-force-start, remain blocked until reconciliation completes. A report alone
+force-start, remain blocked until recovery establishes trusted, complete
+accounting (scoped recovery above), not until every job is reconciled. A
+report alone
 does not release capacity. The alternative of rejecting every call while
 recovering prevents accepting a process identity needed to recover; opening
 new scheduling too early risks conflicting with surviving work.
@@ -558,8 +717,9 @@ new scheduling too early risks conflicting with surviving work.
 spawn under a claim that committed before the broker entered recovery or
 became not ready after storage failure, including when its reply is delayed.
 The existing reservation remains counted, and a replacement runner cannot
-reuse the claim. Before becoming ready, recovery must reconcile the claim or
-fence it as required; a disconnected stream is not such proof. This
+reuse the claim. Under scoped recovery, the broker may become ready before
+that claim is reconciled; it stays held and counted until it is reconciled
+or fenced as required, and a disconnected stream is not such proof. This
 supersedes the earlier literal ban on every start during recovery.
 
 The strict-ban alternative would require a redesigned, enforceable
@@ -646,8 +806,9 @@ CGO-free SQLite driver alone makes the entire executable statically linked.
 stop new reservations and claims and report not ready. Leave existing
 commands running; the previously committed-claim exception above still
 applies. Return explicit errors and never acknowledge grants or outcomes
-that did not commit. Resume only after storage is usable and recovery has
-reconciled state. A failed or ambiguous commit is not acknowledged as
+that did not commit. Resume only after storage is usable and trusted and
+recovery has re-established complete accounting; unreconciled reservations
+then stay held and counted as in scoped recovery. A failed or ambiguous commit is not acknowledged as
 success; recovery must establish the durable result before a retry is
 resolved. Never automatically replace a corrupt database. This protects
 the durable claim and slot accounting at the cost of availability during
@@ -674,7 +835,8 @@ alone release capacity.
 
 **Open.** Section 11 proposes the schema, migrations and transaction
 boundaries; the user has not separately approved them. Still open: the
-recovery state machine, platform mechanisms for verifying an incarnation,
+recovery state machine, the concrete integrity checks that make storage
+trusted, platform mechanisms for verifying an incarnation,
 root and known descendants, process-identity precision across restart,
 discovery of reparented/detached descendants, database failure detection and
 repair workflows, and how to investigate and present genuinely unverifiable
@@ -875,8 +1037,8 @@ merely because it appears here. Scheduling predictions from history remain
 a future possibility, not the v2 policy.
 
 **Recommendation for implementation verification.** Use a deterministic
-scheduler core with injected clock/resources/events to exercise strict
-FIFO, pause, force-start and grace expiry. Add integration coverage for
+scheduler core with injected clock/resources/events to exercise queue
+order, bounded backfill, pause, force-start and grace expiry. Add integration coverage for
 shared-port APIs, process identity/cancellation, lost replies, disconnects,
 broker crashes, restart reconciliation and database failures. Verify
 platform-specific behavior rather than extrapolating from macOS.
@@ -1028,7 +1190,9 @@ user-approved wire formats:
 | Fence launch | `SealLaunch` reports the original runner's serialized seal, optionally confirming no spawn. Store the seal or OS-verified original-runner death. Closing an unclaimed grant atomically with observing no claim records the other confirmed-no-launch proof. |
 | Accept completion first | `ReportFinished` includes runner and root identities. In one transaction check the claim, record a missing start/root and the outcome, and reject conflicting identities/outcomes; matching start or finish retries are idempotent. |
 | Surface uncertainty while held | The proposed `UNKNOWN` outcome may accompany a reserved/running job; its exit and signal fields remain absent. A later valid report may replace it. Release and terminal history require the agreed evidence, not merely that outcome. |
-| Recover without new admissions | Valid rejoin, seal and lifecycle reports for existing jobs are processed during recovery. The draft rejects `ClaimLaunch` during recovery, including retries; rejoin is not a launch authorization. A previously committed claim may still be acted on by its original runner. |
+| Recover without new admissions | Valid rejoin, seal and lifecycle reports for existing jobs are processed during recovery. The draft rejects `ClaimLaunch` during recovery, including retries; rejoin is not a launch authorization. A previously committed claim may still be acted on by its original runner. `BrokerStatus.unreconciled_reservations` reports held reservations still being reconciled after readiness. |
+| Bounded backfill | `Job.admitted_by_backfill` and `Job.backfill_bypass_count`, stored in `jobs`; `BrokerStatus.backfill_limit`. |
+| Opt-in retry | `SubmitJobRequest.retry_of_job_id`; `Job.retry_of_job_id` and `Job.attempt`, stored in `jobs` with one retry per attempt; `RETRY_NOT_ELIGIBLE` when eligibility or the attempt limit fails. |
 | Fail closed on storage error | Return an explicit storage error and report not ready; acknowledge mutation only after its commit. Resume through recovery after storage becomes usable. Exact status/error representation is proposed below. |
 
 The per-process UUIDv4 and PID/start time identify a cooperative
@@ -1074,7 +1238,7 @@ provide explicit errors; uncommitted transitions are never acknowledged.
 first by `(queued_at_unix_ns, job_id)`. It filters by state, repository,
 client name and a queue-time range. It uses keyset pagination with opaque
 tokens; the proposed default page size is 50 and the maximum 500.
-`GetQueue` separately returns current FIFO order, including manual moves.
+`GetQueue` separately returns current queue order, including manual moves.
 
 **Unauthenticated.** Any local process that can connect may submit, list,
 read full commands (which may contain secrets) and invoke every control,
@@ -1106,13 +1270,24 @@ option go_package = "github.com/boumenot/heavy-lock/gen/heavylock/v2;heavylockv2
 // reported explicitly rather than acknowledged as a successful transition.
 // While not ready, no new reservation or claim is issued. An original runner
 // may still spawn under a claim that committed before recovery or failure;
-// its reservation stays held, and the claim must be reconciled or fenced.
+// its reservation stays held and counted until reconciled or fenced.
+// Recovery becomes ready once durable accounting is trusted and complete;
+// unreconciled reservations remain held and counted but do not block
+// unrelated admissions. They are never released or re-claimed by recovery.
 service RunnerService {
   // Enqueue a job. Idempotent on idempotency_key: the same key with an
   // equivalent payload returns the existing job with created = false; the
   // same key with a different payload fails with ALREADY_EXISTS /
   // IDEMPOTENCY_KEY_REUSED. Fails with UNAVAILABLE while recovery runs or
   // durable storage is unavailable.
+  // An opt-in retry is a new submission with a new idempotency key and
+  // retry_of_job_id set. It is accepted only when the previous attempt is
+  // FINISHED with OUTCOME_KIND_EXITED and a non-zero exit code, its
+  // reservation was released by the approved checks, it has no other retry,
+  // and the attempt limit is not exceeded; otherwise FAILED_PRECONDITION /
+  // RETRY_NOT_ELIGIBLE. The retry joins the back of the queue and never
+  // reuses the earlier grant or claim. Only the runner retries; the broker
+  // never resubmits or relaunches work.
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
 
   // Server-streaming job channel (push, not polling). Every call, including
@@ -1200,7 +1375,10 @@ service ControlService {
   // contract gaps. A granted command may already be
   // running, so neither the request, a termination attempt nor a report
   // alone releases its reservation; the approved release checks still apply.
-  // Runner death or disconnection never cancels a job automatically.
+  // Disconnection never stops a job. After OS-verified death of the
+  // assigned runner incarnation (never a disconnect or timeout alone), the
+  // broker force-stops the job's verified processes through the same path,
+  // without a CancelJob call; see the design record.
   // The monitor confirms every cancellation (any state) before sending this;
   // confirmation is a client UI responsibility and is not enforced here.
   // Terminal jobs: FAILED_PRECONDITION / JOB_TERMINAL. Repeated cancellation
@@ -1210,8 +1388,8 @@ service ControlService {
   // Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
   rpc MoveJob(MoveJobRequest) returns (Queue);
 
-  // Admit a waiting job immediately, bypassing FIFO order and resource
-  // checks. Its weight counts toward occupied capacity, so occupancy may
+  // Admit a waiting job immediately, bypassing queue order, backfill limits
+  // and resource checks. Its weight counts toward occupied capacity, so occupancy may
   // exceed capacity. Confirmation is a client UI responsibility. It never
   // bypasses recovery, storage failure or launch-safety checks.
   // A confirmed force-start is allowed while normal admissions are paused.
@@ -1236,7 +1414,7 @@ service ControlService {
 
 enum JobState {
   JOB_STATE_UNSPECIFIED = 0;
-  JOB_STATE_QUEUED = 1;    // waiting in FIFO order
+  JOB_STATE_QUEUED = 1;    // waiting in queue order
   JOB_STATE_RESERVED = 2;  // capacity durably reserved; grant issued
   JOB_STATE_RUNNING = 3;   // runner reported the launched process
   JOB_STATE_FINISHING = 4; // outcome reported; awaiting verified process exit
@@ -1314,6 +1492,7 @@ enum ErrorReason {
   REPORT_CONFLICT = 17;            // FAILED_PRECONDITION
   STORAGE_UNAVAILABLE = 18;        // UNAVAILABLE; durable state cannot be trusted
   STORAGE_CORRUPT = 19;            // DATA_LOSS; never auto-replace the database
+  RETRY_NOT_ELIGIBLE = 20;         // FAILED_PRECONDITION
 }
 
 // ---------------------------------------------------------------- shared
@@ -1419,6 +1598,15 @@ message Job {
   optional Outcome outcome = 22;
   optional ResourceSummary resources = 23;
   optional string cancel_reason = 24;
+
+  // True when admitted by bounded backfill past a capacity-blocked head.
+  bool admitted_by_backfill = 25;
+  // Times later jobs were backfilled past this job while it was the
+  // capacity-blocked head; bounded by the configured backfill limit.
+  uint32 backfill_bypass_count = 26;
+  // Opt-in retry linkage; attempt is 1 for an original submission.
+  optional string retry_of_job_id = 27;
+  uint32 attempt = 28;
 }
 
 // ---------------------------------------------------------------- runner
@@ -1431,6 +1619,8 @@ message SubmitJobRequest {
   ClientInfo client = 5;
   Attribution attribution = 6;
   RunnerIncarnation runner = 7;
+  // Set only for an opt-in retry of a failed, released earlier attempt.
+  optional string retry_of_job_id = 8;
 }
 
 message SubmitJobResponse {
@@ -1552,12 +1742,16 @@ message BrokerStatus {
   optional int64 free_memory_bytes = 9;
   optional double load_average_1m = 10;
   bool storage_unavailable = 11;
+  // Held reservations not yet reconciled since the last broker restart.
+  // They count toward occupied but do not block unrelated admissions.
+  uint32 unreconciled_reservations = 12;
+  uint32 backfill_limit = 13;      // per-head bypass limit; 0 is strict FIFO
 }
 
 message GetQueueRequest {}
 
 message Queue {
-  repeated Job jobs = 1;           // FIFO order; head first
+  repeated Job jobs = 1;           // queue order; head first
   BlockedReason head_blocked_reason = 2;
 }
 
@@ -1675,7 +1869,7 @@ fills `job_id`.
 |---|---|---|---|
 | `GET` | `/v1/health` | `GetHealth` | Liveness, readiness, versions, recovery detail |
 | `GET` | `/v1/status` | `GetStatus` | Capacity, occupancy (may exceed capacity after force-start), pause, blocked-head reason, live readings |
-| `GET` | `/v1/queue` | `GetQueue` | Waiting jobs in FIFO order, head first |
+| `GET` | `/v1/queue` | `GetQueue` | Waiting jobs in queue order, head first |
 | `GET` | `/v1/jobs` | `ListJobs` | Query: `states` (repeatable), `repository`, `clientName`, `queuedAfterUnixNs`, `queuedBeforeUnixNs`, `pageSize`, `pageToken` |
 | `GET` | `/v1/jobs/{job_id}` | `GetJob` | Full job record |
 | `POST` | `/v1/jobs/{job_id}/cancel` | `CancelJob` | Body: optional `reason`. Monitor confirmation is a UI step, not enforced by the API |
@@ -1848,6 +2042,17 @@ CREATE TABLE jobs (
                       -- e.g. 1764121500000000000 (2025-11-26T01:45:00.000000000Z)
   cancel_reason       TEXT,     -- e.g. 'cancelled from monitor'
 
+  -- Scheduling and opt-in retry ---------------------------------------------
+  admitted_by_backfill INTEGER NOT NULL DEFAULT 0 CHECK (admitted_by_backfill IN (0, 1)),
+                      -- 1 when admitted past a capacity-blocked head, e.g. 0
+  backfill_bypass_count INTEGER NOT NULL DEFAULT 0 CHECK (backfill_bypass_count >= 0),
+                      -- later jobs backfilled past this job while it was the
+                      -- capacity-blocked head; kept across manual reorder, e.g. 1
+  retry_of_job_id     TEXT UNIQUE REFERENCES jobs (id),
+                      -- earlier failed attempt; at most one retry per attempt
+  attempt             INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
+                      -- 1 for an original submission, e.g. 2 for the first retry
+
   -- Who submitted it (unauthenticated client claims) ------------------------
   client_name         TEXT,     -- e.g. 'heavy-lock'
   client_version      TEXT,     -- e.g. '2.0.0'
@@ -1891,6 +2096,8 @@ CREATE TABLE jobs (
 
   -- State consistency (presence only; wall-clock values are not compared) --
   CHECK (started_at_ns IS NULL OR admitted_at_ns IS NOT NULL),
+  CHECK ((retry_of_job_id IS NULL) = (attempt = 1)),
+  CHECK (admitted_by_backfill = 0 OR (forced = 0 AND admitted_at_ns IS NOT NULL)),
   CHECK ((state = 'finished') = (finished_at_ns IS NOT NULL)),
   -- Unknown may be visible while the reservation remains held.
   CHECK ((state = 'queued' AND outcome_kind IS NULL)
@@ -2110,13 +2317,16 @@ All `Attribution` values are unauthenticated declarations.
     rather than silently skipping events.
 - **Recovery.** Each broker lifetime inserts a `service_runs` row.
   - Acquire the per-user OS singleton lock before opening the database or
-    accepting requests. Then run `quick_check`, apply migrations and compare
-    unreleased reservations and process identities with verified observations.
-  - `RECOVERING` remains visible until reconciliation completes. Rejoin and
-    valid lifecycle reports for existing jobs/claims are accepted and persisted;
+    accepting requests. Then run `quick_check`, apply migrations, load every
+    unreleased reservation into occupied capacity, and compare reservations and
+    process identities with verified observations.
+  - `RECOVERING` remains visible until durable accounting is trusted and
+    complete (delegated scoped recovery, section 5). Rejoin and valid
+    lifecycle reports for existing jobs/claims are accepted and persisted;
     new submissions, claims and admissions remain blocked. An earlier
-    committed claim can still start its original runner; reconcile or fence
-    that claim before readiness.
+    committed claim can still start its original runner. Once ready,
+    unreconciled reservations, including such a claim, stay held and counted
+    until reconciled or fenced, and normal scheduling continues.
   - Release needs the fence plus verified root/known descendants, or a
     confirmed-no-launch proof. Unknown root identity, a failed scan or a
     known live process retains the reservation. Untracked descendants can
@@ -2266,7 +2476,18 @@ This is design verification, not authorization to implement v2. The model
 now represents the approved broker-owned incarnation-bound claim, accepted
 recovery reports, serialized fencing, minimum release evidence, finish-first
 reporting, force while paused, grace reset and storage failure. It retains
-the permitted in-flight claim exception. It assumes a single broker;
+the permitted in-flight claim exception.
+
+The delegated decisions are modeled as follows. `BackfillLimit` bounds
+backfill past a capacity-blocked head through a durable per-head bypass
+count (the `Backfill` witness shows a backfill; `HeadBlocked` shows the head
+still blocking once the limit is used). `RecoveryDone` no longer waits for
+reconciliation; `ReadyWithUncertain` shows readiness beside a held,
+unreconciled reservation, and `RecoverySchedulingSafety` checks that this
+never exceeds normal capacity. `BrokerForceStop` stops a known root and child
+only after OS-verified runner death; `RunnerDeathCleanup` checks the claim
+safety invariants with it. Opt-in retry is not modeled separately: it is a
+fresh submission, which the model represents as another job. It assumes a single broker;
 the correctness of the OS singleton lock itself is not model-checked.
 
 `RecoverySpawn` and `StorageFailureSpawn` preserve the traces that defeated
@@ -2287,11 +2508,20 @@ current results from historical runs and list bounds and unchecked cases.
 
 ## Open decisions before implementation
 
-1. Confirmation and audit semantics for other controls; concurrent control
+1. **Needs the user:** command lines are stored verbatim and kept
+   indefinitely, and any local process can read them through the
+   unauthenticated API. The review recommended limiting retention or
+   offering redaction; both would reverse explicit user choices, so they
+   were not adopted by delegation.
+2. **User may wish to confirm delegated defaults:** backfill limit K = 1,
+   the retry eligibility rule (observed non-zero exit only) and the 3-retry
+   maximum.
+3. Confirmation and audit semantics for other controls; concurrent control
    races. Running-job cancellation is runner-first with verified-identity
    broker fallback after acknowledgment/completion deadline expiry or verified
    runner death. Starting defaults are 5 s acknowledgment and 30 s completion
-   after acknowledgment; termination force-stops immediately.
+   after acknowledgment; termination force-stops immediately. One shared
+   broker termination procedure serves takeover and runner-death cleanup.
    Precise clock starts and recovery/clock handling,
    explicit failed-result handling, coordination/fencing of a still-live
    runner and platform termination mechanisms remain open. When a live
@@ -2299,39 +2529,41 @@ current results from historical runs and list bounds and unchecked cases.
    runner and takes over only after its exact incarnation is verified dead,
    otherwise waiting; detection of blocking coordination, kill/escalation
    mechanisms and cleanup of stopped descendants remain open.
-2. Concrete defaults still proposed or unset:
+4. Concrete defaults still proposed or unset:
    - event retention (proposed 24 hours or 100,000 events)
    - page size (proposed 50, maximum 500)
    - SQLite cache and mmap sizes (proposed 16 MiB and 256 MiB)
-3. Platform mechanisms for proving runner termination, serialized sealing,
+5. Platform mechanisms for proving runner termination, serialized sealing,
    root exit and absence of known descendants; how to present and investigate
    an unverifiable reservation and obtain valid evidence without an unsafe
    override.
-4. Definition of successful queued rejoin, identity checks and checkpoint
+6. Definition of successful queued rejoin, identity checks and checkpoint
    precision across repeated broker restarts; expiry/reconnect serialization
    and grace reset are decided.
-5. How to detect actual runner death; a disconnect or either expired
-   cancellation deadline alone is not death.
-6. Singleton-lock path, OS primitives and filesystem support; descendant and
+7. How to detect actual runner death; a disconnect or either expired
+   cancellation deadline alone is not death. The delegated runner-death
+   cleanup and recovery fencing both depend on this mechanism.
+8. Singleton-lock path, OS primitives and filesystem support; descendant and
    reparented-process discovery; precision and boot identity for process IDs;
    database-failure detection, explicit error mapping and repair workflows.
-7. Default broker port, identity/version checks, shared-listener
+9. Default broker port, identity/version checks, shared-listener
    routing/multiplexer, gRPC-Swift/runtime and code-generation versions, and
    gRPC-Gateway versus hand-written REST handlers. REST event delivery by
    SSE is a separate, unapproved proposal.
-8. Exact job metric definitions, sampler choice, platform parity and
+10. Exact job metric definitions, sampler choice, platform parity and
    overhead.
-9. Command rendering, the payload-equivalence rule and retention for
+11. Command rendering, the payload-equivalence rule and retention for
    idempotency keys, and any optional redaction.
-10. Select and pin the initial `modernc.org/sqlite` version; validate SQLite
+12. Select and pin the initial `modernc.org/sqlite` version; validate SQLite
     features and actual platform sync behavior, and measure `FULL`/macOS
     `fullfsync` commit latency. The driver and settings are decided, but
     their validation is pending.
-11. Go/protobuf tooling, distribution, supervision, supported platforms,
+13. Go/protobuf tooling, distribution, supervision, supported platforms,
     and monotonic launch-timeout reconstruction across broker restarts.
-12. Admission option compatibility, oversized weights, capacity changes,
-    no-wait behavior and v1/nesting rollout.
-13. The [formal review gaps](v2/model/README.md#outcomes-and-actionable-gaps):
+14. Admission option compatibility, oversized weights (including their
+    interaction with backfill), capacity changes, no-wait behavior and
+    v1/nesting rollout; retry delay and CLI option spelling.
+15. The [formal review gaps](v2/model/README.md#outcomes-and-actionable-gaps):
     verification under realistic OS/process assumptions, discovery of a
     formerly untracked child after release, and safety versus progress when
     the root identity or outcome cannot be recovered.

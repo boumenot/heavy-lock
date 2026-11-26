@@ -21,6 +21,8 @@ CASES = {
     "StorageRecoverySafety": None,
     "CompletionSafety": None,
     "KnownChildRace": None,
+    "RecoverySchedulingSafety": None,
+    "RunnerDeathCleanup": None,
     "CrashBeforeLaunch": "NeverCrashBeforeLaunchUnknown",
     "PreventedClaim": "NeverReleasePreventedClaim",
     "SealNoSpawn": "NeverReleaseSealedNoSpawn",
@@ -37,6 +39,8 @@ CASES = {
     "ForcedOverload": "NeverForcedOverload",
     "RecoveryBlocked": "RecoveryAcceptsPendingIdentity",
     "HeadBlocked": "NeverHeadBlocked",
+    "Backfill": "NeverBackfill",
+    "ReadyWithUncertain": "NeverReadyWithUnreconciled",
 }
 
 
