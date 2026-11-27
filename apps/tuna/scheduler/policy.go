@@ -1,10 +1,10 @@
-// Package scheduler implements the v2 normal-admission policy and queue
+// Package scheduler implements the normal-admission policy and queue
 // controls on top of transactional storage. It decides and commits
 // reservations; it does not launch, signal or release processes.
 package scheduler
 
 import (
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 )
 
 // Entry is one waiting job in durable queue order.

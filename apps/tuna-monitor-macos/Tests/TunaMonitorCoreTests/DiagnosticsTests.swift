@@ -1,5 +1,5 @@
 import Foundation
-import HeavyLockV2
+import TunaContract
 import Synchronization
 import Testing
 
@@ -74,7 +74,7 @@ import Testing
         #expect(try self.queueModes(state).mode == "unknown")
 
         var brokerStatus = status()
-        let cases: [(Heavylock_V2_QueueMode, String)] = [
+        let cases: [(Tuna_QueueMode, String)] = [
             (.enabled, "enabled"), (.paused, "paused"), (.unspecified, "unknown"), (.UNRECOGNIZED(123), "unknown"),
         ]
         for (mode, expected) in cases {
@@ -97,7 +97,7 @@ import Testing
             #expect(noStatus.mode == "unknown")
             #expect(noStatus.lastKnownMode == nil)
 
-            let cases: [(Heavylock_V2_QueueMode, String)] = [
+            let cases: [(Tuna_QueueMode, String)] = [
                 (.enabled, "enabled"), (.paused, "paused"), (.unspecified, "unknown"),
                 (.UNRECOGNIZED(123), "unknown"),
             ]

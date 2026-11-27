@@ -25,7 +25,7 @@ plist=$(mktemp "${TMPDIR:-/tmp}/tuna-launch-agent.XXXXXXXX")
 trap 'rm -f "$plist"' EXIT
 trap 'exit 1' HUP INT TERM
 /usr/bin/plutil -create xml1 "$plist"
-/usr/bin/plutil -insert Label -string "com.github.boumenot.heavy-lock.tuna" "$plist"
+/usr/bin/plutil -insert Label -string "com.github.boumenot.tuna" "$plist"
 /usr/bin/plutil -insert ProgramArguments -array "$plist"
 /usr/bin/plutil -insert ProgramArguments.0 -string "$binary" "$plist"
 /usr/bin/plutil -insert ProgramArguments.1 -string service "$plist"

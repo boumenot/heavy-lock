@@ -1,5 +1,5 @@
-name: heavy_lock_tool
-description: Build, test and install orchestration for this repository.
+name: tuna_tool
+description: Build and test orchestration for this repository.
 publish_to: none
 resolution: workspace
 environment:

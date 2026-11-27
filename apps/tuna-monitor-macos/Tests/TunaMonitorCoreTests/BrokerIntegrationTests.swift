@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import HeavyLockV2
+import TunaContract
 import Testing
 
 @testable import TunaMonitorCore
@@ -117,9 +117,11 @@ private func launch(_ executable: String, _ arguments: [String], environment: [S
     let process = Process()
     process.executableURL = URL(fileURLWithPath: executable)
     process.arguments = arguments
-    if !environment.isEmpty {
-        process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
-    }
+    // Drop an inherited nesting marker, e.g. when the suite itself runs under
+    // a broker, so runners always contact the test broker.
+    var inherited = ProcessInfo.processInfo.environment
+    inherited.removeValue(forKey: "TUNA_JOB_ID")
+    process.environment = inherited.merging(environment) { $1 }
     process.standardOutput = FileHandle.nullDevice
     try process.run()
     return process

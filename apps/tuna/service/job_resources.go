@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
-	"github.com/boumenot/heavy-lock/apps/tuna/jobmetrics"
-	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
-	"github.com/boumenot/heavy-lock/apps/tuna/storage"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
+	"github.com/boumenot/tuna/apps/tuna/jobmetrics"
+	"github.com/boumenot/tuna/apps/tuna/scheduler"
+	"github.com/boumenot/tuna/apps/tuna/storage"
 	"google.golang.org/protobuf/proto"
 )
 

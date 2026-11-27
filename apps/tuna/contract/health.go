@@ -7,12 +7,12 @@ import (
 	"strconv"
 	"strings"
 
-	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	tunapb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 )
 
 const (
-	ServiceIdentity = "heavylock.v2"
-	ServiceVersion  = "2.2.0-dev.34"
+	ServiceIdentity = "tuna"
+	ServiceVersion  = "3.0.0-dev.1"
 )
 
 var semverPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
@@ -49,12 +49,12 @@ func parseVersion(value string) (semanticVersion, error) {
 	return semanticVersion{major: major, minor: minor, prerelease: match[4] != ""}, nil
 }
 
-func CheckService(health *heavylockv2.Health, clientVersion string, minimumMinor uint64) error {
+func CheckService(health *tunapb.Health, clientVersion string, minimumMinor uint64) error {
 	if health == nil {
 		return errors.New("broker returned no health response")
 	}
 	if health.ServiceIdentity != ServiceIdentity {
-		return errors.New("broker service identity does not match heavylock.v2")
+		return errors.New("broker service identity does not match tuna")
 	}
 	client, err := parseVersion(clientVersion)
 	if err != nil {

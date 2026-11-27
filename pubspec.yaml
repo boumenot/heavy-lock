@@ -1,7 +1,6 @@
-name: heavy_lock_workspace
+name: tuna_workspace
 publish_to: none
 environment:
   sdk: '>=3.13.0 <4.0.0'
 workspace:
-  - apps/heavy-lock
   - tool

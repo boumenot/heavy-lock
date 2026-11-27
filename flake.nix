@@ -1,16 +1,16 @@
 {
-  description = "heavy-lock development shell";
+  description = "Tuna development shell";
 
   # nixpkgs-unstable provides Dart 3.13+ required by pubspec.yaml; stable
   # channels may lag behind.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
-  # Swift package dependencies of packages/heavylock-v2-swift and
+  # Swift package dependencies of packages/tuna-contract-swift and
   # apps/tuna-monitor-macos, pinned here by release tag; flake.lock records
   # each tag's commit. SwiftPM still fetches them, but evaluating this flake
   # fails unless each package's Package.resolved (and the exact requirements
   # in its Package.swift) match these pins, and dev.dart and
-  # tool/generate_v2.sh only build from Package.resolved. To update one,
+  # tool/generate.sh only build from Package.resolved. To update one,
   # change its tag here and in both Package.swift files, run `nix flake lock`
   # and `swift package resolve` in both packages, then commit all the files.
   inputs.grpc-swift-2 = {
@@ -125,8 +125,8 @@
         "grpc-swift-nio-transport"
       ];
       swiftPackages = {
-        "packages/heavylock-v2-swift" = {
-          src = ./packages/heavylock-v2-swift;
+        "packages/tuna-contract-swift" = {
+          src = ./packages/tuna-contract-swift;
           direct = grpcDirect ++ [ "swift-protobuf" ];
         };
         "apps/tuna-monitor-macos" = {
@@ -248,15 +248,12 @@
                 pkgs.jq
                 pkgs.tlaplus18
               ];
-              shellHook = ''
-                export HEAVY_LOCK_MONITOR_DART="$(command -v dart)"
-              '';
             }
           )
         );
       });
 
-      # Builds the v2 prototype from the Go manifests; vendorHash pins the
+      # Builds tuna from the Go manifests; vendorHash pins the
       # module dependencies used by apps/tuna. Update it when the vendored
       # package set changes, even if go.sum does not.
       packages = forAllSystems (pkgs: {

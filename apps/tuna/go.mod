@@ -1,4 +1,4 @@
-module github.com/boumenot/heavy-lock/apps/tuna
+module github.com/boumenot/tuna/apps/tuna
 
 go 1.27.3
 

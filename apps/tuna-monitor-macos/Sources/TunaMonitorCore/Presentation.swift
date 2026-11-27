@@ -1,5 +1,5 @@
 import Foundation
-import HeavyLockV2
+import TunaContract
 
 /// Text the monitor shows, kept separate from SwiftUI so it can be tested.
 public enum Presentation {
@@ -164,7 +164,7 @@ public enum Presentation {
         }
     }
 
-    public static func queueStateName(_ state: Heavylock_V2_QueueState) -> String {
+    public static func queueStateName(_ state: Tuna_QueueState) -> String {
         switch state {
         case .idle: "Idle"
         case .running: "Running"
@@ -186,7 +186,7 @@ public enum Presentation {
     }
 
     public static func row(
-        _ job: Heavylock_V2_Job, capacity: UInt32?, now: Date, home: String = NSHomeDirectory()
+        _ job: Tuna_Job, capacity: UInt32?, now: Date, home: String = NSHomeDirectory()
     ) -> JobRow {
         var summary = [Self.stateName(job.state)]
         if job.state == .queued, job.hasQueuePosition { summary[0] += " #\(job.queuePosition + 1)" }
@@ -246,7 +246,7 @@ public enum Presentation {
 
     /// The submitting client, e.g. `macOS 26.1 · arm64 · tuna 2.0.0`, or nil
     /// when nothing about it was recorded.
-    public static func clientText(_ job: Heavylock_V2_Job) -> String? {
+    public static func clientText(_ job: Tuna_Job) -> String? {
         guard job.hasClient else { return nil }
         let client = job.client
         let os: String? =
@@ -272,7 +272,7 @@ public enum Presentation {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    public static func stateName(_ state: Heavylock_V2_JobState) -> String {
+    public static func stateName(_ state: Tuna_JobState) -> String {
         switch state {
         case .queued: "Queued"
         case .reserved: "Reserved"
@@ -283,7 +283,7 @@ public enum Presentation {
         }
     }
 
-    public static func outcomeText(_ outcome: Heavylock_V2_Outcome) -> String {
+    public static func outcomeText(_ outcome: Tuna_Outcome) -> String {
         switch outcome.kind {
         case .exited: outcome.hasExitCode ? "exit \(outcome.exitCode)" : "exited"
         case .signaled: outcome.hasSignalName ? "signal \(outcome.signalName)" : "signaled"
@@ -296,7 +296,7 @@ public enum Presentation {
 
     /// Why a queued job or the queue head is not being admitted.
     public static func blockedText(
-        _ reason: Heavylock_V2_BlockedReason, job: Heavylock_V2_Job?, capacity: UInt32?
+        _ reason: Tuna_BlockedReason, job: Tuna_Job?, capacity: UInt32?
     ) -> String? {
         switch reason {
         case .paused: return "Paused"
@@ -330,11 +330,11 @@ public enum Presentation {
         return "\(seconds / 3600)h \(seconds % 3600 / 60)m"
     }
 
-    private static func since(_ job: Heavylock_V2_Job) -> Date? {
+    private static func since(_ job: Tuna_Job) -> Date? {
         Self.eventTime(job)?.1
     }
 
-    private static func eventTime(_ job: Heavylock_V2_Job) -> (String, Date)? {
+    private static func eventTime(_ job: Tuna_Job) -> (String, Date)? {
         switch job.state {
         case .queued where job.hasQueuedAt: return ("Queued", job.queuedAt.date)
         case .running where job.hasStartedAt: return ("Started", job.startedAt.date)

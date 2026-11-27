@@ -3,7 +3,7 @@ package contract
 import (
 	"testing"
 
-	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	tunapb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 )
 
 func TestCheckServiceIdentityAndVersion(t *testing.T) {
@@ -13,11 +13,11 @@ func TestCheckServiceIdentityAndVersion(t *testing.T) {
 		identity             string
 		live, want           bool
 	}{
-		{"matching dev", ServiceVersion, ServiceVersion, 2, ServiceIdentity, true, true},
-		{"different dev", ServiceVersion, "2.2.0-dev.35", 0, ServiceIdentity, true, false},
-		{"legacy dev", ServiceVersion, "2.0.0-dev", 0, ServiceIdentity, true, false},
-		{"dev to stable", ServiceVersion, "2.2.0", 0, ServiceIdentity, true, false},
-		{"stable to dev", "2.2.0", ServiceVersion, 0, ServiceIdentity, true, false},
+		{"matching dev", ServiceVersion, ServiceVersion, 0, ServiceIdentity, true, true},
+		{"different dev", ServiceVersion, "3.0.0-dev.2", 0, ServiceIdentity, true, false},
+		{"unnumbered dev", ServiceVersion, "3.0.0-dev", 0, ServiceIdentity, true, false},
+		{"dev to stable", ServiceVersion, "3.0.0", 0, ServiceIdentity, true, false},
+		{"stable to dev", "3.0.0", ServiceVersion, 0, ServiceIdentity, true, false},
 		{"stable compatible", "2.1.0", "2.3.5", 2, ServiceIdentity, true, true},
 		{"stable older minor", "2.1.0", "2.1.9", 2, ServiceIdentity, true, false},
 		{"different major", "2.1.0", "3.1.0", 0, ServiceIdentity, true, false},
@@ -34,7 +34,7 @@ func TestCheckServiceIdentityAndVersion(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			health := &heavylockv2.Health{
+			health := &tunapb.Health{
 				Live: tt.live, Ready: false, ServiceIdentity: tt.identity, ServiceVersion: tt.server,
 			}
 			err := CheckService(health, tt.client, tt.minor)

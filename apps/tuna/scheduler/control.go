@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
-	"github.com/boumenot/heavy-lock/apps/tuna/storage"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
+	"github.com/boumenot/tuna/apps/tuna/storage"
 )
 
 func (s *Scheduler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb.ListJobsResponse, error) {

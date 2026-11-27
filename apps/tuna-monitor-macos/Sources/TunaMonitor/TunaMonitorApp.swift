@@ -1,5 +1,5 @@
 import AppKit
-import HeavyLockV2
+import TunaContract
 import Observation
 import SwiftUI
 import TunaMonitorCore
@@ -58,15 +58,15 @@ struct TunaMonitorApp: App {
 private struct UnavailableClient: BrokerClient {
     var message: String
 
-    func health() async throws -> Heavylock_V2_Health {
+    func health() async throws -> Tuna_Health {
         throw BrokerFailure(code: "error", message: self.message)
     }
 
-    func events(after afterEventSeq: Int64) -> AsyncThrowingStream<Heavylock_V2_BrokerEvent, any Error> {
+    func events(after afterEventSeq: Int64) -> AsyncThrowingStream<Tuna_BrokerEvent, any Error> {
         AsyncThrowingStream { $0.finish(throwing: BrokerFailure(code: "error", message: self.message)) }
     }
 
-    func recentFinishedJobs(limit: UInt32) async throws -> [Heavylock_V2_Job] { [] }
+    func recentFinishedJobs(limit: UInt32) async throws -> [Tuna_Job] { [] }
 
     func perform(_ action: ControlAction) async throws {
         throw BrokerFailure(code: "error", message: self.message)

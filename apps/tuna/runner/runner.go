@@ -1,4 +1,4 @@
-// Package runner is the v2 job runner: it submits a command to the per-user
+// Package runner is the Tuna job runner: it submits a command to the per-user
 // broker, waits for its grant, durably claims it, spawns the command without
 // a shell, reports its lifecycle and propagates its exit status.
 package runner
@@ -18,10 +18,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
-	"github.com/boumenot/heavy-lock/apps/tuna/procid"
+	"github.com/boumenot/tuna/apps/tuna/attribution"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
+	"github.com/boumenot/tuna/apps/tuna/procid"
 	"golang.org/x/sys/unix"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -44,10 +44,9 @@ const (
 	// MaxRetries is the fixed upper bound of opt-in retries.
 	MaxRetries = 3
 
-	// MarkerVariable is the v2 nesting marker: the job ID under which the
+	// MarkerVariable is the nesting marker: the job ID under which the
 	// enclosing command was admitted. A nested runner that sees it runs its
-	// command directly. The v1 HEAVY_LOCK_HELD marker is never treated as
-	// v2 admission.
+	// command directly.
 	MarkerVariable = "TUNA_JOB_ID"
 
 	HeavyWeight = 2
@@ -134,7 +133,7 @@ func Run(ctx context.Context, o Options) int {
 	}
 	if marker, ok := lookup(o.Env, MarkerVariable); ok {
 		if !uuidV4.MatchString(marker) {
-			logf("%s is not a v2 job ID; refusing to run unadmitted", MarkerVariable)
+			logf("%s is not a Tuna job ID; refusing to run unadmitted", MarkerVariable)
 			return ExitUsage
 		}
 		logf("already admitted as job %s; running directly", marker)
@@ -146,7 +145,7 @@ func Run(ctx context.Context, o Options) int {
 		return ExitUsage
 	}
 	if runtime.GOOS != "darwin" {
-		logf("the v2 runner is implemented only on macOS")
+		logf("the Tuna runner is implemented only on macOS")
 		return ExitSoftware
 	}
 
@@ -159,19 +158,18 @@ func Run(ctx context.Context, o Options) int {
 	defer conn.Close()
 
 	// A new submission fails immediately when the broker is unavailable:
-	// no v1 fallback, no broker start-up and no waiting for a restart.
+	// no fallback, no broker start-up and no waiting for a restart.
 	hctx, cancel := context.WithTimeout(ctx, healthTimeout)
 	health, err := pb.NewControlServiceClient(conn).GetHealth(hctx, &pb.GetHealthRequest{})
 	cancel()
 	if err == nil {
-		// Submissions include ClientInfo.os_version, introduced in API 2.2.
-		err = contract.CheckService(health, o.Version, 2)
+		err = contract.CheckService(health, o.Version, 0)
 	}
 	if err == nil && !health.Ready {
 		err = errors.New("broker is recovering and not accepting submissions")
 	}
 	if err != nil {
-		logf("v2 broker unavailable on 127.0.0.1:%d: %s", o.Port, describe(err))
+		logf("Tuna broker unavailable on 127.0.0.1:%d: %s", o.Port, describe(err))
 		return ExitUnavailable
 	}
 

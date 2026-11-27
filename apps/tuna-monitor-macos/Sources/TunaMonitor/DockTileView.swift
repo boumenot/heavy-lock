@@ -1,7 +1,7 @@
 import AppKit
 import TunaMonitorCore
 
-/// Draws the Dock tile like the v1 monitor: the worklog of the longest-running
+/// Draws the Dock tile: the worklog of the longest-running
 /// job inside a ring coloured by state, with `+N` for other running jobs,
 /// plus a bordered icon and a stop light for the queue.
 final class DockTileView: NSView {

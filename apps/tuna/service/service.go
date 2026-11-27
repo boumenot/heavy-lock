@@ -1,4 +1,4 @@
-// Package service runs the per-user v2 broker: it owns the singleton lock,
+// Package service runs the per-user Tuna broker: it owns the singleton lock,
 // the database, the one scheduler and the loopback transport.
 package service
 
@@ -17,13 +17,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/broker"
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
-	"github.com/boumenot/heavy-lock/apps/tuna/jobmetrics"
-	"github.com/boumenot/heavy-lock/apps/tuna/procid"
-	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
-	"github.com/boumenot/heavy-lock/apps/tuna/storage"
-	"github.com/boumenot/heavy-lock/apps/tuna/transport"
+	"github.com/boumenot/tuna/apps/tuna/broker"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
+	"github.com/boumenot/tuna/apps/tuna/jobmetrics"
+	"github.com/boumenot/tuna/apps/tuna/procid"
+	"github.com/boumenot/tuna/apps/tuna/scheduler"
+	"github.com/boumenot/tuna/apps/tuna/storage"
+	"github.com/boumenot/tuna/apps/tuna/transport"
 	"golang.org/x/sys/unix"
 )
 
@@ -32,7 +32,7 @@ import (
 const MaintenanceInterval = time.Second
 
 // ErrLocked reports that another broker owns the singleton lock.
-var ErrLocked = errors.New("another v2 broker holds the per-user singleton lock")
+var ErrLocked = errors.New("another Tuna broker holds the per-user singleton lock")
 
 type Options struct {
 	Port int
@@ -41,7 +41,7 @@ type Options struct {
 	// LockDir is for isolated embedding and tests. The CLI always uses the
 	// account's stable default directory, independent of DataDir and HOME.
 	LockDir string
-	// Capacity 0 selects the v1-compatible default for this machine.
+	// Capacity 0 selects the default for this machine.
 	Capacity uint32
 	// BackfillLimit nil selects the default; a pointer to zero is strict FIFO.
 	BackfillLimit  *uint32
@@ -77,7 +77,7 @@ func DefaultDataDir() (string, error) {
 	if !filepath.IsAbs(account.HomeDir) {
 		return "", errors.New("user account has no absolute home directory")
 	}
-	return filepath.Join(account.HomeDir, "Library", "Application Support", "heavy-lock", "v2"), nil
+	return filepath.Join(account.HomeDir, "Library", "Application Support", "tuna"), nil
 }
 
 // Lock is the held singleton. The OS releases it when its owner exits; the
@@ -183,7 +183,7 @@ func privateStorageFiles(dir string) error {
 // reconciliation establishes the required release evidence.
 func Run(ctx context.Context, o Options) (err error) {
 	if runtime.GOOS != "darwin" {
-		return errors.New("the v2 broker is implemented only on macOS")
+		return errors.New("the Tuna broker is implemented only on macOS")
 	}
 	var logMu sync.Mutex
 	logf := func(format string, args ...any) {

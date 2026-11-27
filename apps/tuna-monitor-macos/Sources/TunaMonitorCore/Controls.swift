@@ -1,19 +1,19 @@
-import HeavyLockV2
+import TunaContract
 
 /// The job a control targets, captured when the user chose it so the
 /// confirmation names the job that will receive the request.
 public struct JobReference: Equatable, Hashable, Sendable {
     public var id: String
     public var command: String
-    public var state: Heavylock_V2_JobState
+    public var state: Tuna_JobState
 
-    public init(id: String, command: String, state: Heavylock_V2_JobState) {
+    public init(id: String, command: String, state: Tuna_JobState) {
         self.id = id
         self.command = command
         self.state = state
     }
 
-    public init(_ job: Heavylock_V2_Job) {
+    public init(_ job: Tuna_Job) {
         self.init(id: job.jobID, command: job.command, state: job.state)
     }
 }
@@ -110,7 +110,7 @@ public enum ControlAction: Equatable, Hashable, Sendable {
     /// omitted when it would leave `queue`, in broker order, unchanged: the
     /// broker only reorders, so moving the head to the front or the tail to
     /// the back has no effect.
-    public static func jobActions(for job: Heavylock_V2_Job, in queue: [Heavylock_V2_Job]) -> [ControlAction] {
+    public static func jobActions(for job: Tuna_Job, in queue: [Tuna_Job]) -> [ControlAction] {
         let reference = JobReference(job)
         switch job.state {
         case .queued:

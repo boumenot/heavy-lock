@@ -2,16 +2,16 @@ import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2TransportServices
 import GRPCProtobuf
-import HeavyLockV2
+import TunaContract
 
 /// The broker operations the monitor uses. The gRPC implementation talks to
 /// a `tuna service` broker; tests substitute a scripted client.
 public protocol BrokerClient: Sendable {
-    func health() async throws -> Heavylock_V2_Health
+    func health() async throws -> Tuna_Health
     /// Broker events after `afterEventSeq`; 0 starts with a fresh snapshot.
-    func events(after afterEventSeq: Int64) -> AsyncThrowingStream<Heavylock_V2_BrokerEvent, any Error>
+    func events(after afterEventSeq: Int64) -> AsyncThrowingStream<Tuna_BrokerEvent, any Error>
     /// The newest retained finished jobs, newest first.
-    func recentFinishedJobs(limit: UInt32) async throws -> [Heavylock_V2_Job]
+    func recentFinishedJobs(limit: UInt32) async throws -> [Tuna_Job]
     func perform(_ action: ControlAction) async throws
 }
 
@@ -19,7 +19,7 @@ public protocol BrokerClient: Sendable {
 public struct BrokerFailure: Error, Equatable, Sendable, CustomStringConvertible {
     /// The gRPC status code name, e.g. `unavailable`.
     public var code: String
-    /// The `heavylock.v2` `ErrorInfo` reason, e.g. `EVENTS_EXPIRED`, when present.
+    /// The `tuna` `ErrorInfo` reason, e.g. `EVENTS_EXPIRED`, when present.
     public var reason: String?
     public var message: String
 
@@ -43,7 +43,7 @@ public struct BrokerFailure: Error, Equatable, Sendable, CustomStringConvertible
             var reason: String?
             if let status = try? rpc.unpackGoogleRPCStatus() {
                 for detail in status.details {
-                    if let info = detail.errorInfo, info.domain == HeavyLockV2.errorDomain {
+                    if let info = detail.errorInfo, info.domain == TunaContract.errorDomain {
                         reason = info.reason
                         break
                     }
@@ -64,7 +64,7 @@ public final class GRPCBrokerClient: BrokerClient {
     public static let defaultPort = 49783
 
     private let grpc: GRPCClient<HTTP2ClientTransport.TransportServices>
-    private let control: Heavylock_V2_ControlService.Client<HTTP2ClientTransport.TransportServices>
+    private let control: Tuna_ControlService.Client<HTTP2ClientTransport.TransportServices>
     private let connections: Task<Void, Never>
     private let unaryOptions: CallOptions
 
@@ -75,7 +75,7 @@ public final class GRPCBrokerClient: BrokerClient {
         )
         let grpc = GRPCClient(transport: transport)
         self.grpc = grpc
-        self.control = Heavylock_V2_ControlService.Client(wrapping: grpc)
+        self.control = Tuna_ControlService.Client(wrapping: grpc)
         self.connections = Task { try? await grpc.runConnections() }
         var options = CallOptions.defaults
         options.timeout = timeout
@@ -86,12 +86,12 @@ public final class GRPCBrokerClient: BrokerClient {
         self.grpc.beginGracefulShutdown()
     }
 
-    public func health() async throws -> Heavylock_V2_Health {
-        try await self.call { try await self.control.getHealth(Heavylock_V2_GetHealthRequest(), options: self.unaryOptions) }
+    public func health() async throws -> Tuna_Health {
+        try await self.call { try await self.control.getHealth(Tuna_GetHealthRequest(), options: self.unaryOptions) }
     }
 
-    public func recentFinishedJobs(limit: UInt32) async throws -> [Heavylock_V2_Job] {
-        var request = Heavylock_V2_ListJobsRequest()
+    public func recentFinishedJobs(limit: UInt32) async throws -> [Tuna_Job] {
+        var request = Tuna_ListJobsRequest()
         request.states = [.finished]
         request.pageSize = limit
         let listRequest = request
@@ -102,25 +102,25 @@ public final class GRPCBrokerClient: BrokerClient {
         try await self.call {
             switch action {
             case .pause:
-                _ = try await self.control.pauseQueue(Heavylock_V2_PauseQueueRequest(), options: self.unaryOptions)
+                _ = try await self.control.pauseQueue(Tuna_PauseQueueRequest(), options: self.unaryOptions)
             case .resume:
-                _ = try await self.control.resumeQueue(Heavylock_V2_ResumeQueueRequest(), options: self.unaryOptions)
+                _ = try await self.control.resumeQueue(Tuna_ResumeQueueRequest(), options: self.unaryOptions)
             case .moveToFront(let job):
-                var request = Heavylock_V2_MoveJobRequest()
+                var request = Tuna_MoveJobRequest()
                 request.jobID = job.id
                 request.toFront = true
                 _ = try await self.control.moveJob(request, options: self.unaryOptions)
             case .moveToBack(let job):
-                var request = Heavylock_V2_MoveJobRequest()
+                var request = Tuna_MoveJobRequest()
                 request.jobID = job.id
                 request.toBack = true
                 _ = try await self.control.moveJob(request, options: self.unaryOptions)
             case .forceStart(let job):
-                var request = Heavylock_V2_ForceStartJobRequest()
+                var request = Tuna_ForceStartJobRequest()
                 request.jobID = job.id
                 _ = try await self.control.forceStartJob(request, options: self.unaryOptions)
             case .cancel(let job):
-                var request = Heavylock_V2_CancelJobRequest()
+                var request = Tuna_CancelJobRequest()
                 request.jobID = job.id
                 request.reason = ControlAction.cancelReason
                 _ = try await self.control.cancelJob(request, options: self.unaryOptions)
@@ -128,11 +128,11 @@ public final class GRPCBrokerClient: BrokerClient {
         }
     }
 
-    public func events(after afterEventSeq: Int64) -> AsyncThrowingStream<Heavylock_V2_BrokerEvent, any Error> {
+    public func events(after afterEventSeq: Int64) -> AsyncThrowingStream<Tuna_BrokerEvent, any Error> {
         let control = self.control
         return AsyncThrowingStream { continuation in
             let task = Task {
-                var request = Heavylock_V2_WatchEventsRequest()
+                var request = Tuna_WatchEventsRequest()
                 request.afterEventSeq = afterEventSeq
                 do {
                     try await control.watchEvents(request) { response in

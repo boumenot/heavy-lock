@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	tunapb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -25,8 +25,8 @@ import (
 const DefaultPort = 49783
 
 type Broker interface {
-	heavylockv2.ControlServiceServer
-	heavylockv2.RunnerServiceServer
+	tunapb.ControlServiceServer
+	tunapb.RunnerServiceServer
 }
 
 var ErrPortInUse = errors.New("broker loopback port is already in use")
@@ -112,11 +112,11 @@ func newHandler(broker Broker, port int) *handler {
 			return contract.NormalizeError(next(srv, stream))
 		}),
 		grpc.UnknownServiceHandler(func(_ any, _ grpc.ServerStream) error {
-			return contract.Error(codes.Unimplemented, heavylockv2.ErrorReason_OPERATION_NOT_IMPLEMENTED, "unknown gRPC method", nil)
+			return contract.Error(codes.Unimplemented, tunapb.ErrorReason_OPERATION_NOT_IMPLEMENTED, "unknown gRPC method", nil)
 		}),
 	)
-	heavylockv2.RegisterControlServiceServer(grpcServer, broker)
-	heavylockv2.RegisterRunnerServiceServer(grpcServer, broker)
+	tunapb.RegisterControlServiceServer(grpcServer, broker)
+	tunapb.RegisterRunnerServiceServer(grpcServer, broker)
 	return &handler{grpc: grpcServer, rest: newRESTHandler(broker), port: port}
 }
 

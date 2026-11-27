@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 )
 
 // Extra metadata keys written by the runner.

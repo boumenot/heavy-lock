@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/procid"
-	"github.com/boumenot/heavy-lock/apps/tuna/service"
+	"github.com/boumenot/tuna/apps/tuna/procid"
+	"github.com/boumenot/tuna/apps/tuna/service"
 )
 
 const execEnv = "TUNA_TEST_EXEC_MAIN"
@@ -61,7 +61,14 @@ func (b *syncBuffer) String() string {
 
 func tunaCommand(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, os.Args[0], args...)
-	cmd.Env = append(os.Environ(), execEnv+"=1", "TUNA_TEST_CRASH_AFTER_READY=0")
+	// Drop an inherited nesting marker, e.g. when the suite itself runs under
+	// a broker, so child runners always contact their test broker.
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "TUNA_JOB_ID=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, execEnv+"=1", "TUNA_TEST_CRASH_AFTER_READY=0")
 	return cmd
 }
 
@@ -222,10 +229,10 @@ func TestExecutableServiceAndControls(t *testing.T) {
 	if code, out, errOut = tuna(t, "pause", "--port", ps); code != 0 || !strings.Contains(out, "Mode: paused; state: paused;") {
 		t.Fatalf("pause = %d %q %q", code, out, errOut)
 	}
-	if status, _, body := restCall(t, port, http.MethodGet, "/v1/status", nil); status != 200 || !strings.Contains(body, `"queueMode":"QUEUE_MODE_PAUSED"`) || !strings.Contains(body, `"paused":true`) {
+	if status, _, body := restCall(t, port, http.MethodGet, "/status", nil); status != 200 || !strings.Contains(body, `"queueMode":"QUEUE_MODE_PAUSED"`) || !strings.Contains(body, `"paused":true`) {
 		t.Fatalf("REST after CLI pause = %d %s", status, body)
 	}
-	if status, _, body := restCall(t, port, http.MethodPost, "/v1/queue/resume", nil); status != 200 || !strings.Contains(body, `"queueMode":"QUEUE_MODE_ENABLED"`) || strings.Contains(body, `"paused":true`) {
+	if status, _, body := restCall(t, port, http.MethodPost, "/queue/resume", nil); status != 200 || !strings.Contains(body, `"queueMode":"QUEUE_MODE_ENABLED"`) || strings.Contains(body, `"paused":true`) {
 		t.Fatalf("REST resume = %d %s", status, body)
 	}
 	if code, out, errOut = tuna(t, "status", "--port", ps); code != 0 || !strings.Contains(out, "Mode: enabled; state: idle;") {
@@ -242,9 +249,9 @@ func TestExecutableServiceAndControls(t *testing.T) {
 		cli  []string
 		rest string
 	}{
-		{[]string{"job", "--job", missing}, "GET /v1/jobs/" + missing},
-		{[]string{"cancel", "--job", missing}, "POST /v1/jobs/" + missing + "/cancel"},
-		{[]string{"force-start", "--job", missing}, "POST /v1/jobs/" + missing + "/force-start"},
+		{[]string{"job", "--job", missing}, "GET /jobs/" + missing},
+		{[]string{"cancel", "--job", missing}, "POST /jobs/" + missing + "/cancel"},
+		{[]string{"force-start", "--job", missing}, "POST /jobs/" + missing + "/force-start"},
 	} {
 		code, out, errOut := tuna(t, append(tc.cli, "--port", ps)...)
 		if code != 70 || out != "" || !strings.Contains(errOut, "NotFound/JOB_NOT_FOUND") {
@@ -259,7 +266,7 @@ func TestExecutableServiceAndControls(t *testing.T) {
 		t.Fatalf("invalid job = %d %q", code, errOut)
 	}
 
-	status, header, _ := restCall(t, port, http.MethodOptions, "/v1/queue/pause", map[string]string{
+	status, header, _ := restCall(t, port, http.MethodOptions, "/queue/pause", map[string]string{
 		"Origin": "https://example.invalid", "Access-Control-Request-Method": "POST"})
 	if status != 204 || header.Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatalf("preflight = %d %v", status, header)

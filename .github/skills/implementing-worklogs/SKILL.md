@@ -37,9 +37,8 @@ restrictions or forge permission.
 2. **Implementing.** Work in the provided checkout. Use focused regression
    tests and bounded changes. Preserve protocol compatibility. Update the
    session log and `Phase:` as meaningful progress occurs.
-3. **Gating.** Run fresh applicable analyzer, formatter, Dart suite,
-   executable smoke checks and native monitor gates. Heavy suites/compiles
-   use the shared lock. Review for correctness and record finding
+3. **Gating.** Run fresh applicable analyzer, formatter, Go, orchestrator
+   and native monitor gates. Heavy suites/compiles use the shared broker. Review for correctness and record finding
    dispositions. Fix clear in-scope failures; do not suppress tests.
 4. **Local completion or PR.** If only local work was requested, finish at
    the verified authorized commit; do not open a PR. Otherwise open the PR

@@ -1,5 +1,5 @@
 import Foundation
-import HeavyLockV2
+import TunaContract
 import Observation
 
 /// Keeps `state` synchronized with the broker: checks health, follows
@@ -109,7 +109,7 @@ public final class MonitorSession {
                 let health = try await self.client.health()
                 do {
                     // Minor 1 adds the explicit queue mode and state.
-                    try HeavyLockV2.checkService(health, minimumMinor: 1)
+                    try TunaContract.checkService(health)
                 } catch {
                     self.state.connection = .incompatible(Self.describe(error))
                     try await Task.sleep(for: self.reconnectDelay)
@@ -207,7 +207,7 @@ public final class MonitorSession {
         try Task.checkCancellation()
     }
 
-    private func receive(_ event: Heavylock_V2_BrokerEvent) async throws {
+    private func receive(_ event: Tuna_BrokerEvent) async throws {
         self.lastMessage = .now
         if case .heartbeat(let heartbeat) = event.event, heartbeat.hasHeartbeatInterval {
             let interval = heartbeat.heartbeatInterval
@@ -250,8 +250,8 @@ public final class MonitorSession {
     }
 
     private static func describe(_ error: any Error) -> String {
-        switch error as? HeavyLockV2.ServiceCompatibilityError {
-        case .identityMismatch: "the service on this port is not a heavy-lock v2 broker"
+        switch error as? TunaContract.ServiceCompatibilityError {
+        case .identityMismatch: "the service on this port is not a Tuna broker"
         case .incompatibleVersion: "the broker's API version is not supported by this monitor"
         case .missingServiceVersion: "the broker did not report its version"
         case .notLive: "the broker reports that it is not live"

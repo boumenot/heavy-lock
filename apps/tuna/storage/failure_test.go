@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -242,7 +242,7 @@ func TestMissingEventIsNotSuccessfulEmptyReplay(t *testing.T) {
 
 func TestSchemaAndConnectionConfiguration(t *testing.T) {
 	f := setup(t)
-	expected, err := os.ReadFile("../../../docs/v2/schema.sql")
+	expected, err := os.ReadFile("../../../docs/schema.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestInvalidFreshRequestsNeverCommitBusyKey(t *testing.T) {
 }
 
 func TestCrashHelper(t *testing.T) {
-	path := os.Getenv("HEAVY_LOCK_STORAGE_CRASH_TEST")
+	path := os.Getenv("TUNA_STORAGE_CRASH_TEST")
 	if path == "" {
 		return
 	}
@@ -370,7 +370,7 @@ func TestCrashReopenKeepsCommittedAndRollsBackUncommittedState(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCrashHelper$")
-	cmd.Env = append(os.Environ(), "HEAVY_LOCK_STORAGE_CRASH_TEST="+path)
+	cmd.Env = append(os.Environ(), "TUNA_STORAGE_CRASH_TEST="+path)
 	output, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 17 {

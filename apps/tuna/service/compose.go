@@ -3,10 +3,10 @@ package service
 import (
 	"context"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/broker"
-	"github.com/boumenot/heavy-lock/apps/tuna/jobmetrics"
-	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
-	"github.com/boumenot/heavy-lock/apps/tuna/storage"
+	"github.com/boumenot/tuna/apps/tuna/broker"
+	"github.com/boumenot/tuna/apps/tuna/jobmetrics"
+	"github.com/boumenot/tuna/apps/tuna/scheduler"
+	"github.com/boumenot/tuna/apps/tuna/storage"
 )
 
 // composite serves both gRPC services from one scheduler, store and hub.

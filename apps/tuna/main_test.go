@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/cli"
-	"github.com/boumenot/heavy-lock/apps/tuna/runner"
-	"github.com/boumenot/heavy-lock/apps/tuna/service"
+	"github.com/boumenot/tuna/apps/tuna/cli"
+	"github.com/boumenot/tuna/apps/tuna/runner"
+	"github.com/boumenot/tuna/apps/tuna/service"
 )
 
 type recorded struct {
@@ -51,8 +51,8 @@ func TestDispatch(t *testing.T) {
 		{name: "bad service port", args: []string{"service", "--port", "0"}, code: 64, wantError: "invalid service arguments"},
 		{name: "bad weight", args: []string{"--port", "1", "--weight", "0", "--", "echo"}, code: 64, wantError: "--weight"},
 		{name: "bad worklog", args: []string{"--port", "1", "--worklog", "x", "--", "echo"}, code: 64, wantError: "--worklog"},
-		{name: "bare worklog repository", args: []string{"--port", "1", "--worklog", "heavy-lock#3", "--", "echo"}, code: 64, wantError: "--worklog"},
-		{name: "bad repository", args: []string{"--port", "1", "--repository", "heavy-lock", "--", "echo"}, code: 64, wantError: "--repository must be"},
+		{name: "bare worklog repository", args: []string{"--port", "1", "--worklog", "tuna#3", "--", "echo"}, code: 64, wantError: "--worklog"},
+		{name: "bad repository", args: []string{"--port", "1", "--repository", "tuna", "--", "echo"}, code: 64, wantError: "--repository must be"},
 		{name: "duplicate repository", args: []string{"--port", "1", "--repository", "a/b", "--repository=a/b", "--", "echo"}, code: 64, wantError: "once"},
 		{name: "too many retries", args: []string{"--port", "1", "--retries", "4", "--", "echo"}, code: 64, wantError: "--retries"},
 		{name: "negative retries", args: []string{"--port", "1", "--retries=-1", "--", "echo"}, code: 64, wantError: "--retries"},
@@ -83,13 +83,13 @@ func TestDispatch(t *testing.T) {
 func TestDispatchRunnerOptions(t *testing.T) {
 	var r recorded
 	var stderr bytes.Buffer
-	args := []string{"--port=49790", "--weight", "light", "--worklog=13", "--repository", "github.com/boumenot/heavy-lock", "--no-wait", "--retries", "3", "--", "make", "--", "-j"}
+	args := []string{"--port=49790", "--weight", "light", "--worklog=13", "--repository", "github.com/boumenot/tuna", "--no-wait", "--retries", "3", "--", "make", "--", "-j"}
 	if got := dispatch(args, &bytes.Buffer{}, &stderr, r.launcher()); got != 0 {
 		t.Fatalf("exit code = %d; stderr = %q", got, stderr.String())
 	}
 	o := r.runner
 	if o == nil || o.Port != 49790 || o.Weight != runner.LightWeight || o.Attribution.Worklog == nil || o.Attribution.Worklog.String() != "13" ||
-		o.Attribution.Repository == nil || o.Attribution.Repository.String() != "github.com/boumenot/heavy-lock" || !o.NoWait || o.Retries != 3 {
+		o.Attribution.Repository == nil || o.Attribution.Repository.String() != "github.com/boumenot/tuna" || !o.NoWait || o.Retries != 3 {
 		t.Fatalf("options = %+v", o)
 	}
 	if !reflect.DeepEqual(o.Command, []string{"make", "--", "-j"}) {

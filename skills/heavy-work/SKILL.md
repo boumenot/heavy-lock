@@ -1,66 +1,81 @@
 ---
 name: heavy-work
-description: Run builds, full or coverage test suites, integrations, benchmarks and emulators through the installed machine-wide heavy-lock command.
+description: Run heavy builds, full or coverage test suites, integration tests, benchmarks, and emulators through the shared tuna broker so parallel sessions do not overload this Mac.
 ---
 
-# Machine-wide heavy work
+# Heavy work on this Mac
 
-Development sessions in every repository share one machine-wide lock.
-Use the installed `heavy-lock` command on each development machine.
-Do not assume a specific repository, SDK path, user name or operating system.
+Development sessions in this account share one Tuna broker. Run heavy work
+through its installed runner so concurrent jobs are admitted together.
 
-## Heavy versus light
+**Cutover freeze:** Until the coordinated cutover is cleared and this
+repository's heavy-work instructions and invokers use this broker or are
+safely disabled, do not run real heavy workloads under any gate. Report the
+migration blocker. Installing this skill alone does not clear the freeze.
 
-Wrap app/APK/release/Docker builds, full/coverage suites, integration tests,
-benchmarks, emulators/simulators for their whole lifetime, and work expected
-to load the machine for more than a minute.
+## What counts as heavy
 
-Run analyzers, formatters, package installs, single test files and small
-focused checks directly. Ordinary servers/watchers need no lock unless they
-perform heavy work.
+Run through the broker:
 
-## Run
+- App, APK, release, or Docker image builds
+- Full or coverage test suites, integration tests, and benchmarks
+- Emulators and simulators for their whole lifetime
+- Anything else expected to load the machine for more than a minute
 
-Verify `heavy-lock` is on PATH in the current agent environment. If missing,
-report the installation/PATH problem; do not run heavy work unlocked or
-fall back to a hard-coded checkout.
+Run linters, formatters, type checks, analyzers, package installs, single test
+files, small focused tests, and quick scripts directly. Ordinary servers and
+watchers do not need the gate unless they perform heavy work.
+
+## How to run
+
+Use the installed runner by absolute path and specify the shared broker port:
 
 ```bash
-heavy-lock -- npm run build
-heavy-lock -- dotnet test
-heavy-lock --weight light -- pytest tests/unit
-heavy-lock --worklog 42 -- bash -c 'make build && make integration-test'
+[ -x /Users/boumenot/.local/bin/tuna ] || {
+  echo "tuna runner missing: /Users/boumenot/.local/bin/tuna" >&2
+  exit 1
+}
+
+/Users/boumenot/.local/bin/tuna --port 49783 -- npm run build
+/Users/boumenot/.local/bin/tuna --port 49783 -- dotnet test
+/Users/boumenot/.local/bin/tuna --port 49783 --weight light -- pytest tests/unit
 ```
 
-Everything after `--` is the command. The runner inherits terminal I/O and
-returns the command's exit code. Heavy weight (2 units) is default; light
-(1) is for medium jobs that may share capacity. Positive numeric weights
-are accepted, capped at machine capacity.
+Run from the project directory. Put the command and its arguments after `--`.
+The runner does not invoke a shell; use `bash -c '...'` for pipelines or
+multiple commands. It returns the command's exit status.
 
-Wait until admitted, reading the printed reason. Do not kill or bypass the
-runner because it waits. `--no-wait` returns 75 instead of waiting; that is
-not permission to retry without the lock.
+Heavy weight is the default (2 units); `--weight light` uses 1 unit for medium
+jobs that may share capacity. A positive integer weight is also accepted, but
+the broker rejects weights above its capacity. The runner waits for admission;
+do not bypass it because it is waiting. `--no-wait` returns 75 if the broker
+does not admit the job immediately.
 
-## Shared protocol and safety
+The broker must already be running and ready. To check it:
 
-- Keep the defaults: `~/.cache/heavy-lock.lock` on macOS/Linux and
-  `%LOCALAPPDATA%\heavy-lock\heavy-lock.lock` on Windows.
-- Before adopting this version, finish old-runner jobs and update every
-  runner, monitor, skill, script and automation on the machine. Older and
-  current runners use different gates and nesting markers; do not mix them,
-  including nested runs. See the heavy-lock README for migration instructions.
-- Do not change `HEAVY_LOCK_PATH`, `HEAVY_LOCK_CAPACITY`, resource,
-  settling or priority settings ad hoc. Machine configuration is a
-  deliberate user decision, identical across sessions.
-- Nested commands inherit `HEAVY_LOCK_HELD` and run directly on the
-  same gate. Never forge the marker or use it to launch detached heavy work.
-- Never delete shared gate/slot/admission files or the shared cache.
-- Stop your own run with Ctrl+C or `kill <runner-pid>`, not SIGKILL. The
-  runner forwards termination and holds slots through process-tree cleanup.
-- `--worklog` is an optional positive issue number in the current repo.
-  Do not guess it from branch names; omit when no worklog is known.
-- `heavy-lock-status` reports status records, not proof of lock ownership.
-  Records can be stale; use the native macOS monitor for validated state.
-- Do not put secrets in command arguments: status records include them.
-- Respect repository instructions when they impose stricter requirements,
-  but do not use a second gate or run heavy work unlocked.
+```bash
+/Users/boumenot/.local/bin/tuna status --port 49783
+```
+
+If the runner is missing or the broker is unavailable, incompatible, or
+recovering, report the problem rather than running heavy work unlocked. The
+runner reports an unavailable broker with exit code 69; a command may itself
+return 69 or 75, so inspect the diagnostics.
+
+## Safety
+
+- Never use another gate or a repository-local runner unless it delegates to
+  this installed tuna runner and shared broker. Different gates do not exclude
+  one another. Report conflicting repository instructions instead of
+  bypassing the shared broker.
+- Do not change broker port, capacity, or scheduling settings ad hoc, launch a
+  second broker, or delete broker state or lock files.
+- The runner sets `TUNA_JOB_ID` in the admitted command. Nested tuna calls
+  with that marker run directly under the existing admission. Never forge the
+  marker or use it for unrelated or detached work.
+- Use `--worklog N` only when the worklog number is known; do not infer it from
+  a branch name.
+- Do not put secrets in command arguments: the broker records job arguments
+  and its local control API is unauthenticated.
+- Repository instructions may add stricter requirements but must not introduce
+  a second gate or run heavy work unlocked.

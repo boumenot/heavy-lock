@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"github.com/boumenot/tuna/apps/tuna/attribution"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -29,13 +29,13 @@ func (compatibilityServer) GetStatus(context.Context, *pb.GetStatusRequest) (*pb
 	return &pb.BrokerStatus{}, nil
 }
 
-func TestControlRequiresExplicitQueueState(t *testing.T) {
+func TestControlRequiresCompatibleBroker(t *testing.T) {
 	for _, tt := range []struct {
 		version string
 		want    int
 	}{
-		{"2.0.0", 70},
-		{"2.1.0", 0},
+		{"2.1.0", 70},
+		{"3.0.0", 0},
 	} {
 		t.Run(tt.version, func(t *testing.T) {
 			listener, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -49,7 +49,7 @@ func TestControlRequiresExplicitQueueState(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
-			code, handled := Run(context.Background(), []string{"status", "--port", port}, &stdout, &stderr, "2.2.0")
+			code, handled := Run(context.Background(), []string{"status", "--port", port}, &stdout, &stderr, "3.0.0")
 			if !handled || code != tt.want {
 				t.Fatalf("status against %s = %d, handled %v; stdout %q, stderr %q",
 					tt.version, code, handled, stdout.String(), stderr.String())
@@ -114,18 +114,18 @@ func TestHumanJobShowsRecordedAttribution(t *testing.T) {
 	job := &pb.Job{JobId: "job", Command: "make", Cwd: s("/work"),
 		Client: &pb.ClientInfo{Name: s("tuna"), Version: s("2.0.0"), Os: pb.ClientOS_CLIENT_OS_MACOS,
 			OsVersion: s("26.1"), Architecture: pb.ClientArchitecture_CLIENT_ARCHITECTURE_ARM64},
-		Attribution: &pb.Attribution{Repository: s("boumenot/heavy-lock"), Branch: s("main"), Worklog: s("boumenot/heavy-lock#33"),
+		Attribution: &pb.Attribution{Repository: s("boumenot/tuna"), Branch: s("main"), Worklog: s("boumenot/tuna#33"),
 			AgentSession: s("abc"), Extra: map[string]string{
 				attribution.RepositoryHostKey: "github.com", attribution.AIAgentKey: attribution.CopilotAppAgent,
-				attribution.WorklogURLKey: "https://github.com/boumenot/heavy-lock/issues/33"}}}
+				attribution.WorklogURLKey: "https://github.com/boumenot/tuna/issues/33"}}}
 	var out bytes.Buffer
 	if err := printResult(&out, job); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"  Repository: github.com/boumenot/heavy-lock\n",
+		"  Repository: github.com/boumenot/tuna\n",
 		"  Branch: main\n",
-		"  Worklog: boumenot/heavy-lock#33 https://github.com/boumenot/heavy-lock/issues/33\n",
+		"  Worklog: boumenot/tuna#33 https://github.com/boumenot/tuna/issues/33\n",
 		"  Agent session: abc ghapp://sessions/abc\n",
 		"  Client: tuna 2.0.0 · macOS 26.1 · arm64\n",
 		"  Cwd: /work\n",

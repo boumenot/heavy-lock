@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/cli"
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
-	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
-	"github.com/boumenot/heavy-lock/apps/tuna/storage"
-	"github.com/boumenot/heavy-lock/apps/tuna/transport"
+	"github.com/boumenot/tuna/apps/tuna/cli"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
+	"github.com/boumenot/tuna/apps/tuna/scheduler"
+	"github.com/boumenot/tuna/apps/tuna/storage"
+	"github.com/boumenot/tuna/apps/tuna/transport"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -115,7 +115,7 @@ func TestActualDomainGRPCRESTCLIParity(t *testing.T) {
 	if _, err := client.PauseQueue(ctx, &pb.PauseQueueRequest{}); err != nil {
 		t.Fatal(err)
 	}
-	code, data := rest(t, port, http.MethodGet, "/v1/status", "")
+	code, data := rest(t, port, http.MethodGet, "/status", "")
 	var st pb.BrokerStatus
 	if code != 200 || protojson.Unmarshal(data, &st) != nil || st.QueueMode != pb.QueueMode_QUEUE_MODE_PAUSED {
 		t.Fatalf("REST status=%d %s", code, data)
@@ -138,7 +138,7 @@ func TestActualDomainGRPCRESTCLIParity(t *testing.T) {
 	}
 	missing := "00000000-0000-4000-8000-000000000001"
 	_, grpcErr := client.GetJob(ctx, &pb.GetJobRequest{JobId: missing})
-	code, data = rest(t, port, http.MethodGet, "/v1/jobs/"+missing, "")
+	code, data = rest(t, port, http.MethodGet, "/jobs/"+missing, "")
 	var restErr statuspb.Status
 	if code != 404 || protojson.Unmarshal(data, &restErr) != nil || !proto.Equal(status.Convert(grpcErr).Proto(), &restErr) {
 		t.Fatalf("errors differ: grpc=%v REST=%d %s", grpcErr, code, data)
@@ -225,7 +225,7 @@ func TestForceStartPausedAndControlErrorParity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Disconnect(context.Background(), reg)
-	code, data := rest(t, port, http.MethodPost, "/v1/jobs/"+result.Job.JobId+"/force-start", "{}")
+	code, data := rest(t, port, http.MethodPost, "/jobs/"+result.Job.JobId+"/force-start", "{}")
 	var forced pb.Job
 	if code != 200 || protojson.Unmarshal(data, &forced) != nil || !forced.Forced || forced.State != pb.JobState_JOB_STATE_RESERVED {
 		t.Fatalf("forced=%d %s", code, data)
@@ -263,7 +263,7 @@ func TestForceStartPausedAndControlErrorParity(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			grpcErr := test.call()
-			code, data := rest(t, port, test.method, "/v1/jobs/"+missing+test.path, test.body)
+			code, data := rest(t, port, test.method, "/jobs/"+missing+test.path, test.body)
 			var restErr statuspb.Status
 			if code != 404 || protojson.Unmarshal(data, &restErr) != nil || !proto.Equal(status.Convert(grpcErr).Proto(), &restErr) {
 				t.Fatalf("grpc=%v REST=%d %s", grpcErr, code, data)
@@ -302,7 +302,7 @@ func TestReorderAndPaginationUseDomain(t *testing.T) {
 	if err != nil || q.Jobs[0].JobId != ids[2] {
 		t.Fatalf("CLI reorder not reflected=%v %v", q, err)
 	}
-	code, data := rest(t, port, http.MethodPost, "/v1/jobs/"+ids[2]+"/move", `{"toBack":true}`)
+	code, data := rest(t, port, http.MethodPost, "/jobs/"+ids[2]+"/move", `{"toBack":true}`)
 	if code != 200 {
 		t.Fatalf("REST reorder=%d %s", code, data)
 	}
@@ -349,7 +349,7 @@ func TestReorderAndPaginationUseDomain(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("CLI cancel=%d %q", exit, stderr.String())
 	}
-	code, data = rest(t, port, http.MethodGet, "/v1/jobs/"+ids[1], "")
+	code, data = rest(t, port, http.MethodGet, "/jobs/"+ids[1], "")
 	var cancelled pb.Job
 	if code != 200 || protojson.Unmarshal(data, &cancelled) != nil || cancelled.State != pb.JobState_JOB_STATE_FINISHED {
 		t.Fatalf("cancel not reflected=%d %s", code, data)

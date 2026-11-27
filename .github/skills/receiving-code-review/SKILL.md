@@ -12,7 +12,7 @@ automatically nor dismiss a concern because current tests pass.
 
 Fix clear bugs within scope, starting with protocol and process-lifetime
 risks. Add focused regressions when behavior changes, rerun affected checks
-through the appropriate lock, and explain the correction directly.
+through the shared broker when heavy, and explain the correction directly.
 
 If a finding is incorrect, provide concrete code/behavior evidence. If it is
 valid but outside scope, record it as a follow-up without silently expanding

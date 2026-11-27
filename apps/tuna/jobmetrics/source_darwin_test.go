@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/procid"
+	"github.com/boumenot/tuna/apps/tuna/procid"
 )
 
 func tableSequence(tables ...[]tableProcess) func() ([]tableProcess, error) {
