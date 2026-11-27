@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
 	"google.golang.org/protobuf/proto"
@@ -69,7 +70,7 @@ func (h *harness) start1(l *launched, pid int64) {
 	if _, _, err := h.s.Seal(h.ctx, l.id, l.grant, l.req.Runner, false); err != nil {
 		h.t.Fatalf("seal: %v", err)
 	}
-	l.proc = &pb.ProcessIdentity{Pid: pid, StartTimeUnixNs: 1000 + pid}
+	l.proc = &pb.ProcessIdentity{Pid: pid, StartTime: contract.Timestamp(1000 + pid)}
 	if _, _, err := h.s.ReportStarted(h.ctx, l.id, l.grant, l.req.Runner, l.proc); err != nil {
 		h.t.Fatalf("started: %v", err)
 	}
@@ -137,14 +138,14 @@ func TestFinishSummaryIsAtomicAndConflictsDoNotOverwrite(t *testing.T) {
 	h, _ := launchHarness(t, 2, &fakeProbe{})
 	l := h.granted(2)
 	h.start1(&l, 4242)
-	invalid := &pb.ResourceSummary{ElapsedMs: proto.Int64(500)}
+	invalid := &pb.ResourceSummary{Elapsed: contract.MillisecondDuration(500)}
 	if _, _, err := h.s.ReportFinishedWithResources(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(0), invalid); err == nil {
 		t.Fatal("invalid summary was accepted")
 	}
 	if job := h.job(l.id); job.Outcome != nil || job.Resources != nil || job.State != pb.JobState_JOB_STATE_RUNNING {
 		t.Fatalf("failed summary write committed a partial finish: %+v", job)
 	}
-	summary := &pb.ResourceSummary{ElapsedMs: proto.Int64(500), CpuTimeMs: proto.Int64(200),
+	summary := &pb.ResourceSummary{Elapsed: contract.MillisecondDuration(500), CpuTime: contract.MillisecondDuration(200),
 		Completeness: pb.MeasurementCompleteness_MEASUREMENT_COMPLETENESS_PARTIAL}
 	if _, _, err := h.s.ReportFinishedWithResources(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(0), summary); err != nil {
 		t.Fatal(err)
@@ -153,7 +154,7 @@ func TestFinishSummaryIsAtomicAndConflictsDoNotOverwrite(t *testing.T) {
 		t.Fatalf("identical retry: %v", err)
 	}
 	conflict := proto.Clone(summary).(*pb.ResourceSummary)
-	conflict.ElapsedMs = proto.Int64(501)
+	conflict.Elapsed = contract.MillisecondDuration(501)
 	if _, _, err := h.s.ReportFinishedWithResources(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(0), conflict); !errors.Is(err, storage.ErrIdentity) {
 		t.Fatalf("conflicting runtime: %v", err)
 	}
@@ -236,8 +237,8 @@ func TestCancelByState(t *testing.T) {
 	if _, err := h.s.Cancel(h.ctx, running.id, nil); err != nil {
 		t.Fatal(err)
 	}
-	if j := h.job(running.id); j.State == pb.JobState_JOB_STATE_FINISHED || j.CancelRequestedAtUnixNs == nil {
-		t.Fatalf("claimed job after cancel: state %v requested %v", j.State, j.CancelRequestedAtUnixNs)
+	if j := h.job(running.id); j.State == pb.JobState_JOB_STATE_FINISHED || j.CancelRequestedAt == nil {
+		t.Fatalf("claimed job after cancel: state %v requested %v", j.State, j.CancelRequestedAt)
 	}
 	if _, _, err := h.s.AcknowledgeCancel(h.ctx, running.id, running.grant, running.req.Runner); err != nil {
 		t.Fatal(err)
@@ -325,7 +326,7 @@ func TestSnapshotsProjectLaunchTimeout(t *testing.T) {
 		"broker snapshot":  snapshot.ActiveJobs[0],
 	} {
 		t.Run(name, func(t *testing.T) {
-			if job.Grant == nil || job.Grant.LaunchTimeoutMs != 30000 {
+			if job.Grant == nil || job.Grant.LaunchTimeout == nil || job.Grant.LaunchTimeout.AsDuration().Milliseconds() != 30000 {
 				t.Fatalf("grant = %v, want the 30-second launch investigation timeout", job.Grant)
 			}
 		})
@@ -338,7 +339,7 @@ func TestSubmitProjectsDisconnectedGrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Job.GraceRemainingMs == nil || *result.Job.GraceRemainingMs != 30000 {
-		t.Fatalf("submitted job grace = %v, want 30 seconds", result.Job.GraceRemainingMs)
+	if result.Job.GraceRemaining == nil || result.Job.GraceRemaining.AsDuration().Milliseconds() != 30000 {
+		t.Fatalf("submitted job grace = %v, want 30 seconds", result.Job.GraceRemaining)
 	}
 }

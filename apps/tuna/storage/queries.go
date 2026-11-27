@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -68,13 +69,21 @@ func (r *Reader) ListJobs(req *pb.ListJobsRequest) (*pb.ListJobsResponse, error)
 			args = append(args, *filter.value)
 		}
 	}
-	if req.QueuedAfterUnixNs != nil {
+	if req.QueuedAfter != nil {
+		at, err := contract.UnixNano(req.QueuedAfter)
+		if err != nil {
+			return nil, err
+		}
 		query += " AND queued_at_ns>=?"
-		args = append(args, *req.QueuedAfterUnixNs)
+		args = append(args, at)
 	}
-	if req.QueuedBeforeUnixNs != nil {
+	if req.QueuedBefore != nil {
+		at, err := contract.UnixNano(req.QueuedBefore)
+		if err != nil {
+			return nil, err
+		}
 		query += " AND queued_at_ns<?"
-		args = append(args, *req.QueuedBeforeUnixNs)
+		args = append(args, at)
 	}
 	if req.PageToken != "" {
 		query += " AND (queued_at_ns<? OR (queued_at_ns=? AND id<?))"
@@ -106,7 +115,11 @@ func (r *Reader) ListJobs(req *pb.ListJobsRequest) (*pb.ListJobsResponse, error)
 	}
 	if uint32(len(ids)) > size {
 		last := result.Jobs[len(result.Jobs)-1]
-		data, err := json.Marshal(pageKey{At: last.QueuedAtUnixNs, ID: last.JobId, Filters: string(filterJSON)})
+		at, err := contract.UnixNano(last.QueuedAt)
+		if err != nil {
+			return nil, err
+		}
+		data, err := json.Marshal(pageKey{At: at, ID: last.JobId, Filters: string(filterJSON)})
 		if err != nil {
 			return nil, err
 		}

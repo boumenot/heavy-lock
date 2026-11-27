@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -63,12 +64,14 @@ func New(root Identity, previous *pb.ResourceSummary, recovered bool) *Aggregate
 	}
 	if previous != nil {
 		a.summary = proto.Clone(previous).(*pb.ResourceSummary)
-		if previous.CpuTimeMs != nil && *previous.CpuTimeMs >= 0 &&
-			*previous.CpuTimeMs <= math.MaxInt64/int64(time.Millisecond) {
-			a.cpuNs, a.cpuKnown = *previous.CpuTimeMs*int64(time.Millisecond), true
-		} else if previous.CpuTimeMs != nil {
-			a.reason("previous CPU counter cannot be represented")
-			a.summary.CpuTimeMs = nil
+		if previous.CpuTime != nil {
+			ms, err := contract.Milliseconds(previous.CpuTime)
+			if err == nil && ms >= 0 && ms <= math.MaxInt64/int64(time.Millisecond) {
+				a.cpuNs, a.cpuKnown = ms*int64(time.Millisecond), true
+			} else {
+				a.reason("previous CPU counter cannot be represented")
+				a.summary.CpuTime = nil
+			}
 		}
 		if previous.IncompletenessReason != nil {
 			a.reason(*previous.IncompletenessReason)
@@ -264,7 +267,7 @@ func (a *Aggregate) Finish(elapsedMs, rootCPUMs *int64) {
 	if elapsedMs == nil || *elapsedMs < 0 {
 		a.reason("root runtime was unavailable")
 	} else {
-		a.summary.ElapsedMs = proto.Int64(*elapsedMs)
+		a.summary.Elapsed = contract.MillisecondDuration(*elapsedMs)
 	}
 	if rootCPUMs == nil || *rootCPUMs < 0 || *rootCPUMs > math.MaxInt64/int64(time.Millisecond) {
 		a.reason("final root CPU time was unavailable")
@@ -293,9 +296,9 @@ func (a *Aggregate) Finish(elapsedMs, rootCPUMs *int64) {
 func (a *Aggregate) Summary() *pb.ResourceSummary {
 	summary := proto.Clone(a.summary).(*pb.ResourceSummary)
 	if a.cpuKnown {
-		summary.CpuTimeMs = proto.Int64(a.cpuNs / int64(time.Millisecond))
+		summary.CpuTime = contract.MillisecondDuration(a.cpuNs / int64(time.Millisecond))
 	}
-	if summary.ElapsedMs != nil || summary.CpuTimeMs != nil ||
+	if summary.Elapsed != nil || summary.CpuTime != nil ||
 		summary.PeakCpuPercent != nil || summary.PeakCombinedRssBytes != nil {
 		summary.Completeness = pb.MeasurementCompleteness_MEASUREMENT_COMPLETENESS_PARTIAL
 	} else {

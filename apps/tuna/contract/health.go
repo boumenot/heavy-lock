@@ -3,6 +3,8 @@ package contract
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
@@ -10,23 +12,62 @@ import (
 
 const (
 	ServiceIdentity = "heavylock.v2"
-	APIMajor        = 2
-	APIMinor        = 2
+	ServiceVersion  = "2.2.0-dev.34"
 )
 
-func CheckService(health *heavylockv2.Health, minimumMinor uint32) error {
+var semverPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
+
+type semanticVersion struct {
+	major, minor uint64
+	prerelease   bool
+}
+
+func parseVersion(value string) (semanticVersion, error) {
+	match := semverPattern.FindStringSubmatch(value)
+	if match == nil {
+		return semanticVersion{}, fmt.Errorf("invalid semantic version %q", value)
+	}
+	major, majorErr := strconv.ParseUint(match[1], 10, 64)
+	minor, minorErr := strconv.ParseUint(match[2], 10, 64)
+	if majorErr != nil || minorErr != nil {
+		return semanticVersion{}, fmt.Errorf("semantic version component is too large: %q", value)
+	}
+	if match[4] != "" {
+		for _, identifier := range strings.Split(match[4], ".") {
+			numeric := true
+			for _, c := range identifier {
+				if c < '0' || c > '9' {
+					numeric = false
+					break
+				}
+			}
+			if numeric && len(identifier) > 1 && identifier[0] == '0' {
+				return semanticVersion{}, fmt.Errorf("invalid semantic version %q", value)
+			}
+		}
+	}
+	return semanticVersion{major: major, minor: minor, prerelease: match[4] != ""}, nil
+}
+
+func CheckService(health *heavylockv2.Health, clientVersion string, minimumMinor uint64) error {
 	if health == nil {
 		return errors.New("broker returned no health response")
 	}
 	if health.ServiceIdentity != ServiceIdentity {
 		return errors.New("broker service identity does not match heavylock.v2")
 	}
-	if health.ApiMajor != APIMajor || health.ApiMinor < minimumMinor {
-		return fmt.Errorf("incompatible broker API %d.%d; need %d.%d or later within major %d",
-			health.ApiMajor, health.ApiMinor, APIMajor, minimumMinor, APIMajor)
+	client, err := parseVersion(clientVersion)
+	if err != nil {
+		return fmt.Errorf("client %w", err)
 	}
-	if strings.TrimSpace(health.ServiceVersion) == "" {
-		return errors.New("broker did not report its service version")
+	server, err := parseVersion(health.ServiceVersion)
+	if err != nil {
+		return fmt.Errorf("broker %w", err)
+	}
+	if client.major != server.major || server.minor < minimumMinor ||
+		(client.prerelease || server.prerelease) && clientVersion != health.ServiceVersion {
+		return fmt.Errorf("incompatible broker version %q for client %q (minimum minor %d)",
+			health.ServiceVersion, clientVersion, minimumMinor)
 	}
 	if !health.Live {
 		return errors.New("broker is not live")

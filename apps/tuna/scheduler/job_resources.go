@@ -5,6 +5,7 @@ import (
 
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
+	"google.golang.org/protobuf/proto"
 )
 
 // SaveResources checkpoints an active job's historical measurements without
@@ -25,8 +26,8 @@ func (s *Scheduler) SaveResources(ctx context.Context, id string, summary *pb.Re
 		if isFinished != finished {
 			return storage.ErrTransition
 		}
-		if isFinished && job.Resources != nil && job.Resources.ElapsedMs != nil &&
-			(summary.ElapsedMs == nil || *summary.ElapsedMs != *job.Resources.ElapsedMs) {
+		if isFinished && job.Resources != nil && job.Resources.Elapsed != nil &&
+			!proto.Equal(summary.Elapsed, job.Resources.Elapsed) {
 			return storage.ErrTransition
 		}
 		return tx.SaveResources(id, summary)

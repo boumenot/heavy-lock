@@ -3,6 +3,7 @@ package broker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/boumenot/heavy-lock/apps/tuna/cli"
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
@@ -41,11 +43,11 @@ func controlServer(t *testing.T, count int64) (*Control, *scheduler.Scheduler, p
 	}
 	t.Cleanup(func() { store.Close() })
 	hub := NewHub()
-	s, _, err := scheduler.Start(ctx, store, scheduler.Options{Config: scheduler.DefaultConfig(2), PID: 123, ServiceVersion: "test", Sampler: testSampler{}, Publish: hub.Publish})
+	s, _, err := scheduler.Start(ctx, store, scheduler.Options{Config: scheduler.DefaultConfig(2), PID: 123, ServiceVersion: contract.ServiceVersion, Sampler: testSampler{}, Publish: hub.Publish})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := NewControl(s, store, Options{ServiceVersion: "test", EventMaxCount: count, Hub: hub})
+	c, err := NewControl(s, store, Options{ServiceVersion: contract.ServiceVersion, EventMaxCount: count, Hub: hub})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,9 +121,16 @@ func TestActualDomainGRPCRESTCLIParity(t *testing.T) {
 		t.Fatalf("REST status=%d %s", code, data)
 	}
 	var out, errors bytes.Buffer
-	exit, handled := cli.Run(ctx, []string{"resume", "--port", fmt.Sprint(port), "--json"}, &out, &errors)
+	exit, handled := cli.Run(ctx, []string{"resume", "--port", fmt.Sprint(port), "--json"}, &out, &errors, contract.ServiceVersion)
 	if !handled || exit != 0 {
 		t.Fatalf("CLI=%d %q", exit, errors.String())
+	}
+	var cliStatus map[string]any
+	if err := json.Unmarshal(out.Bytes(), &cliStatus); err != nil || cliStatus["paused"] != false {
+		t.Fatalf("CLI must emit scalar defaults: %s (%v)", out.String(), err)
+	}
+	if _, ok := cliStatus["pausedAt"]; ok {
+		t.Fatalf("CLI must omit unknown optional timestamps: %s", out.String())
 	}
 	statusAfter, err := client.GetStatus(ctx, &pb.GetStatusRequest{})
 	if err != nil || statusAfter.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED {
@@ -136,7 +145,7 @@ func TestActualDomainGRPCRESTCLIParity(t *testing.T) {
 	}
 	out.Reset()
 	errors.Reset()
-	exit, _ = cli.Run(ctx, []string{"job", "--job", missing, "--port", fmt.Sprint(port)}, &out, &errors)
+	exit, _ = cli.Run(ctx, []string{"job", "--job", missing, "--port", fmt.Sprint(port)}, &out, &errors, contract.ServiceVersion)
 	if exit != 70 || out.Len() != 0 || !strings.Contains(errors.String(), "NotFound/JOB_NOT_FOUND") {
 		t.Fatalf("CLI error=%d %q %q", exit, out.String(), errors.String())
 	}
@@ -206,7 +215,7 @@ func TestForceStartPausedAndControlErrorParity(t *testing.T) {
 	}
 	submit := &pb.SubmitJobRequest{IdempotencyKey: id, Command: "echo forced", Weight: 2,
 		Runner: &pb.RunnerIncarnation{IncarnationId: "10000000-0000-4000-8000-000000000001",
-			Process: &pb.ProcessIdentity{Pid: 123, StartTimeUnixNs: 1}}}
+			Process: &pb.ProcessIdentity{Pid: 123, StartTime: contract.Timestamp(1)}}}
 	result, _, err := s.Submit(ctx, submit)
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +235,7 @@ func TestForceStartPausedAndControlErrorParity(t *testing.T) {
 		t.Fatalf("forced occupancy=%v %v", st, err)
 	}
 	var out, stderr bytes.Buffer
-	exit, _ := cli.Run(ctx, []string{"job", "--job", forced.JobId, "--port", fmt.Sprint(port)}, &out, &stderr)
+	exit, _ := cli.Run(ctx, []string{"job", "--job", forced.JobId, "--port", fmt.Sprint(port)}, &out, &stderr, contract.ServiceVersion)
 	if exit != 0 || !strings.Contains(out.String(), "FORCED") {
 		t.Fatalf("forced CLI=%d %q %q", exit, out.String(), stderr.String())
 	}
@@ -273,7 +282,7 @@ func TestReorderAndPaginationUseDomain(t *testing.T) {
 		req := &pb.SubmitJobRequest{IdempotencyKey: fmt.Sprintf("00000000-0000-4000-8000-%012d", i),
 			Command: fmt.Sprintf("command%d", i), Weight: 1, Runner: &pb.RunnerIncarnation{
 				IncarnationId: fmt.Sprintf("10000000-0000-4000-8000-%012d", i),
-				Process:       &pb.ProcessIdentity{Pid: int64(i), StartTimeUnixNs: 1}}}
+				Process:       &pb.ProcessIdentity{Pid: int64(i), StartTime: contract.Timestamp(1)}}}
 		result, _, err := s.Submit(ctx, req)
 		if err != nil {
 			t.Fatal(err)
@@ -285,7 +294,7 @@ func TestReorderAndPaginationUseDomain(t *testing.T) {
 		t.Fatalf("after=%v %v", q, err)
 	}
 	var out, stderr bytes.Buffer
-	exit, _ := cli.Run(ctx, []string{"reorder", "--job", ids[2], "--front", "--port", fmt.Sprint(port)}, &out, &stderr)
+	exit, _ := cli.Run(ctx, []string{"reorder", "--job", ids[2], "--front", "--port", fmt.Sprint(port)}, &out, &stderr, contract.ServiceVersion)
 	if exit != 0 {
 		t.Fatalf("CLI reorder=%d %q", exit, stderr.String())
 	}
@@ -336,7 +345,7 @@ func TestReorderAndPaginationUseDomain(t *testing.T) {
 	}
 	out.Reset()
 	stderr.Reset()
-	exit, _ = cli.Run(ctx, []string{"cancel", "--job", ids[1], "--port", fmt.Sprint(port)}, &out, &stderr)
+	exit, _ = cli.Run(ctx, []string{"cancel", "--job", ids[1], "--port", fmt.Sprint(port)}, &out, &stderr, contract.ServiceVersion)
 	if exit != 0 {
 		t.Fatalf("CLI cancel=%d %q", exit, stderr.String())
 	}

@@ -87,7 +87,7 @@ struct BrokerIntegrationTests {
             await waitFor {
                 session.state.recent.contains {
                     $0.jobID == running.jobID && $0.outcome.kind == .signaled
-                        && $0.hasCancelRequestedAtUnixNs
+                        && $0.hasCancelRequestedAt
                 }
             })
 

@@ -25,7 +25,7 @@ func sampleSubmission() *heavylockv2.SubmitJobRequest {
 		},
 		Runner: &heavylockv2.RunnerIncarnation{
 			IncarnationId: "runner",
-			Process:       &heavylockv2.ProcessIdentity{Pid: 10, StartTimeUnixNs: 12345},
+			Process:       &heavylockv2.ProcessIdentity{Pid: 10, StartTime: Timestamp(12345)},
 		},
 	}
 }
@@ -87,7 +87,7 @@ func TestCanonicalSubmitDetectsConflicts(t *testing.T) {
 		{name: "command", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Command += "!" }},
 		{name: "optional presence", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Cwd = nil }},
 		{name: "metadata", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Attribution.Extra["a"] = "changed" }},
-		{name: "runner incarnation", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Runner.Process.StartTimeUnixNs++ }},
+		{name: "runner incarnation", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Runner.Process.StartTime.Nanos++ }},
 		{name: "os version", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Client.OsVersion = proto.String("26.1") }},
 		{name: "empty os version", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Client.OsVersion = proto.String("") }},
 		{name: "retry lineage", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.RetryOfJobId = proto.String("predecessor") }},
@@ -114,6 +114,11 @@ func TestCanonicalSubmitRejectsUnknownOrInvalidInput(t *testing.T) {
 	unknown.Attribution.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
 	if _, err := CanonicalSubmitHash(unknown, AdmissionQueued); err == nil {
 		t.Fatal("unknown nested fields must not be silently ignored")
+	}
+	unknown = sampleSubmission()
+	unknown.Runner.Process.StartTime.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+	if _, err := CanonicalSubmitHash(unknown, AdmissionQueued); err == nil {
+		t.Fatal("unknown timestamp fields must not be silently ignored")
 	}
 	if _, err := CanonicalSubmitHash(sampleSubmission(), AdmissionMode(99)); err == nil {
 		t.Fatal("unknown admission mode must be rejected")

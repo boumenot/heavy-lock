@@ -169,8 +169,10 @@ public struct MonitorState: Equatable, Sendable {
 
     private static func sortedActive(_ jobs: [Heavylock_V2_Job]) -> [Heavylock_V2_Job] {
         jobs.sorted {
-            ($0.hasAdmittedAtUnixNs ? $0.admittedAtUnixNs : Int64.max, $0.jobID)
-                < ($1.hasAdmittedAtUnixNs ? $1.admittedAtUnixNs : Int64.max, $1.jobID)
+            ($0.hasAdmittedAt ? $0.admittedAt.seconds : Int64.max,
+                $0.hasAdmittedAt ? $0.admittedAt.nanos : Int32.max, $0.jobID)
+                < ($1.hasAdmittedAt ? $1.admittedAt.seconds : Int64.max,
+                    $1.hasAdmittedAt ? $1.admittedAt.nanos : Int32.max, $1.jobID)
         }
     }
 }

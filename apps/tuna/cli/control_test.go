@@ -3,13 +3,60 @@ package cli
 import (
 	"bytes"
 	"context"
-	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
-	"google.golang.org/protobuf/proto"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 )
+
+type compatibilityServer struct {
+	pb.UnimplementedControlServiceServer
+	version string
+}
+
+func (s compatibilityServer) GetHealth(context.Context, *pb.GetHealthRequest) (*pb.Health, error) {
+	return &pb.Health{Live: true, ServiceIdentity: contract.ServiceIdentity, ServiceVersion: s.version}, nil
+}
+
+func (compatibilityServer) GetStatus(context.Context, *pb.GetStatusRequest) (*pb.BrokerStatus, error) {
+	return &pb.BrokerStatus{}, nil
+}
+
+func TestControlRequiresExplicitQueueState(t *testing.T) {
+	for _, tt := range []struct {
+		version string
+		want    int
+	}{
+		{"2.0.0", 70},
+		{"2.1.0", 0},
+	} {
+		t.Run(tt.version, func(t *testing.T) {
+			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := grpc.NewServer()
+			pb.RegisterControlServiceServer(server, compatibilityServer{version: tt.version})
+			go server.Serve(listener)
+			t.Cleanup(server.Stop)
+
+			var stdout, stderr bytes.Buffer
+			port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+			code, handled := Run(context.Background(), []string{"status", "--port", port}, &stdout, &stderr, "2.2.0")
+			if !handled || code != tt.want {
+				t.Fatalf("status against %s = %d, handled %v; stdout %q, stderr %q",
+					tt.version, code, handled, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
 
 func TestControlRejectsInvalidArgumentsBeforeConnecting(t *testing.T) {
 	for _, args := range [][]string{
@@ -20,10 +67,35 @@ func TestControlRejectsInvalidArgumentsBeforeConnecting(t *testing.T) {
 		{"status", "--unknown"},
 	} {
 		var stdout, stderr bytes.Buffer
-		code, handled := Run(context.Background(), args, &stdout, &stderr)
+		code, handled := Run(context.Background(), args, &stdout, &stderr, contract.ServiceVersion)
 		if !handled || code != 64 || stdout.Len() != 0 || stderr.Len() == 0 {
 			t.Fatalf("%v = %d,%v stdout=%q stderr=%q", args, code, handled, stdout.String(), stderr.String())
 		}
+	}
+}
+
+func TestHumanStatusShowsOnlyKnownLoadAverages(t *testing.T) {
+	var out bytes.Buffer
+	if err := printResult(&out, &pb.BrokerStatus{LoadAverage_1M: proto.Float64(0), LoadAverage_15M: proto.Float64(2.5)}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Load averages: 1m=0.00 15m=2.50") || strings.Contains(out.String(), " 5m=") {
+		t.Fatalf("load output = %q", out.String())
+	}
+}
+
+func TestHumanJobTimesUseLocalZone(t *testing.T) {
+	oldLocal := time.Local
+	time.Local = time.FixedZone("test", -7*60*60)
+	t.Cleanup(func() { time.Local = oldLocal })
+	var out bytes.Buffer
+	job := &pb.Job{QueuedAt: contract.Timestamp(time.Date(2026, 11, 26, 22, 0, 0, 123456789, time.UTC).UnixNano())}
+	if err := printJobDetails(&out, job); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Queued: 2026-11-26T15:00:00.123456789-07:00") ||
+		strings.Contains(out.String(), "Finished:") {
+		t.Fatalf("local time output = %q", out.String())
 	}
 }
 

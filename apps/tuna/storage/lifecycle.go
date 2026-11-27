@@ -3,9 +3,11 @@ package storage
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -19,13 +21,17 @@ type Reservation struct {
 
 func (r *Reader) Reservation(id string) (*Reservation, error) {
 	res := &Reservation{Runner: &pb.RunnerIncarnation{Process: &pb.ProcessIdentity{}}}
+	var start int64
 	err := r.scan(`SELECT grant_id,runner_incarnation_id,runner_pid,runner_start_time_ns,
 		claimed_at_ns,fenced_at_ns,fence_reason,no_launch_proof,released_at_ns,release_reason
 		FROM reservations WHERE job_id=?`, []any{id}, &res.GrantID, &res.Runner.IncarnationId,
-		&res.Runner.Process.Pid, &res.Runner.Process.StartTimeUnixNs,
+		&res.Runner.Process.Pid, &start,
 		&res.ClaimedAt, &res.FencedAt, &res.FenceReason, &res.NoLaunchProof, &res.ReleasedAt, &res.ReleaseReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
+	}
+	if err == nil {
+		res.Runner.Process.StartTime = contract.Timestamp(start)
 	}
 	return res, err
 }
@@ -53,7 +59,7 @@ func (tx *Tx) Claim(id, grant string, runner *pb.RunnerIncarnation) (alreadyClai
 	if res.ClaimedAt != nil {
 		return true, nil
 	}
-	if j.State != pb.JobState_JOB_STATE_RESERVED || j.CancelRequestedAtUnixNs != nil || res.FencedAt != nil || res.ReleasedAt != nil {
+	if j.State != pb.JobState_JOB_STATE_RESERVED || j.CancelRequestedAt != nil || res.FencedAt != nil || res.ReleasedAt != nil {
 		return false, ErrTransition
 	}
 	if err := tx.exec("UPDATE reservations SET claimed_at_ns=? WHERE job_id=?", tx.at, id); err != nil {
@@ -67,7 +73,7 @@ func (tx *Tx) Seal(id, grant string, runner *pb.RunnerIncarnation, noSpawn bool)
 	if err != nil {
 		return err
 	}
-	if noSpawn && (j.StartedAtUnixNs != nil || j.Process != nil ||
+	if noSpawn && (j.StartedAt != nil || j.Process != nil ||
 		j.Outcome != nil && (j.Outcome.Kind == pb.OutcomeKind_OUTCOME_KIND_EXITED || j.Outcome.Kind == pb.OutcomeKind_OUTCOME_KIND_SIGNALED)) {
 		return ErrIdentity
 	}
@@ -112,10 +118,9 @@ func (tx *Tx) FenceRunnerTerminated(id string, runner *pb.RunnerIncarnation) err
 	return tx.jobChanged(id)
 }
 
-func validProcess(p *pb.ProcessIdentity) bool { return p != nil && p.Pid > 0 }
-
 func (tx *Tx) started(j *pb.Job, res *Reservation, p *pb.ProcessIdentity) error {
-	if !validProcess(p) || res.ClaimedAt == nil || res.NoLaunchProof != nil {
+	start, err := processStart(p)
+	if err != nil || res.ClaimedAt == nil || res.NoLaunchProof != nil {
 		return ErrIdentity
 	}
 	if j.Outcome != nil && (j.Outcome.Kind == pb.OutcomeKind_OUTCOME_KIND_LAUNCH_FAILED ||
@@ -135,7 +140,7 @@ func (tx *Tx) started(j *pb.Job, res *Reservation, p *pb.ProcessIdentity) error 
 	if j.State == pb.JobState_JOB_STATE_FINISHED {
 		state = "finished"
 	}
-	if err := tx.exec("UPDATE jobs SET state=?,started_at_ns=? WHERE id=?", state, p.StartTimeUnixNs, j.JobId); err != nil {
+	if err := tx.exec("UPDATE jobs SET state=?,started_at_ns=? WHERE id=?", state, start, j.JobId); err != nil {
 		return err
 	}
 	return tx.TrackProcess(j.JobId, p, "command")
@@ -202,7 +207,7 @@ func (tx *Tx) ReportLaunchFailed(id, grant string, runner *pb.RunnerIncarnation,
 		}
 		return ErrIdentity
 	}
-	if j.StartedAtUnixNs != nil || j.Process != nil || res.ClaimedAt == nil || cancelled && j.CancelRequestedAtUnixNs == nil {
+	if j.StartedAt != nil || j.Process != nil || res.ClaimedAt == nil || cancelled && j.CancelRequestedAt == nil {
 		return ErrTransition
 	}
 	if cancelled {
@@ -219,19 +224,20 @@ func (tx *Tx) ReportLaunchFailed(id, grant string, runner *pb.RunnerIncarnation,
 }
 
 func (tx *Tx) TrackProcess(id string, p *pb.ProcessIdentity, role string) error {
-	if !validProcess(p) || role != "runner" && role != "command" && role != "descendant" {
+	start, err := processStart(p)
+	if err != nil || role != "runner" && role != "command" && role != "descendant" {
 		return errors.New("valid process identity and role are required")
 	}
 	j, err := tx.Job(id)
 	if err != nil {
 		return err
 	}
-	if role == "command" && (j.StartedAtUnixNs == nil || *j.StartedAtUnixNs != p.StartTimeUnixNs) ||
+	if role == "command" && !proto.Equal(j.StartedAt, p.StartTime) ||
 		role == "descendant" && (j.State == pb.JobState_JOB_STATE_QUEUED || j.State == pb.JobState_JOB_STATE_FINISHED) {
 		return ErrTransition
 	}
 	var existing *string
-	err = tx.scan("SELECT role FROM job_processes WHERE job_id=? AND pid=? AND start_time_ns=?", []any{id, p.Pid, p.StartTimeUnixNs}, &existing)
+	err = tx.scan("SELECT role FROM job_processes WHERE job_id=? AND pid=? AND start_time_ns=?", []any{id, p.Pid, start}, &existing)
 	if err == nil {
 		if *existing != role {
 			return ErrIdentity
@@ -250,25 +256,26 @@ func (tx *Tx) TrackProcess(id string, p *pb.ProcessIdentity, role string) error 
 			return ErrIdentity
 		}
 	}
-	return tx.exec("INSERT INTO job_processes(job_id,pid,start_time_ns,role,first_seen_at_ns) VALUES (?,?,?,?,?)", id, p.Pid, p.StartTimeUnixNs, role, tx.at)
+	return tx.exec("INSERT INTO job_processes(job_id,pid,start_time_ns,role,first_seen_at_ns) VALUES (?,?,?,?,?)", id, p.Pid, start, role, tx.at)
 }
 
 // VerifyProcessExited persists OS evidence supplied by the caller, matching
 // both PID and start time. Neither a reported root outcome nor timeout calls it.
 func (tx *Tx) VerifyProcessExited(id string, p *pb.ProcessIdentity) error {
-	if !validProcess(p) {
+	start, err := processStart(p)
+	if err != nil {
 		return ErrIdentity
 	}
 	var exited *int64
-	err := tx.scan("SELECT exited_verified_at_ns FROM job_processes WHERE job_id=? AND pid=? AND start_time_ns=?",
-		[]any{id, p.Pid, p.StartTimeUnixNs}, &exited)
+	err = tx.scan("SELECT exited_verified_at_ns FROM job_processes WHERE job_id=? AND pid=? AND start_time_ns=?",
+		[]any{id, p.Pid, start}, &exited)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrIdentity
 	}
 	if err != nil || exited != nil {
 		return err
 	}
-	return tx.exec("UPDATE job_processes SET exited_verified_at_ns=? WHERE job_id=? AND pid=? AND start_time_ns=?", tx.at, id, p.Pid, p.StartTimeUnixNs)
+	return tx.exec("UPDATE job_processes SET exited_verified_at_ns=? WHERE job_id=? AND pid=? AND start_time_ns=?", tx.at, id, p.Pid, start)
 }
 
 // Release rechecks durable fencing and all tracked non-runner processes.
@@ -305,7 +312,7 @@ func (tx *Tx) Release(id, reason string) error {
 			return ErrUnreconciled
 		}
 	case "launch_failed", "cancelled_before_start":
-		if res.NoLaunchProof == nil || j.Process != nil || reason == "cancelled_before_start" && j.CancelRequestedAtUnixNs == nil {
+		if res.NoLaunchProof == nil || j.Process != nil || reason == "cancelled_before_start" && j.CancelRequestedAt == nil {
 			return ErrUnreconciled
 		}
 		if reason == "launch_failed" && (j.Outcome == nil || j.Outcome.Kind != pb.OutcomeKind_OUTCOME_KIND_LAUNCH_FAILED) ||
@@ -345,7 +352,7 @@ func (tx *Tx) Cancel(id string, reason *string) error {
 	if j.State == pb.JobState_JOB_STATE_FINISHED {
 		return ErrTransition
 	}
-	if j.CancelRequestedAtUnixNs != nil {
+	if j.CancelRequestedAt != nil {
 		return nil
 	}
 	if err := tx.exec("UPDATE jobs SET cancel_requested_at_ns=?,cancel_reason=? WHERE id=?", tx.at, reason, id); err != nil {
@@ -378,10 +385,10 @@ func (tx *Tx) Cancel(id string, reason *string) error {
 }
 
 func (tx *Tx) acknowledge(j *pb.Job) error {
-	if j.CancelRequestedAtUnixNs == nil {
+	if j.CancelRequestedAt == nil {
 		return ErrTransition
 	}
-	if j.CancelAcknowledgedAtUnixNs != nil {
+	if j.CancelAcknowledgedAt != nil {
 		return nil
 	}
 	return tx.exec("UPDATE jobs SET cancel_acknowledged_at_ns=? WHERE id=?", tx.at, j.JobId)
@@ -395,7 +402,7 @@ func (tx *Tx) AcknowledgeCancel(id, grant string, runner *pb.RunnerIncarnation) 
 	if res.ClaimedAt == nil {
 		return ErrTransition
 	}
-	if j.CancelAcknowledgedAtUnixNs != nil {
+	if j.CancelAcknowledgedAt != nil {
 		return nil
 	}
 	if err := tx.acknowledge(j); err != nil {
@@ -447,12 +454,12 @@ func (tx *Tx) RecordTermination(id string, reason pb.BrokerTermination_Reason) e
 		}
 		return ErrIdentity
 	}
-	if j.AdmittedAtUnixNs == nil || j.State == pb.JobState_JOB_STATE_FINISHED {
+	if j.AdmittedAt == nil || j.State == pb.JobState_JOB_STATE_FINISHED {
 		return ErrTransition
 	}
-	if reason != pb.BrokerTermination_REASON_RUNNER_DEAD && j.CancelRequestedAtUnixNs == nil ||
-		reason == pb.BrokerTermination_REASON_CANCEL_ACK_DEADLINE && j.CancelAcknowledgedAtUnixNs != nil ||
-		reason == pb.BrokerTermination_REASON_CANCEL_COMPLETION_DEADLINE && j.CancelAcknowledgedAtUnixNs == nil ||
+	if reason != pb.BrokerTermination_REASON_RUNNER_DEAD && j.CancelRequestedAt == nil ||
+		reason == pb.BrokerTermination_REASON_CANCEL_ACK_DEADLINE && j.CancelAcknowledgedAt != nil ||
+		reason == pb.BrokerTermination_REASON_CANCEL_COMPLETION_DEADLINE && j.CancelAcknowledgedAt == nil ||
 		reason == pb.BrokerTermination_REASON_CANCEL_RUNNER_FAILED && j.CancelFailureDetail == nil {
 		return ErrTransition
 	}
@@ -481,10 +488,17 @@ func (tx *Tx) MarkUnknown(id string, detail *string) error {
 func (tx *Tx) SaveResources(id string, s *pb.ResourceSummary) error {
 	if s == nil || s.Completeness < pb.MeasurementCompleteness_MEASUREMENT_COMPLETENESS_COMPLETE ||
 		s.Completeness > pb.MeasurementCompleteness_MEASUREMENT_COMPLETENESS_UNAVAILABLE ||
-		s.ElapsedMs != nil && *s.ElapsedMs < 0 || s.CpuTimeMs != nil && *s.CpuTimeMs < 0 ||
 		s.PeakCpuPercent != nil && (*s.PeakCpuPercent < 0 || math.IsNaN(*s.PeakCpuPercent) || math.IsInf(*s.PeakCpuPercent, 0)) ||
 		s.PeakCombinedRssBytes != nil && *s.PeakCombinedRssBytes < 0 {
 		return errors.New("invalid resource summary")
+	}
+	elapsed, err := contract.OptionalMilliseconds(s.Elapsed)
+	if err != nil {
+		return fmt.Errorf("invalid elapsed duration: %w", err)
+	}
+	cpu, err := contract.OptionalMilliseconds(s.CpuTime)
+	if err != nil {
+		return fmt.Errorf("invalid CPU duration: %w", err)
 	}
 	if _, err := tx.Job(id); err != nil {
 		return err
@@ -495,7 +509,7 @@ func (tx *Tx) SaveResources(id string, s *pb.ResourceSummary) error {
 		elapsed_ms=excluded.elapsed_ms,cpu_time_ms=excluded.cpu_time_ms,peak_cpu_percent=excluded.peak_cpu_percent,
 		peak_combined_rss_bytes=excluded.peak_combined_rss_bytes,sample_count=excluded.sample_count,
 		measurement_completeness=excluded.measurement_completeness,incompleteness_reason=excluded.incompleteness_reason,
-		updated_at_ns=excluded.updated_at_ns`, id, s.ElapsedMs, s.CpuTimeMs, s.PeakCpuPercent, s.PeakCombinedRssBytes,
+		updated_at_ns=excluded.updated_at_ns`, id, elapsed, cpu, s.PeakCpuPercent, s.PeakCombinedRssBytes,
 		s.SampleCount, strings.ToLower(strings.TrimPrefix(s.Completeness.String(), "MEASUREMENT_COMPLETENESS_")), s.IncompletenessReason, tx.at); err != nil {
 		return err
 	}

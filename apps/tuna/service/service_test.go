@@ -18,6 +18,7 @@ import (
 
 	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
 	"github.com/boumenot/heavy-lock/apps/tuna/broker"
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/procid"
 	"github.com/boumenot/heavy-lock/apps/tuna/runner"
@@ -105,13 +106,13 @@ func startBrokerAt(t *testing.T, capacity uint32, path string, port int) *testBr
 	cfg := scheduler.DefaultConfig(capacity)
 	cfg.Settle = 0
 	sched, _, err := scheduler.Start(ctx, store, scheduler.Options{
-		Config: cfg, ServiceVersion: "test", PID: int64(os.Getpid()), Sampler: idleSampler{},
+		Config: cfg, ServiceVersion: contract.ServiceVersion, PID: int64(os.Getpid()), Sampler: idleSampler{},
 		Publish: hub.Publish, Processes: procid.Probe{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := newBroker(sched, store, hub, Options{ServiceVersion: "test"})
+	b, err := newBroker(sched, store, hub, Options{ServiceVersion: contract.ServiceVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +183,7 @@ type invocation struct {
 func (b *testBroker) start(t *testing.T, adjust func(*runner.Options), command ...string) *invocation {
 	t.Helper()
 	inv := &invocation{log: &syncBuffer{}, stdout: &syncBuffer{}, sigs: make(chan os.Signal, 4), done: make(chan int, 1)}
-	inv.o = runner.Options{Port: b.port, Command: command, Version: "test", Env: cleanEnv(),
+	inv.o = runner.Options{Port: b.port, Command: command, Version: contract.ServiceVersion, Env: cleanEnv(),
 		Stdin: strings.NewReader(""), Stdout: inv.stdout, Stderr: inv.log, Log: inv.log, Signals: inv.sigs,
 		ReconnectWindow: 5 * time.Second}
 	if adjust != nil {
@@ -265,23 +266,23 @@ func TestFinishedJobRetainsRuntimeAndDeclaredMetadata(t *testing.T) {
 		t.Fatalf("exit %d; log:\n%s", code, inv.log.String())
 	}
 	j := b.waitState(t, inv.log.jobID(t), pb.JobState_JOB_STATE_FINISHED)
-	if j.Command != "/bin/sleep 0.2" || j.ServiceVersion != "test" ||
-		j.Client.GetName() != "tuna" || j.Client.GetVersion() != "test" ||
+	if j.Command != "/bin/sleep 0.2" || j.ServiceVersion != contract.ServiceVersion ||
+		j.Client.GetName() != "tuna" || j.Client.GetVersion() != contract.ServiceVersion ||
 		j.Attribution.GetWorklog() != "boumenot/heavy-lock#16" || j.Attribution.GetRepository() != "boumenot/heavy-lock" ||
 		j.Attribution.GetBranch() != "feature" || j.Attribution.GetCommitSha() != commit ||
 		j.Attribution.GetAgentSession() != "session-1" ||
 		j.Attribution.GetExtra()[attribution.WorklogURLKey] != "https://github.com/boumenot/heavy-lock/issues/16" ||
 		attribution.SessionLink(j.Attribution) != "ghapp://sessions/session-1" ||
 		j.Client.GetOs() != pb.ClientOS_CLIENT_OS_MACOS || j.Client.GetOsVersion() != attribution.OSVersion() || j.Client.OsVersion == nil ||
-		j.QueuedAtUnixNs <= 0 || j.AdmittedAtUnixNs == nil || j.FreeMemoryAtAdmissionBytes == nil {
+		j.QueuedAt == nil || j.QueuedAt.AsTime().UnixNano() <= 0 || j.AdmittedAt == nil || j.FreeMemoryAtAdmissionBytes == nil {
 		t.Fatalf("job metadata = %+v", j)
 	}
 	summary := j.Resources
-	if summary == nil || summary.ElapsedMs == nil {
+	if summary == nil || summary.Elapsed == nil {
 		t.Fatalf("finished job has no observed root runtime: %+v", summary)
 	}
-	if *summary.ElapsedMs < 120 || *summary.ElapsedMs > 5000 {
-		t.Fatalf("root runtime = %d ms; want about 200 ms", *summary.ElapsedMs)
+	if elapsed := summary.Elapsed.AsDuration().Milliseconds(); elapsed < 120 || elapsed > 5000 {
+		t.Fatalf("root runtime = %d ms; want about 200 ms", elapsed)
 	}
 	if summary.Completeness != pb.MeasurementCompleteness_MEASUREMENT_COMPLETENESS_PARTIAL ||
 		summary.GetIncompletenessReason() == "" {
@@ -293,7 +294,7 @@ func TestFinishedJobRetainsRuntimeAndDeclaredMetadata(t *testing.T) {
 		t.Fatalf("launch failure exit %d; log:\n%s", code, inv.log.String())
 	}
 	unlaunched := b.waitState(t, inv.log.jobID(t), pb.JobState_JOB_STATE_FINISHED)
-	if unlaunched.Resources != nil && unlaunched.Resources.ElapsedMs != nil {
+	if unlaunched.Resources != nil && unlaunched.Resources.Elapsed != nil {
 		t.Fatalf("unlaunched job has a fabricated runtime: %+v", unlaunched.Resources)
 	}
 }
@@ -324,7 +325,7 @@ func TestSuppliedMetadataRoundTripsThroughBroker(t *testing.T) {
 	}
 	job, err := b.sched.Job(context.Background(), resp.GetJob().GetJobId())
 	if err != nil || !proto.Equal(job.GetAttribution(), attribution) || !proto.Equal(job.GetClient(), client) ||
-		job.GetCwd() != "/example" || job.GetCommand() != "make 'target value'" || job.GetServiceVersion() != "test" {
+		job.GetCwd() != "/example" || job.GetCommand() != "make 'target value'" || job.GetServiceVersion() != contract.ServiceVersion {
 		t.Fatalf("declared metadata was not retained: job=%+v err=%v", job, err)
 	}
 }
@@ -367,12 +368,12 @@ func TestRuntimeSurvivesBrokerRestartAndDelayedReport(t *testing.T) {
 		t.Fatalf("runner exit %d; log:\n%s", code, inv.log.String())
 	}
 	final := restarted.waitState(t, id, pb.JobState_JOB_STATE_FINISHED)
-	if final.Resources == nil || final.Resources.ElapsedMs == nil ||
-		final.Resources.CpuTimeMs == nil || !strings.Contains(final.Resources.GetIncompletenessReason(), "restart") {
+	if final.Resources == nil || final.Resources.Elapsed == nil ||
+		final.Resources.CpuTime == nil || !strings.Contains(final.Resources.GetIncompletenessReason(), "restart") {
 		t.Fatalf("restarted job summary = %+v", final.Resources)
 	}
-	if gap := time.Since(started) - time.Duration(*final.Resources.ElapsedMs)*time.Millisecond; gap < 250*time.Millisecond {
-		t.Fatalf("runtime included delayed report: runtime=%dms gap=%v", *final.Resources.ElapsedMs, gap)
+	if gap := time.Since(started) - final.Resources.Elapsed.AsDuration(); gap < 250*time.Millisecond {
+		t.Fatalf("runtime included delayed report: runtime=%v gap=%v", final.Resources.Elapsed, gap)
 	}
 }
 
@@ -385,7 +386,7 @@ func TestRunningJobSamplesAreRetainedAtFinish(t *testing.T) {
 	j := b.waitState(t, inv.log.jobID(t), pb.JobState_JOB_STATE_FINISHED)
 	s := j.Resources
 	if s == nil || s.SampleCount < 2 || s.PeakCombinedRssBytes == nil || *s.PeakCombinedRssBytes <= 0 ||
-		s.CpuTimeMs == nil || s.PeakCpuPercent == nil || s.ElapsedMs == nil {
+		s.CpuTime == nil || s.PeakCpuPercent == nil || s.Elapsed == nil {
 		t.Fatalf("finished job did not retain two five-second samples: %+v", s)
 	}
 	if s.Completeness != pb.MeasurementCompleteness_MEASUREMENT_COMPLETENESS_PARTIAL || s.GetIncompletenessReason() == "" {
@@ -533,7 +534,7 @@ func TestCancelRunningJobForcesCommand(t *testing.T) {
 		t.Fatalf("exit %d; log:\n%s", code, inv.log.String())
 	}
 	j := b.waitState(t, id, pb.JobState_JOB_STATE_FINISHED)
-	if j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_SIGNALED || j.CancelRequestedAtUnixNs == nil {
+	if j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_SIGNALED || j.CancelRequestedAt == nil {
 		t.Fatalf("job %+v", j)
 	}
 }
@@ -614,7 +615,7 @@ func TestRunServesRunnersAndExcludesSecondBroker(t *testing.T) {
 	ready := make(chan int, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, Options{Port: freePort(t), DataDir: dir, Capacity: 2, ServiceVersion: "test",
+		done <- Run(ctx, Options{Port: freePort(t), DataDir: dir, Capacity: 2, ServiceVersion: contract.ServiceVersion,
 			Sampler: idleSampler{}, Ready: func(port int) { ready <- port }})
 	}()
 	var port int
@@ -624,7 +625,7 @@ func TestRunServesRunnersAndExcludesSecondBroker(t *testing.T) {
 		t.Fatal(err)
 	}
 	var log bytes.Buffer
-	code := runner.Run(context.Background(), runner.Options{Port: port, Env: cleanEnv(), Log: &log,
+	code := runner.Run(context.Background(), runner.Options{Port: port, Version: contract.ServiceVersion, Env: cleanEnv(), Log: &log,
 		Command: []string{"/bin/sh", "-c", "exit 3"}, Stdin: strings.NewReader("")})
 	if code != 3 {
 		t.Fatalf("exit %d; log: %s", code, log.String())

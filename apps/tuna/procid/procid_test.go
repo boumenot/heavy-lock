@@ -8,6 +8,8 @@ import (
 	"time"
 
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func requireSupported(t *testing.T) {
@@ -24,7 +26,7 @@ func TestSelfIsLiveAndStable(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := Self()
-	if err != nil || a.StartTimeUnixNs != b.StartTimeUnixNs || a.StartTimeUnixNs > time.Now().UnixNano() {
+	if err != nil || a.StartTime == nil || !proto.Equal(a.StartTime, b.StartTime) || a.StartTime.AsTime().After(time.Now()) {
 		t.Fatalf("unstable self identity %v %v: %v", a, b, err)
 	}
 	if exited, err := Exited(a); err != nil || exited {
@@ -75,7 +77,7 @@ func TestReplacedStartTimeIsExited(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other := &pb.ProcessIdentity{Pid: self.Pid, StartTimeUnixNs: self.StartTimeUnixNs - 1}
+	other := &pb.ProcessIdentity{Pid: self.Pid, StartTime: timestamppb.New(self.StartTime.AsTime().Add(-time.Nanosecond))}
 	if exited, err := Exited(other); err != nil || !exited {
 		t.Fatalf("mismatched incarnation exited=%v err=%v", exited, err)
 	}

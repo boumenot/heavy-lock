@@ -1,11 +1,12 @@
 // heavy-lock v2 broker API.
 //
 // Conventions:
-// - Every timestamp is UTC Unix nanoseconds in an int64 field ending in
-//   "_unix_ns". Every duration ends in "_us" or "_ms" and is measured by the
-//   broker's monotonic clock; durations are never derived from wall-clock
-//   subtraction. Wall-clock timestamps are informational: the system clock
-//   can move backwards, so they never order events or validate transitions.
+// - Timestamps are UTC protobuf Timestamps with nanosecond precision. SQLite
+//   stores them as integer Unix nanoseconds. Durations use protobuf Duration;
+//   measurements use monotonic clocks, never wall-clock subtraction. Stored
+//   resource durations retain their existing millisecond precision.
+//   Wall-clock timestamps are informational: the system clock can move
+//   backwards, so they never order events or validate transitions.
 // - IDs are lowercase canonical UUIDv4 strings.
 // - Errors use standard gRPC status codes. Each non-OK status carries a
 //   google.rpc.ErrorInfo detail with domain "heavylock.v2" and reason set to
@@ -23,6 +24,8 @@ package heavylockv2
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -945,13 +948,13 @@ func (x *Attribution) GetExtra() map[string]string {
 type ProcessIdentity struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Pid   int64                  `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
-	// Platform process start time in UTC Unix nanoseconds; with pid it
+	// Platform process start time; with pid it
 	// helps distinguish PID reuse. Precision is platform-dependent; ambiguous
 	// identity is not proof of death. Compare only values derived by the same
 	// platform method.
-	StartTimeUnixNs int64 `protobuf:"varint,2,opt,name=start_time_unix_ns,json=startTimeUnixNs,proto3" json:"start_time_unix_ns,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	StartTime     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProcessIdentity) Reset() {
@@ -991,11 +994,11 @@ func (x *ProcessIdentity) GetPid() int64 {
 	return 0
 }
 
-func (x *ProcessIdentity) GetStartTimeUnixNs() int64 {
+func (x *ProcessIdentity) GetStartTime() *timestamppb.Timestamp {
 	if x != nil {
-		return x.StartTimeUnixNs
+		return x.StartTime
 	}
-	return 0
+	return nil
 }
 
 // Each runner process generates a fresh UUIDv4 and pairs it with its OS
@@ -1054,18 +1057,18 @@ func (x *RunnerIncarnation) GetProcess() *ProcessIdentity {
 }
 
 type Grant struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	GrantId         string                 `protobuf:"bytes,1,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
-	Weight          uint32                 `protobuf:"varint,2,opt,name=weight,proto3" json:"weight,omitempty"`
-	Forced          bool                   `protobuf:"varint,3,opt,name=forced,proto3" json:"forced,omitempty"`
-	GrantedAtUnixNs int64                  `protobuf:"varint,4,opt,name=granted_at_unix_ns,json=grantedAtUnixNs,proto3" json:"granted_at_unix_ns,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	GrantId   string                 `protobuf:"bytes,1,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
+	Weight    uint32                 `protobuf:"varint,2,opt,name=weight,proto3" json:"weight,omitempty"`
+	Forced    bool                   `protobuf:"varint,3,opt,name=forced,proto3" json:"forced,omitempty"`
+	GrantedAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=granted_at,json=grantedAt,proto3" json:"granted_at,omitempty"`
 	// Investigation timeout duration, measured by the broker from the durable
 	// reservation commit. Expiry alone never establishes fencing, no launch
 	// or process exit.
-	LaunchTimeoutMs int64              `protobuf:"varint,5,opt,name=launch_timeout_ms,json=launchTimeoutMs,proto3" json:"launch_timeout_ms,omitempty"`
-	Runner          *RunnerIncarnation `protobuf:"bytes,6,opt,name=runner,proto3" json:"runner,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	LaunchTimeout *durationpb.Duration `protobuf:"bytes,5,opt,name=launch_timeout,json=launchTimeout,proto3" json:"launch_timeout,omitempty"`
+	Runner        *RunnerIncarnation   `protobuf:"bytes,6,opt,name=runner,proto3" json:"runner,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Grant) Reset() {
@@ -1119,18 +1122,18 @@ func (x *Grant) GetForced() bool {
 	return false
 }
 
-func (x *Grant) GetGrantedAtUnixNs() int64 {
+func (x *Grant) GetGrantedAt() *timestamppb.Timestamp {
 	if x != nil {
-		return x.GrantedAtUnixNs
+		return x.GrantedAt
 	}
-	return 0
+	return nil
 }
 
-func (x *Grant) GetLaunchTimeoutMs() int64 {
+func (x *Grant) GetLaunchTimeout() *durationpb.Duration {
 	if x != nil {
-		return x.LaunchTimeoutMs
+		return x.LaunchTimeout
 	}
-	return 0
+	return nil
 }
 
 func (x *Grant) GetRunner() *RunnerIncarnation {
@@ -1220,8 +1223,9 @@ func (x *Outcome) GetDetail() string {
 type ResourceSummary struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Root-command runtime from process start to exit; unknown if unrecoverable.
-	ElapsedMs *int64 `protobuf:"varint,1,opt,name=elapsed_ms,json=elapsedMs,proto3,oneof" json:"elapsed_ms,omitempty"`
-	CpuTimeMs *int64 `protobuf:"varint,2,opt,name=cpu_time_ms,json=cpuTimeMs,proto3,oneof" json:"cpu_time_ms,omitempty"`
+	Elapsed *durationpb.Duration `protobuf:"bytes,1,opt,name=elapsed,proto3" json:"elapsed,omitempty"`
+	// Observed process-tree CPU time; distinct from the root wait CPU time.
+	CpuTime *durationpb.Duration `protobuf:"bytes,2,opt,name=cpu_time,json=cpuTime,proto3" json:"cpu_time,omitempty"`
 	// Peak interval CPU: 100% per logical CPU; may exceed 100%.
 	PeakCpuPercent *float64 `protobuf:"fixed64,3,opt,name=peak_cpu_percent,json=peakCpuPercent,proto3,oneof" json:"peak_cpu_percent,omitempty"`
 	// Maximum per-sample sum of observed process RSS in bytes.
@@ -1263,18 +1267,18 @@ func (*ResourceSummary) Descriptor() ([]byte, []int) {
 	return file_heavylock_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *ResourceSummary) GetElapsedMs() int64 {
-	if x != nil && x.ElapsedMs != nil {
-		return *x.ElapsedMs
+func (x *ResourceSummary) GetElapsed() *durationpb.Duration {
+	if x != nil {
+		return x.Elapsed
 	}
-	return 0
+	return nil
 }
 
-func (x *ResourceSummary) GetCpuTimeMs() int64 {
-	if x != nil && x.CpuTimeMs != nil {
-		return *x.CpuTimeMs
+func (x *ResourceSummary) GetCpuTime() *durationpb.Duration {
+	if x != nil {
+		return x.CpuTime
 	}
-	return 0
+	return nil
 }
 
 func (x *ResourceSummary) GetPeakCpuPercent() float64 {
@@ -1325,21 +1329,21 @@ type Job struct {
 	Attribution    *Attribution           `protobuf:"bytes,9,opt,name=attribution,proto3" json:"attribution,omitempty"`
 	ServiceVersion string                 `protobuf:"bytes,10,opt,name=service_version,json=serviceVersion,proto3" json:"service_version,omitempty"`
 	// Submission commit; a no-wait job may have no durable queue entry.
-	QueuedAtUnixNs          int64  `protobuf:"varint,11,opt,name=queued_at_unix_ns,json=queuedAtUnixNs,proto3" json:"queued_at_unix_ns,omitempty"`
-	AdmittedAtUnixNs        *int64 `protobuf:"varint,12,opt,name=admitted_at_unix_ns,json=admittedAtUnixNs,proto3,oneof" json:"admitted_at_unix_ns,omitempty"`
-	StartedAtUnixNs         *int64 `protobuf:"varint,13,opt,name=started_at_unix_ns,json=startedAtUnixNs,proto3,oneof" json:"started_at_unix_ns,omitempty"` // root process start, once recorded
-	FinishedAtUnixNs        *int64 `protobuf:"varint,14,opt,name=finished_at_unix_ns,json=finishedAtUnixNs,proto3,oneof" json:"finished_at_unix_ns,omitempty"`
-	CancelRequestedAtUnixNs *int64 `protobuf:"varint,15,opt,name=cancel_requested_at_unix_ns,json=cancelRequestedAtUnixNs,proto3,oneof" json:"cancel_requested_at_unix_ns,omitempty"`
+	QueuedAt          *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=queued_at,json=queuedAt,proto3" json:"queued_at,omitempty"`
+	AdmittedAt        *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=admitted_at,json=admittedAt,proto3" json:"admitted_at,omitempty"`
+	StartedAt         *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"` // root process start, once recorded
+	FinishedAt        *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	CancelRequestedAt *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=cancel_requested_at,json=cancelRequestedAt,proto3" json:"cancel_requested_at,omitempty"`
 	// Present only while QUEUED; 0 is the head.
-	QueuePosition              *uint32          `protobuf:"varint,16,opt,name=queue_position,json=queuePosition,proto3,oneof" json:"queue_position,omitempty"`
-	RunnerConnected            bool             `protobuf:"varint,17,opt,name=runner_connected,json=runnerConnected,proto3" json:"runner_connected,omitempty"`
-	GraceRemainingMs           *int64           `protobuf:"varint,18,opt,name=grace_remaining_ms,json=graceRemainingMs,proto3,oneof" json:"grace_remaining_ms,omitempty"`
-	Grant                      *Grant           `protobuf:"bytes,19,opt,name=grant,proto3,oneof" json:"grant,omitempty"`
-	Process                    *ProcessIdentity `protobuf:"bytes,20,opt,name=process,proto3,oneof" json:"process,omitempty"`
-	FreeMemoryAtAdmissionBytes *int64           `protobuf:"varint,21,opt,name=free_memory_at_admission_bytes,json=freeMemoryAtAdmissionBytes,proto3,oneof" json:"free_memory_at_admission_bytes,omitempty"`
-	Outcome                    *Outcome         `protobuf:"bytes,22,opt,name=outcome,proto3,oneof" json:"outcome,omitempty"`
-	Resources                  *ResourceSummary `protobuf:"bytes,23,opt,name=resources,proto3,oneof" json:"resources,omitempty"`
-	CancelReason               *string          `protobuf:"bytes,24,opt,name=cancel_reason,json=cancelReason,proto3,oneof" json:"cancel_reason,omitempty"`
+	QueuePosition              *uint32              `protobuf:"varint,16,opt,name=queue_position,json=queuePosition,proto3,oneof" json:"queue_position,omitempty"`
+	RunnerConnected            bool                 `protobuf:"varint,17,opt,name=runner_connected,json=runnerConnected,proto3" json:"runner_connected,omitempty"`
+	GraceRemaining             *durationpb.Duration `protobuf:"bytes,18,opt,name=grace_remaining,json=graceRemaining,proto3" json:"grace_remaining,omitempty"`
+	Grant                      *Grant               `protobuf:"bytes,19,opt,name=grant,proto3,oneof" json:"grant,omitempty"`
+	Process                    *ProcessIdentity     `protobuf:"bytes,20,opt,name=process,proto3,oneof" json:"process,omitempty"`
+	FreeMemoryAtAdmissionBytes *int64               `protobuf:"varint,21,opt,name=free_memory_at_admission_bytes,json=freeMemoryAtAdmissionBytes,proto3,oneof" json:"free_memory_at_admission_bytes,omitempty"`
+	Outcome                    *Outcome             `protobuf:"bytes,22,opt,name=outcome,proto3,oneof" json:"outcome,omitempty"`
+	Resources                  *ResourceSummary     `protobuf:"bytes,23,opt,name=resources,proto3,oneof" json:"resources,omitempty"`
+	CancelReason               *string              `protobuf:"bytes,24,opt,name=cancel_reason,json=cancelReason,proto3,oneof" json:"cancel_reason,omitempty"`
 	// True when admitted by bounded backfill past a capacity-blocked head.
 	AdmittedByBackfill bool `protobuf:"varint,25,opt,name=admitted_by_backfill,json=admittedByBackfill,proto3" json:"admitted_by_backfill,omitempty"`
 	// Times later jobs were backfilled past this job while it was the
@@ -1350,9 +1354,9 @@ type Job struct {
 	RetryOfJobId *string `protobuf:"bytes,27,opt,name=retry_of_job_id,json=retryOfJobId,proto3,oneof" json:"retry_of_job_id,omitempty"`
 	Attempt      uint32  `protobuf:"varint,28,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	// Cancellation progress for a claimed grant; see ControlService.CancelJob.
-	CancelAcknowledgedAtUnixNs *int64             `protobuf:"varint,29,opt,name=cancel_acknowledged_at_unix_ns,json=cancelAcknowledgedAtUnixNs,proto3,oneof" json:"cancel_acknowledged_at_unix_ns,omitempty"`
-	CancelFailureDetail        *string            `protobuf:"bytes,30,opt,name=cancel_failure_detail,json=cancelFailureDetail,proto3,oneof" json:"cancel_failure_detail,omitempty"`
-	BrokerTermination          *BrokerTermination `protobuf:"bytes,31,opt,name=broker_termination,json=brokerTermination,proto3,oneof" json:"broker_termination,omitempty"`
+	CancelAcknowledgedAt *timestamppb.Timestamp `protobuf:"bytes,29,opt,name=cancel_acknowledged_at,json=cancelAcknowledgedAt,proto3" json:"cancel_acknowledged_at,omitempty"`
+	CancelFailureDetail  *string                `protobuf:"bytes,30,opt,name=cancel_failure_detail,json=cancelFailureDetail,proto3,oneof" json:"cancel_failure_detail,omitempty"`
+	BrokerTermination    *BrokerTermination     `protobuf:"bytes,31,opt,name=broker_termination,json=brokerTermination,proto3,oneof" json:"broker_termination,omitempty"`
 	// Set while QUEUED and skipped by normal admission, e.g. oversized.
 	// Oversized takes precedence here even if paused or disconnected; clients
 	// display those independent conditions from status and runner_connected.
@@ -1461,39 +1465,39 @@ func (x *Job) GetServiceVersion() string {
 	return ""
 }
 
-func (x *Job) GetQueuedAtUnixNs() int64 {
+func (x *Job) GetQueuedAt() *timestamppb.Timestamp {
 	if x != nil {
-		return x.QueuedAtUnixNs
+		return x.QueuedAt
 	}
-	return 0
+	return nil
 }
 
-func (x *Job) GetAdmittedAtUnixNs() int64 {
-	if x != nil && x.AdmittedAtUnixNs != nil {
-		return *x.AdmittedAtUnixNs
+func (x *Job) GetAdmittedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.AdmittedAt
 	}
-	return 0
+	return nil
 }
 
-func (x *Job) GetStartedAtUnixNs() int64 {
-	if x != nil && x.StartedAtUnixNs != nil {
-		return *x.StartedAtUnixNs
+func (x *Job) GetStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartedAt
 	}
-	return 0
+	return nil
 }
 
-func (x *Job) GetFinishedAtUnixNs() int64 {
-	if x != nil && x.FinishedAtUnixNs != nil {
-		return *x.FinishedAtUnixNs
+func (x *Job) GetFinishedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FinishedAt
 	}
-	return 0
+	return nil
 }
 
-func (x *Job) GetCancelRequestedAtUnixNs() int64 {
-	if x != nil && x.CancelRequestedAtUnixNs != nil {
-		return *x.CancelRequestedAtUnixNs
+func (x *Job) GetCancelRequestedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CancelRequestedAt
 	}
-	return 0
+	return nil
 }
 
 func (x *Job) GetQueuePosition() uint32 {
@@ -1510,11 +1514,11 @@ func (x *Job) GetRunnerConnected() bool {
 	return false
 }
 
-func (x *Job) GetGraceRemainingMs() int64 {
-	if x != nil && x.GraceRemainingMs != nil {
-		return *x.GraceRemainingMs
+func (x *Job) GetGraceRemaining() *durationpb.Duration {
+	if x != nil {
+		return x.GraceRemaining
 	}
-	return 0
+	return nil
 }
 
 func (x *Job) GetGrant() *Grant {
@@ -1587,11 +1591,11 @@ func (x *Job) GetAttempt() uint32 {
 	return 0
 }
 
-func (x *Job) GetCancelAcknowledgedAtUnixNs() int64 {
-	if x != nil && x.CancelAcknowledgedAtUnixNs != nil {
-		return *x.CancelAcknowledgedAtUnixNs
+func (x *Job) GetCancelAcknowledgedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CancelAcknowledgedAt
 	}
-	return 0
+	return nil
 }
 
 func (x *Job) GetCancelFailureDetail() string {
@@ -1616,11 +1620,11 @@ func (x *Job) GetBlockedReason() BlockedReason {
 }
 
 type BrokerTermination struct {
-	state           protoimpl.MessageState   `protogen:"open.v1"`
-	StartedAtUnixNs int64                    `protobuf:"varint,1,opt,name=started_at_unix_ns,json=startedAtUnixNs,proto3" json:"started_at_unix_ns,omitempty"` // committed before the first signal
-	Reason          BrokerTermination_Reason `protobuf:"varint,2,opt,name=reason,proto3,enum=heavylock.v2.BrokerTermination_Reason" json:"reason,omitempty"`   // first committed trigger; never rewritten
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	StartedAt     *timestamppb.Timestamp   `protobuf:"bytes,1,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`                      // committed before the first signal
+	Reason        BrokerTermination_Reason `protobuf:"varint,2,opt,name=reason,proto3,enum=heavylock.v2.BrokerTermination_Reason" json:"reason,omitempty"` // first committed trigger; never rewritten
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BrokerTermination) Reset() {
@@ -1653,11 +1657,11 @@ func (*BrokerTermination) Descriptor() ([]byte, []int) {
 	return file_heavylock_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *BrokerTermination) GetStartedAtUnixNs() int64 {
+func (x *BrokerTermination) GetStartedAt() *timestamppb.Timestamp {
 	if x != nil {
-		return x.StartedAtUnixNs
+		return x.StartedAt
 	}
-	return 0
+	return nil
 }
 
 func (x *BrokerTermination) GetReason() BrokerTermination_Reason {
@@ -2110,8 +2114,8 @@ type JobEvent struct {
 	// Broker-wide sequence of the last committed change reflected by this
 	// message. Per-job streams are filtered, so values are not contiguous.
 	// Snapshots and heartbeats reuse the current value rather than allocating.
-	EventSeq int64 `protobuf:"varint,1,opt,name=event_seq,json=eventSeq,proto3" json:"event_seq,omitempty"`
-	AtUnixNs int64 `protobuf:"varint,2,opt,name=at_unix_ns,json=atUnixNs,proto3" json:"at_unix_ns,omitempty"`
+	EventSeq int64                  `protobuf:"varint,1,opt,name=event_seq,json=eventSeq,proto3" json:"event_seq,omitempty"`
+	At       *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=at,proto3" json:"at,omitempty"`
 	// Types that are valid to be assigned to Event:
 	//
 	//	*JobEvent_Snapshot
@@ -2162,11 +2166,11 @@ func (x *JobEvent) GetEventSeq() int64 {
 	return 0
 }
 
-func (x *JobEvent) GetAtUnixNs() int64 {
+func (x *JobEvent) GetAt() *timestamppb.Timestamp {
 	if x != nil {
-		return x.AtUnixNs
+		return x.At
 	}
-	return 0
+	return nil
 }
 
 func (x *JobEvent) GetEvent() isJobEvent_Event {
@@ -2385,10 +2389,10 @@ func (x *CancelRequested) GetReason() string {
 }
 
 type Heartbeat struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	HeartbeatIntervalMs int64                  `protobuf:"varint,1,opt,name=heartbeat_interval_ms,json=heartbeatIntervalMs,proto3" json:"heartbeat_interval_ms,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	HeartbeatInterval *durationpb.Duration   `protobuf:"bytes,1,opt,name=heartbeat_interval,json=heartbeatInterval,proto3" json:"heartbeat_interval,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Heartbeat) Reset() {
@@ -2421,11 +2425,11 @@ func (*Heartbeat) Descriptor() ([]byte, []int) {
 	return file_heavylock_proto_rawDescGZIP(), []int{19}
 }
 
-func (x *Heartbeat) GetHeartbeatIntervalMs() int64 {
+func (x *Heartbeat) GetHeartbeatInterval() *durationpb.Duration {
 	if x != nil {
-		return x.HeartbeatIntervalMs
+		return x.HeartbeatInterval
 	}
-	return 0
+	return nil
 }
 
 type AcknowledgeCancelRequest struct {
@@ -2710,9 +2714,9 @@ type ReportFinishedRequest struct {
 	Runner  *RunnerIncarnation     `protobuf:"bytes,4,opt,name=runner,proto3" json:"runner,omitempty"`
 	Process *ProcessIdentity       `protobuf:"bytes,5,opt,name=process,proto3" json:"process,omitempty"` // root, even if ReportStarted was lost
 	// Runner-observed monotonic start-to-exit duration; absent when unknown.
-	ElapsedMs *int64 `protobuf:"varint,6,opt,name=elapsed_ms,json=elapsedMs,proto3,oneof" json:"elapsed_ms,omitempty"`
+	Elapsed *durationpb.Duration `protobuf:"bytes,6,opt,name=elapsed,proto3" json:"elapsed,omitempty"`
 	// CPU time returned by the root's wait operation; absent when unknown.
-	RootCpuTimeMs *int64 `protobuf:"varint,7,opt,name=root_cpu_time_ms,json=rootCpuTimeMs,proto3,oneof" json:"root_cpu_time_ms,omitempty"`
+	RootCpuTime   *durationpb.Duration `protobuf:"bytes,7,opt,name=root_cpu_time,json=rootCpuTime,proto3" json:"root_cpu_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2782,18 +2786,18 @@ func (x *ReportFinishedRequest) GetProcess() *ProcessIdentity {
 	return nil
 }
 
-func (x *ReportFinishedRequest) GetElapsedMs() int64 {
-	if x != nil && x.ElapsedMs != nil {
-		return *x.ElapsedMs
+func (x *ReportFinishedRequest) GetElapsed() *durationpb.Duration {
+	if x != nil {
+		return x.Elapsed
 	}
-	return 0
+	return nil
 }
 
-func (x *ReportFinishedRequest) GetRootCpuTimeMs() int64 {
-	if x != nil && x.RootCpuTimeMs != nil {
-		return *x.RootCpuTimeMs
+func (x *ReportFinishedRequest) GetRootCpuTime() *durationpb.Duration {
+	if x != nil {
+		return x.RootCpuTime
 	}
-	return 0
+	return nil
 }
 
 type GetHealthRequest struct {
@@ -2833,17 +2837,17 @@ func (*GetHealthRequest) Descriptor() ([]byte, []int) {
 }
 
 type Health struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Live            bool                   `protobuf:"varint,1,opt,name=live,proto3" json:"live,omitempty"`
-	Ready           bool                   `protobuf:"varint,2,opt,name=ready,proto3" json:"ready,omitempty"` // false during recovery or storage failure
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Live  bool                   `protobuf:"varint,1,opt,name=live,proto3" json:"live,omitempty"`
+	Ready bool                   `protobuf:"varint,2,opt,name=ready,proto3" json:"ready,omitempty"` // false during recovery or storage failure
+	// SemVer: stable clients require the same major and their minimum minor;
+	// if either peer is a prerelease, their complete versions must match.
 	ServiceVersion  string                 `protobuf:"bytes,3,opt,name=service_version,json=serviceVersion,proto3" json:"service_version,omitempty"`
-	StartedAtUnixNs int64                  `protobuf:"varint,4,opt,name=started_at_unix_ns,json=startedAtUnixNs,proto3" json:"started_at_unix_ns,omitempty"`
+	StartedAt       *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
 	SchemaVersion   int64                  `protobuf:"varint,5,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
 	RecoveryDetail  *string                `protobuf:"bytes,6,opt,name=recovery_detail,json=recoveryDetail,proto3,oneof" json:"recovery_detail,omitempty"`
 	StorageDetail   *string                `protobuf:"bytes,7,opt,name=storage_detail,json=storageDetail,proto3,oneof" json:"storage_detail,omitempty"` // untrusted/unavailable durable state
 	ServiceIdentity string                 `protobuf:"bytes,8,opt,name=service_identity,json=serviceIdentity,proto3" json:"service_identity,omitempty"` // "heavylock.v2"; not authentication
-	ApiMajor        uint32                 `protobuf:"varint,9,opt,name=api_major,json=apiMajor,proto3" json:"api_major,omitempty"`                     // 2; incompatible changes require a new major
-	ApiMinor        uint32                 `protobuf:"varint,10,opt,name=api_minor,json=apiMinor,proto3" json:"api_minor,omitempty"`                    // additive, backwards-compatible changes
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2899,11 +2903,11 @@ func (x *Health) GetServiceVersion() string {
 	return ""
 }
 
-func (x *Health) GetStartedAtUnixNs() int64 {
+func (x *Health) GetStartedAt() *timestamppb.Timestamp {
 	if x != nil {
-		return x.StartedAtUnixNs
+		return x.StartedAt
 	}
-	return 0
+	return nil
 }
 
 func (x *Health) GetSchemaVersion() int64 {
@@ -2932,20 +2936,6 @@ func (x *Health) GetServiceIdentity() string {
 		return x.ServiceIdentity
 	}
 	return ""
-}
-
-func (x *Health) GetApiMajor() uint32 {
-	if x != nil {
-		return x.ApiMajor
-	}
-	return 0
-}
-
-func (x *Health) GetApiMinor() uint32 {
-	if x != nil {
-		return x.ApiMinor
-	}
-	return 0
 }
 
 type GetStatusRequest struct {
@@ -2992,21 +2982,23 @@ type BrokerStatus struct {
 	// QUEUE_MODE_PAUSED, for older clients.
 	//
 	// Deprecated: Marked as deprecated in heavylock.proto.
-	Paused             bool          `protobuf:"varint,3,opt,name=paused,proto3" json:"paused,omitempty"`
-	PausedAtUnixNs     *int64        `protobuf:"varint,4,opt,name=paused_at_unix_ns,json=pausedAtUnixNs,proto3,oneof" json:"paused_at_unix_ns,omitempty"` // set while queue_mode is PAUSED
-	Recovering         bool          `protobuf:"varint,5,opt,name=recovering,proto3" json:"recovering,omitempty"`
-	QueuedJobs         uint32        `protobuf:"varint,6,opt,name=queued_jobs,json=queuedJobs,proto3" json:"queued_jobs,omitempty"`
-	RunningJobs        uint32        `protobuf:"varint,7,opt,name=running_jobs,json=runningJobs,proto3" json:"running_jobs,omitempty"`
-	HeadBlockedReason  BlockedReason `protobuf:"varint,8,opt,name=head_blocked_reason,json=headBlockedReason,proto3,enum=heavylock.v2.BlockedReason" json:"head_blocked_reason,omitempty"`
-	FreeMemoryBytes    *int64        `protobuf:"varint,9,opt,name=free_memory_bytes,json=freeMemoryBytes,proto3,oneof" json:"free_memory_bytes,omitempty"`
-	LoadAverage_1M     *float64      `protobuf:"fixed64,10,opt,name=load_average_1m,json=loadAverage1m,proto3,oneof" json:"load_average_1m,omitempty"`
-	StorageUnavailable bool          `protobuf:"varint,11,opt,name=storage_unavailable,json=storageUnavailable,proto3" json:"storage_unavailable,omitempty"`
+	Paused             bool                   `protobuf:"varint,3,opt,name=paused,proto3" json:"paused,omitempty"`
+	PausedAt           *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=paused_at,json=pausedAt,proto3" json:"paused_at,omitempty"` // set while queue_mode is PAUSED
+	Recovering         bool                   `protobuf:"varint,5,opt,name=recovering,proto3" json:"recovering,omitempty"`
+	QueuedJobs         uint32                 `protobuf:"varint,6,opt,name=queued_jobs,json=queuedJobs,proto3" json:"queued_jobs,omitempty"`
+	RunningJobs        uint32                 `protobuf:"varint,7,opt,name=running_jobs,json=runningJobs,proto3" json:"running_jobs,omitempty"`
+	HeadBlockedReason  BlockedReason          `protobuf:"varint,8,opt,name=head_blocked_reason,json=headBlockedReason,proto3,enum=heavylock.v2.BlockedReason" json:"head_blocked_reason,omitempty"`
+	FreeMemoryBytes    *int64                 `protobuf:"varint,9,opt,name=free_memory_bytes,json=freeMemoryBytes,proto3,oneof" json:"free_memory_bytes,omitempty"`
+	LoadAverage_1M     *float64               `protobuf:"fixed64,10,opt,name=load_average_1m,json=loadAverage1m,proto3,oneof" json:"load_average_1m,omitempty"` // only this interval controls admission
+	StorageUnavailable bool                   `protobuf:"varint,11,opt,name=storage_unavailable,json=storageUnavailable,proto3" json:"storage_unavailable,omitempty"`
 	// Held reservations not yet reconciled since the last broker restart.
 	// They count toward occupied but do not block unrelated admissions.
 	UnreconciledReservations uint32     `protobuf:"varint,12,opt,name=unreconciled_reservations,json=unreconciledReservations,proto3" json:"unreconciled_reservations,omitempty"`
 	BackfillLimit            uint32     `protobuf:"varint,13,opt,name=backfill_limit,json=backfillLimit,proto3" json:"backfill_limit,omitempty"`                     // per-head bypass limit; 0 is strict FIFO
 	QueueMode                QueueMode  `protobuf:"varint,14,opt,name=queue_mode,json=queueMode,proto3,enum=heavylock.v2.QueueMode" json:"queue_mode,omitempty"`     // since API 2.1
 	QueueState               QueueState `protobuf:"varint,15,opt,name=queue_state,json=queueState,proto3,enum=heavylock.v2.QueueState" json:"queue_state,omitempty"` // since API 2.1
+	LoadAverage_5M           *float64   `protobuf:"fixed64,16,opt,name=load_average_5m,json=loadAverage5m,proto3,oneof" json:"load_average_5m,omitempty"`            // informational
+	LoadAverage_15M          *float64   `protobuf:"fixed64,17,opt,name=load_average_15m,json=loadAverage15m,proto3,oneof" json:"load_average_15m,omitempty"`         // informational
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -3063,11 +3055,11 @@ func (x *BrokerStatus) GetPaused() bool {
 	return false
 }
 
-func (x *BrokerStatus) GetPausedAtUnixNs() int64 {
-	if x != nil && x.PausedAtUnixNs != nil {
-		return *x.PausedAtUnixNs
+func (x *BrokerStatus) GetPausedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.PausedAt
 	}
-	return 0
+	return nil
 }
 
 func (x *BrokerStatus) GetRecovering() bool {
@@ -3145,6 +3137,20 @@ func (x *BrokerStatus) GetQueueState() QueueState {
 		return x.QueueState
 	}
 	return QueueState_QUEUE_STATE_UNSPECIFIED
+}
+
+func (x *BrokerStatus) GetLoadAverage_5M() float64 {
+	if x != nil && x.LoadAverage_5M != nil {
+		return *x.LoadAverage_5M
+	}
+	return 0
+}
+
+func (x *BrokerStatus) GetLoadAverage_15M() float64 {
+	if x != nil && x.LoadAverage_15M != nil {
+		return *x.LoadAverage_15M
+	}
+	return 0
 }
 
 type GetQueueRequest struct {
@@ -3247,16 +3253,16 @@ func (x *Queue) GetQueueState() QueueState {
 }
 
 type ListJobsRequest struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	States             []JobState             `protobuf:"varint,1,rep,packed,name=states,proto3,enum=heavylock.v2.JobState" json:"states,omitempty"` // empty means all
-	Repository         *string                `protobuf:"bytes,2,opt,name=repository,proto3,oneof" json:"repository,omitempty"`
-	ClientName         *string                `protobuf:"bytes,3,opt,name=client_name,json=clientName,proto3,oneof" json:"client_name,omitempty"`
-	QueuedAfterUnixNs  *int64                 `protobuf:"varint,4,opt,name=queued_after_unix_ns,json=queuedAfterUnixNs,proto3,oneof" json:"queued_after_unix_ns,omitempty"`    // inclusive
-	QueuedBeforeUnixNs *int64                 `protobuf:"varint,5,opt,name=queued_before_unix_ns,json=queuedBeforeUnixNs,proto3,oneof" json:"queued_before_unix_ns,omitempty"` // exclusive
-	PageSize           uint32                 `protobuf:"varint,6,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`                                         // 0 means 50; maximum 500
-	PageToken          string                 `protobuf:"bytes,7,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	States        []JobState             `protobuf:"varint,1,rep,packed,name=states,proto3,enum=heavylock.v2.JobState" json:"states,omitempty"` // empty means all
+	Repository    *string                `protobuf:"bytes,2,opt,name=repository,proto3,oneof" json:"repository,omitempty"`
+	ClientName    *string                `protobuf:"bytes,3,opt,name=client_name,json=clientName,proto3,oneof" json:"client_name,omitempty"`
+	QueuedAfter   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=queued_after,json=queuedAfter,proto3" json:"queued_after,omitempty"`    // inclusive
+	QueuedBefore  *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=queued_before,json=queuedBefore,proto3" json:"queued_before,omitempty"` // exclusive
+	PageSize      uint32                 `protobuf:"varint,6,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`            // 0 means 50; maximum 500
+	PageToken     string                 `protobuf:"bytes,7,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListJobsRequest) Reset() {
@@ -3310,18 +3316,18 @@ func (x *ListJobsRequest) GetClientName() string {
 	return ""
 }
 
-func (x *ListJobsRequest) GetQueuedAfterUnixNs() int64 {
-	if x != nil && x.QueuedAfterUnixNs != nil {
-		return *x.QueuedAfterUnixNs
+func (x *ListJobsRequest) GetQueuedAfter() *timestamppb.Timestamp {
+	if x != nil {
+		return x.QueuedAfter
 	}
-	return 0
+	return nil
 }
 
-func (x *ListJobsRequest) GetQueuedBeforeUnixNs() int64 {
-	if x != nil && x.QueuedBeforeUnixNs != nil {
-		return *x.QueuedBeforeUnixNs
+func (x *ListJobsRequest) GetQueuedBefore() *timestamppb.Timestamp {
+	if x != nil {
+		return x.QueuedBefore
 	}
-	return 0
+	return nil
 }
 
 func (x *ListJobsRequest) GetPageSize() uint32 {
@@ -3340,7 +3346,7 @@ func (x *ListJobsRequest) GetPageToken() string {
 
 type ListJobsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Newest first by (queued_at_unix_ns, job_id). Keyset pagination: the
+	// Newest first by (queued_at, job_id). Keyset pagination: the
 	// token encodes the last key and filters, avoiding offset shifts. It is
 	// not a snapshot: concurrent inserts, updates or deletes may affect
 	// later pages.
@@ -3853,10 +3859,10 @@ func (*DeleteJobResponse) Descriptor() ([]byte, []int) {
 }
 
 type DeleteHistoryRequest struct {
-	state                protoimpl.MessageState `protogen:"open.v1"`
-	FinishedBeforeUnixNs int64                  `protobuf:"varint,1,opt,name=finished_before_unix_ns,json=finishedBeforeUnixNs,proto3" json:"finished_before_unix_ns,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	FinishedBefore *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=finished_before,json=finishedBefore,proto3" json:"finished_before,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DeleteHistoryRequest) Reset() {
@@ -3889,11 +3895,11 @@ func (*DeleteHistoryRequest) Descriptor() ([]byte, []int) {
 	return file_heavylock_proto_rawDescGZIP(), []int{42}
 }
 
-func (x *DeleteHistoryRequest) GetFinishedBeforeUnixNs() int64 {
+func (x *DeleteHistoryRequest) GetFinishedBefore() *timestamppb.Timestamp {
 	if x != nil {
-		return x.FinishedBeforeUnixNs
+		return x.FinishedBefore
 	}
-	return 0
+	return nil
 }
 
 type DeleteHistoryResponse struct {
@@ -4003,8 +4009,8 @@ type BrokerEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Equals the stored event's sequence; snapshots and heartbeats carry the
 	// last committed sequence they reflect.
-	EventSeq int64 `protobuf:"varint,1,opt,name=event_seq,json=eventSeq,proto3" json:"event_seq,omitempty"`
-	AtUnixNs int64 `protobuf:"varint,2,opt,name=at_unix_ns,json=atUnixNs,proto3" json:"at_unix_ns,omitempty"`
+	EventSeq int64                  `protobuf:"varint,1,opt,name=event_seq,json=eventSeq,proto3" json:"event_seq,omitempty"`
+	At       *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=at,proto3" json:"at,omitempty"`
 	// Types that are valid to be assigned to Event:
 	//
 	//	*BrokerEvent_Snapshot
@@ -4055,11 +4061,11 @@ func (x *BrokerEvent) GetEventSeq() int64 {
 	return 0
 }
 
-func (x *BrokerEvent) GetAtUnixNs() int64 {
+func (x *BrokerEvent) GetAt() *timestamppb.Timestamp {
 	if x != nil {
-		return x.AtUnixNs
+		return x.At
 	}
-	return 0
+	return nil
 }
 
 func (x *BrokerEvent) GetEvent() isBrokerEvent_Event {
@@ -4227,7 +4233,7 @@ var File_heavylock_proto protoreflect.FileDescriptor
 
 const file_heavylock_proto_rawDesc = "" +
 	"\n" +
-	"\x0fheavylock.proto\x12\fheavylock.v2\"\xfa\x01\n" +
+	"\x0fheavylock.proto\x12\fheavylock.v2\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfa\x01\n" +
 	"\n" +
 	"ClientInfo\x12\x17\n" +
 	"\x04name\x18\x01 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x1d\n" +
@@ -4266,19 +4272,21 @@ const file_heavylock_proto_rawDesc = "" +
 	"\b_purposeB\r\n" +
 	"\v_commit_shaB\x0f\n" +
 	"\r_build_targetB\x16\n" +
-	"\x14_build_configuration\"P\n" +
+	"\x14_build_configuration\"^\n" +
 	"\x0fProcessIdentity\x12\x10\n" +
-	"\x03pid\x18\x01 \x01(\x03R\x03pid\x12+\n" +
-	"\x12start_time_unix_ns\x18\x02 \x01(\x03R\x0fstartTimeUnixNs\"s\n" +
+	"\x03pid\x18\x01 \x01(\x03R\x03pid\x129\n" +
+	"\n" +
+	"start_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\"s\n" +
 	"\x11RunnerIncarnation\x12%\n" +
 	"\x0eincarnation_id\x18\x01 \x01(\tR\rincarnationId\x127\n" +
-	"\aprocess\x18\x02 \x01(\v2\x1d.heavylock.v2.ProcessIdentityR\aprocess\"\xe4\x01\n" +
+	"\aprocess\x18\x02 \x01(\v2\x1d.heavylock.v2.ProcessIdentityR\aprocess\"\x88\x02\n" +
 	"\x05Grant\x12\x19\n" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId\x12\x16\n" +
 	"\x06weight\x18\x02 \x01(\rR\x06weight\x12\x16\n" +
-	"\x06forced\x18\x03 \x01(\bR\x06forced\x12+\n" +
-	"\x12granted_at_unix_ns\x18\x04 \x01(\x03R\x0fgrantedAtUnixNs\x12*\n" +
-	"\x11launch_timeout_ms\x18\x05 \x01(\x03R\x0flaunchTimeoutMs\x127\n" +
+	"\x06forced\x18\x03 \x01(\bR\x06forced\x129\n" +
+	"\n" +
+	"granted_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tgrantedAt\x12@\n" +
+	"\x0elaunch_timeout\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\rlaunchTimeout\x127\n" +
 	"\x06runner\x18\x06 \x01(\v2\x1f.heavylock.v2.RunnerIncarnationR\x06runner\"\x82\x02\n" +
 	"\aOutcome\x12-\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x19.heavylock.v2.OutcomeKindR\x04kind\x12 \n" +
@@ -4291,21 +4299,18 @@ const file_heavylock_proto_rawDesc = "" +
 	"_exit_codeB\x10\n" +
 	"\x0e_signal_numberB\x0e\n" +
 	"\f_signal_nameB\t\n" +
-	"\a_detail\"\xd7\x03\n" +
-	"\x0fResourceSummary\x12\"\n" +
-	"\n" +
-	"elapsed_ms\x18\x01 \x01(\x03H\x00R\telapsedMs\x88\x01\x01\x12#\n" +
-	"\vcpu_time_ms\x18\x02 \x01(\x03H\x01R\tcpuTimeMs\x88\x01\x01\x12-\n" +
-	"\x10peak_cpu_percent\x18\x03 \x01(\x01H\x02R\x0epeakCpuPercent\x88\x01\x01\x12:\n" +
-	"\x17peak_combined_rss_bytes\x18\x04 \x01(\x03H\x03R\x14peakCombinedRssBytes\x88\x01\x01\x12!\n" +
+	"\a_detail\"\xda\x03\n" +
+	"\x0fResourceSummary\x123\n" +
+	"\aelapsed\x18\x01 \x01(\v2\x19.google.protobuf.DurationR\aelapsed\x124\n" +
+	"\bcpu_time\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\acpuTime\x12-\n" +
+	"\x10peak_cpu_percent\x18\x03 \x01(\x01H\x00R\x0epeakCpuPercent\x88\x01\x01\x12:\n" +
+	"\x17peak_combined_rss_bytes\x18\x04 \x01(\x03H\x01R\x14peakCombinedRssBytes\x88\x01\x01\x12!\n" +
 	"\fsample_count\x18\x05 \x01(\rR\vsampleCount\x12I\n" +
 	"\fcompleteness\x18\x06 \x01(\x0e2%.heavylock.v2.MeasurementCompletenessR\fcompleteness\x128\n" +
-	"\x15incompleteness_reason\x18\a \x01(\tH\x04R\x14incompletenessReason\x88\x01\x01B\r\n" +
-	"\v_elapsed_msB\x0e\n" +
-	"\f_cpu_time_msB\x13\n" +
+	"\x15incompleteness_reason\x18\a \x01(\tH\x02R\x14incompletenessReason\x88\x01\x01B\x13\n" +
 	"\x11_peak_cpu_percentB\x1a\n" +
 	"\x18_peak_combined_rss_bytesB\x18\n" +
-	"\x16_incompleteness_reason\"\x84\x0f\n" +
+	"\x16_incompleteness_reason\"\xaf\x0e\n" +
 	"\x03Job\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12'\n" +
 	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\x12,\n" +
@@ -4317,37 +4322,35 @@ const file_heavylock_proto_rawDesc = "" +
 	"\x06client\x18\b \x01(\v2\x18.heavylock.v2.ClientInfoR\x06client\x12;\n" +
 	"\vattribution\x18\t \x01(\v2\x19.heavylock.v2.AttributionR\vattribution\x12'\n" +
 	"\x0fservice_version\x18\n" +
-	" \x01(\tR\x0eserviceVersion\x12)\n" +
-	"\x11queued_at_unix_ns\x18\v \x01(\x03R\x0equeuedAtUnixNs\x122\n" +
-	"\x13admitted_at_unix_ns\x18\f \x01(\x03H\x01R\x10admittedAtUnixNs\x88\x01\x01\x120\n" +
-	"\x12started_at_unix_ns\x18\r \x01(\x03H\x02R\x0fstartedAtUnixNs\x88\x01\x01\x122\n" +
-	"\x13finished_at_unix_ns\x18\x0e \x01(\x03H\x03R\x10finishedAtUnixNs\x88\x01\x01\x12A\n" +
-	"\x1bcancel_requested_at_unix_ns\x18\x0f \x01(\x03H\x04R\x17cancelRequestedAtUnixNs\x88\x01\x01\x12*\n" +
-	"\x0equeue_position\x18\x10 \x01(\rH\x05R\rqueuePosition\x88\x01\x01\x12)\n" +
-	"\x10runner_connected\x18\x11 \x01(\bR\x0frunnerConnected\x121\n" +
-	"\x12grace_remaining_ms\x18\x12 \x01(\x03H\x06R\x10graceRemainingMs\x88\x01\x01\x12.\n" +
-	"\x05grant\x18\x13 \x01(\v2\x13.heavylock.v2.GrantH\aR\x05grant\x88\x01\x01\x12<\n" +
-	"\aprocess\x18\x14 \x01(\v2\x1d.heavylock.v2.ProcessIdentityH\bR\aprocess\x88\x01\x01\x12G\n" +
-	"\x1efree_memory_at_admission_bytes\x18\x15 \x01(\x03H\tR\x1afreeMemoryAtAdmissionBytes\x88\x01\x01\x124\n" +
-	"\aoutcome\x18\x16 \x01(\v2\x15.heavylock.v2.OutcomeH\n" +
-	"R\aoutcome\x88\x01\x01\x12@\n" +
-	"\tresources\x18\x17 \x01(\v2\x1d.heavylock.v2.ResourceSummaryH\vR\tresources\x88\x01\x01\x12(\n" +
-	"\rcancel_reason\x18\x18 \x01(\tH\fR\fcancelReason\x88\x01\x01\x120\n" +
+	" \x01(\tR\x0eserviceVersion\x127\n" +
+	"\tqueued_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\bqueuedAt\x12;\n" +
+	"\vadmitted_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"admittedAt\x129\n" +
+	"\n" +
+	"started_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12;\n" +
+	"\vfinished_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"finishedAt\x12J\n" +
+	"\x13cancel_requested_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\x11cancelRequestedAt\x12*\n" +
+	"\x0equeue_position\x18\x10 \x01(\rH\x01R\rqueuePosition\x88\x01\x01\x12)\n" +
+	"\x10runner_connected\x18\x11 \x01(\bR\x0frunnerConnected\x12B\n" +
+	"\x0fgrace_remaining\x18\x12 \x01(\v2\x19.google.protobuf.DurationR\x0egraceRemaining\x12.\n" +
+	"\x05grant\x18\x13 \x01(\v2\x13.heavylock.v2.GrantH\x02R\x05grant\x88\x01\x01\x12<\n" +
+	"\aprocess\x18\x14 \x01(\v2\x1d.heavylock.v2.ProcessIdentityH\x03R\aprocess\x88\x01\x01\x12G\n" +
+	"\x1efree_memory_at_admission_bytes\x18\x15 \x01(\x03H\x04R\x1afreeMemoryAtAdmissionBytes\x88\x01\x01\x124\n" +
+	"\aoutcome\x18\x16 \x01(\v2\x15.heavylock.v2.OutcomeH\x05R\aoutcome\x88\x01\x01\x12@\n" +
+	"\tresources\x18\x17 \x01(\v2\x1d.heavylock.v2.ResourceSummaryH\x06R\tresources\x88\x01\x01\x12(\n" +
+	"\rcancel_reason\x18\x18 \x01(\tH\aR\fcancelReason\x88\x01\x01\x120\n" +
 	"\x14admitted_by_backfill\x18\x19 \x01(\bR\x12admittedByBackfill\x122\n" +
 	"\x15backfill_bypass_count\x18\x1a \x01(\rR\x13backfillBypassCount\x12*\n" +
-	"\x0fretry_of_job_id\x18\x1b \x01(\tH\rR\fretryOfJobId\x88\x01\x01\x12\x18\n" +
-	"\aattempt\x18\x1c \x01(\rR\aattempt\x12G\n" +
-	"\x1ecancel_acknowledged_at_unix_ns\x18\x1d \x01(\x03H\x0eR\x1acancelAcknowledgedAtUnixNs\x88\x01\x01\x127\n" +
-	"\x15cancel_failure_detail\x18\x1e \x01(\tH\x0fR\x13cancelFailureDetail\x88\x01\x01\x12S\n" +
-	"\x12broker_termination\x18\x1f \x01(\v2\x1f.heavylock.v2.BrokerTerminationH\x10R\x11brokerTermination\x88\x01\x01\x12B\n" +
+	"\x0fretry_of_job_id\x18\x1b \x01(\tH\bR\fretryOfJobId\x88\x01\x01\x12\x18\n" +
+	"\aattempt\x18\x1c \x01(\rR\aattempt\x12P\n" +
+	"\x16cancel_acknowledged_at\x18\x1d \x01(\v2\x1a.google.protobuf.TimestampR\x14cancelAcknowledgedAt\x127\n" +
+	"\x15cancel_failure_detail\x18\x1e \x01(\tH\tR\x13cancelFailureDetail\x88\x01\x01\x12S\n" +
+	"\x12broker_termination\x18\x1f \x01(\v2\x1f.heavylock.v2.BrokerTerminationH\n" +
+	"R\x11brokerTermination\x88\x01\x01\x12B\n" +
 	"\x0eblocked_reason\x18  \x01(\x0e2\x1b.heavylock.v2.BlockedReasonR\rblockedReasonB\x06\n" +
-	"\x04_cwdB\x16\n" +
-	"\x14_admitted_at_unix_nsB\x15\n" +
-	"\x13_started_at_unix_nsB\x16\n" +
-	"\x14_finished_at_unix_nsB\x1e\n" +
-	"\x1c_cancel_requested_at_unix_nsB\x11\n" +
-	"\x0f_queue_positionB\x15\n" +
-	"\x13_grace_remaining_msB\b\n" +
+	"\x04_cwdB\x11\n" +
+	"\x0f_queue_positionB\b\n" +
 	"\x06_grantB\n" +
 	"\n" +
 	"\b_processB!\n" +
@@ -4357,12 +4360,12 @@ const file_heavylock_proto_rawDesc = "" +
 	"\n" +
 	"_resourcesB\x10\n" +
 	"\x0e_cancel_reasonB\x12\n" +
-	"\x10_retry_of_job_idB!\n" +
-	"\x1f_cancel_acknowledged_at_unix_nsB\x18\n" +
+	"\x10_retry_of_job_idB\x18\n" +
 	"\x16_cancel_failure_detailB\x15\n" +
-	"\x13_broker_termination\"\xa3\x02\n" +
-	"\x11BrokerTermination\x12+\n" +
-	"\x12started_at_unix_ns\x18\x01 \x01(\x03R\x0fstartedAtUnixNs\x12>\n" +
+	"\x13_broker_termination\"\xb1\x02\n" +
+	"\x11BrokerTermination\x129\n" +
+	"\n" +
+	"started_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12>\n" +
 	"\x06reason\x18\x02 \x01(\x0e2&.heavylock.v2.BrokerTermination.ReasonR\x06reason\"\xa0\x01\n" +
 	"\x06Reason\x12\x16\n" +
 	"\x12REASON_UNSPECIFIED\x10\x00\x12\x1e\n" +
@@ -4401,11 +4404,10 @@ const file_heavylock_proto_rawDesc = "" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x19\n" +
 	"\bgrant_id\x18\x02 \x01(\tR\agrantId\x127\n" +
 	"\x06runner\x18\x03 \x01(\v2\x1f.heavylock.v2.RunnerIncarnationR\x06runner\x12,\n" +
-	"\x12no_command_spawned\x18\x04 \x01(\bR\x10noCommandSpawned\"\xc2\x03\n" +
+	"\x12no_command_spawned\x18\x04 \x01(\bR\x10noCommandSpawned\"\xd0\x03\n" +
 	"\bJobEvent\x12\x1b\n" +
-	"\tevent_seq\x18\x01 \x01(\x03R\beventSeq\x12\x1c\n" +
-	"\n" +
-	"at_unix_ns\x18\x02 \x01(\x03R\batUnixNs\x12/\n" +
+	"\tevent_seq\x18\x01 \x01(\x03R\beventSeq\x12*\n" +
+	"\x02at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x12/\n" +
 	"\bsnapshot\x18\n" +
 	" \x01(\v2\x11.heavylock.v2.JobH\x00R\bsnapshot\x12Z\n" +
 	"\x16queue_position_changed\x18\v \x01(\v2\".heavylock.v2.QueuePositionChangedH\x00R\x14queuePositionChanged\x12/\n" +
@@ -4421,9 +4423,9 @@ const file_heavylock_proto_rawDesc = "" +
 	"\x0fCancelRequested\x12+\n" +
 	"\x11terminate_running\x18\x01 \x01(\bR\x10terminateRunning\x12\x1b\n" +
 	"\x06reason\x18\x02 \x01(\tH\x00R\x06reason\x88\x01\x01B\t\n" +
-	"\a_reason\"?\n" +
-	"\tHeartbeat\x122\n" +
-	"\x15heartbeat_interval_ms\x18\x01 \x01(\x03R\x13heartbeatIntervalMs\"\x85\x01\n" +
+	"\a_reason\"U\n" +
+	"\tHeartbeat\x12H\n" +
+	"\x12heartbeat_interval\x18\x01 \x01(\v2\x19.google.protobuf.DurationR\x11heartbeatInterval\"\x85\x01\n" +
 	"\x18AcknowledgeCancelRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x19\n" +
 	"\bgrant_id\x18\x02 \x01(\tR\agrantId\x127\n" +
@@ -4443,39 +4445,36 @@ const file_heavylock_proto_rawDesc = "" +
 	"\bgrant_id\x18\x02 \x01(\tR\agrantId\x12\x14\n" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x12\x1c\n" +
 	"\tcancelled\x18\x04 \x01(\bR\tcancelled\x127\n" +
-	"\x06runner\x18\x05 \x01(\v2\x1f.heavylock.v2.RunnerIncarnationR\x06runner\"\xe2\x02\n" +
+	"\x06runner\x18\x05 \x01(\v2\x1f.heavylock.v2.RunnerIncarnationR\x06runner\"\xe0\x02\n" +
 	"\x15ReportFinishedRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x19\n" +
 	"\bgrant_id\x18\x02 \x01(\tR\agrantId\x12/\n" +
 	"\aoutcome\x18\x03 \x01(\v2\x15.heavylock.v2.OutcomeR\aoutcome\x127\n" +
 	"\x06runner\x18\x04 \x01(\v2\x1f.heavylock.v2.RunnerIncarnationR\x06runner\x127\n" +
-	"\aprocess\x18\x05 \x01(\v2\x1d.heavylock.v2.ProcessIdentityR\aprocess\x12\"\n" +
-	"\n" +
-	"elapsed_ms\x18\x06 \x01(\x03H\x00R\telapsedMs\x88\x01\x01\x12,\n" +
-	"\x10root_cpu_time_ms\x18\a \x01(\x03H\x01R\rrootCpuTimeMs\x88\x01\x01B\r\n" +
-	"\v_elapsed_msB\x13\n" +
-	"\x11_root_cpu_time_ms\"\x12\n" +
-	"\x10GetHealthRequest\"\x95\x03\n" +
+	"\aprocess\x18\x05 \x01(\v2\x1d.heavylock.v2.ProcessIdentityR\aprocess\x123\n" +
+	"\aelapsed\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\aelapsed\x12=\n" +
+	"\rroot_cpu_time\x18\a \x01(\v2\x19.google.protobuf.DurationR\vrootCpuTime\"\x12\n" +
+	"\x10GetHealthRequest\"\x8b\x03\n" +
 	"\x06Health\x12\x12\n" +
 	"\x04live\x18\x01 \x01(\bR\x04live\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\bR\x05ready\x12'\n" +
-	"\x0fservice_version\x18\x03 \x01(\tR\x0eserviceVersion\x12+\n" +
-	"\x12started_at_unix_ns\x18\x04 \x01(\x03R\x0fstartedAtUnixNs\x12%\n" +
+	"\x0fservice_version\x18\x03 \x01(\tR\x0eserviceVersion\x129\n" +
+	"\n" +
+	"started_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12%\n" +
 	"\x0eschema_version\x18\x05 \x01(\x03R\rschemaVersion\x12,\n" +
 	"\x0frecovery_detail\x18\x06 \x01(\tH\x00R\x0erecoveryDetail\x88\x01\x01\x12*\n" +
 	"\x0estorage_detail\x18\a \x01(\tH\x01R\rstorageDetail\x88\x01\x01\x12)\n" +
-	"\x10service_identity\x18\b \x01(\tR\x0fserviceIdentity\x12\x1b\n" +
-	"\tapi_major\x18\t \x01(\rR\bapiMajor\x12\x1b\n" +
-	"\tapi_minor\x18\n" +
-	" \x01(\rR\bapiMinorB\x12\n" +
+	"\x10service_identity\x18\b \x01(\tR\x0fserviceIdentityB\x12\n" +
 	"\x10_recovery_detailB\x11\n" +
-	"\x0f_storage_detail\"\x12\n" +
-	"\x10GetStatusRequest\"\xe9\x05\n" +
+	"\x0f_storage_detailJ\x04\b\t\x10\n" +
+	"J\x04\b\n" +
+	"\x10\vR\tapi_majorR\tapi_minor\"\x12\n" +
+	"\x10GetStatusRequest\"\xe1\x06\n" +
 	"\fBrokerStatus\x12\x1a\n" +
 	"\bcapacity\x18\x01 \x01(\rR\bcapacity\x12\x1a\n" +
 	"\boccupied\x18\x02 \x01(\rR\boccupied\x12\x1a\n" +
-	"\x06paused\x18\x03 \x01(\bB\x02\x18\x01R\x06paused\x12.\n" +
-	"\x11paused_at_unix_ns\x18\x04 \x01(\x03H\x00R\x0epausedAtUnixNs\x88\x01\x01\x12\x1e\n" +
+	"\x06paused\x18\x03 \x01(\bB\x02\x18\x01R\x06paused\x127\n" +
+	"\tpaused_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bpausedAt\x12\x1e\n" +
 	"\n" +
 	"recovering\x18\x05 \x01(\bR\n" +
 	"recovering\x12\x1f\n" +
@@ -4483,41 +4482,42 @@ const file_heavylock_proto_rawDesc = "" +
 	"queuedJobs\x12!\n" +
 	"\frunning_jobs\x18\a \x01(\rR\vrunningJobs\x12K\n" +
 	"\x13head_blocked_reason\x18\b \x01(\x0e2\x1b.heavylock.v2.BlockedReasonR\x11headBlockedReason\x12/\n" +
-	"\x11free_memory_bytes\x18\t \x01(\x03H\x01R\x0ffreeMemoryBytes\x88\x01\x01\x12+\n" +
+	"\x11free_memory_bytes\x18\t \x01(\x03H\x00R\x0ffreeMemoryBytes\x88\x01\x01\x12+\n" +
 	"\x0fload_average_1m\x18\n" +
-	" \x01(\x01H\x02R\rloadAverage1m\x88\x01\x01\x12/\n" +
+	" \x01(\x01H\x01R\rloadAverage1m\x88\x01\x01\x12/\n" +
 	"\x13storage_unavailable\x18\v \x01(\bR\x12storageUnavailable\x12;\n" +
 	"\x19unreconciled_reservations\x18\f \x01(\rR\x18unreconciledReservations\x12%\n" +
 	"\x0ebackfill_limit\x18\r \x01(\rR\rbackfillLimit\x126\n" +
 	"\n" +
 	"queue_mode\x18\x0e \x01(\x0e2\x17.heavylock.v2.QueueModeR\tqueueMode\x129\n" +
 	"\vqueue_state\x18\x0f \x01(\x0e2\x18.heavylock.v2.QueueStateR\n" +
-	"queueStateB\x14\n" +
-	"\x12_paused_at_unix_nsB\x14\n" +
+	"queueState\x12+\n" +
+	"\x0fload_average_5m\x18\x10 \x01(\x01H\x02R\rloadAverage5m\x88\x01\x01\x12-\n" +
+	"\x10load_average_15m\x18\x11 \x01(\x01H\x03R\x0eloadAverage15m\x88\x01\x01B\x14\n" +
 	"\x12_free_memory_bytesB\x12\n" +
-	"\x10_load_average_1m\"\x11\n" +
+	"\x10_load_average_1mB\x12\n" +
+	"\x10_load_average_5mB\x13\n" +
+	"\x11_load_average_15m\"\x11\n" +
 	"\x0fGetQueueRequest\"\xb6\x01\n" +
 	"\x05Queue\x12%\n" +
 	"\x04jobs\x18\x01 \x03(\v2\x11.heavylock.v2.JobR\x04jobs\x12K\n" +
 	"\x13head_blocked_reason\x18\x02 \x01(\x0e2\x1b.heavylock.v2.BlockedReasonR\x11headBlockedReason\x129\n" +
 	"\vqueue_state\x18\x03 \x01(\x0e2\x18.heavylock.v2.QueueStateR\n" +
-	"queueState\"\x88\x03\n" +
+	"queueState\"\xe7\x02\n" +
 	"\x0fListJobsRequest\x12.\n" +
 	"\x06states\x18\x01 \x03(\x0e2\x16.heavylock.v2.JobStateR\x06states\x12#\n" +
 	"\n" +
 	"repository\x18\x02 \x01(\tH\x00R\n" +
 	"repository\x88\x01\x01\x12$\n" +
 	"\vclient_name\x18\x03 \x01(\tH\x01R\n" +
-	"clientName\x88\x01\x01\x124\n" +
-	"\x14queued_after_unix_ns\x18\x04 \x01(\x03H\x02R\x11queuedAfterUnixNs\x88\x01\x01\x126\n" +
-	"\x15queued_before_unix_ns\x18\x05 \x01(\x03H\x03R\x12queuedBeforeUnixNs\x88\x01\x01\x12\x1b\n" +
+	"clientName\x88\x01\x01\x12=\n" +
+	"\fqueued_after\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vqueuedAfter\x12?\n" +
+	"\rqueued_before\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\fqueuedBefore\x12\x1b\n" +
 	"\tpage_size\x18\x06 \x01(\rR\bpageSize\x12\x1d\n" +
 	"\n" +
 	"page_token\x18\a \x01(\tR\tpageTokenB\r\n" +
 	"\v_repositoryB\x0e\n" +
-	"\f_client_nameB\x17\n" +
-	"\x15_queued_after_unix_nsB\x18\n" +
-	"\x16_queued_before_unix_ns\"a\n" +
+	"\f_client_name\"a\n" +
 	"\x10ListJobsResponse\x12%\n" +
 	"\x04jobs\x18\x01 \x03(\v2\x11.heavylock.v2.JobR\x04jobs\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"&\n" +
@@ -4543,18 +4543,17 @@ const file_heavylock_proto_rawDesc = "" +
 	"\x12ResumeQueueRequest\")\n" +
 	"\x10DeleteJobRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"\x13\n" +
-	"\x11DeleteJobResponse\"M\n" +
-	"\x14DeleteHistoryRequest\x125\n" +
-	"\x17finished_before_unix_ns\x18\x01 \x01(\x03R\x14finishedBeforeUnixNs\"K\n" +
+	"\x11DeleteJobResponse\"[\n" +
+	"\x14DeleteHistoryRequest\x12C\n" +
+	"\x0ffinished_before\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x0efinishedBefore\"K\n" +
 	"\x15DeleteHistoryResponse\x12\x18\n" +
 	"\adeleted\x18\x01 \x01(\rR\adeleted\x12\x18\n" +
 	"\askipped\x18\x02 \x01(\rR\askipped\"<\n" +
 	"\x12WatchEventsRequest\x12&\n" +
-	"\x0fafter_event_seq\x18\x01 \x01(\x03R\rafterEventSeq\"\xa0\x03\n" +
+	"\x0fafter_event_seq\x18\x01 \x01(\x03R\rafterEventSeq\"\xae\x03\n" +
 	"\vBrokerEvent\x12\x1b\n" +
-	"\tevent_seq\x18\x01 \x01(\x03R\beventSeq\x12\x1c\n" +
-	"\n" +
-	"at_unix_ns\x18\x02 \x01(\x03R\batUnixNs\x12:\n" +
+	"\tevent_seq\x18\x01 \x01(\x03R\beventSeq\x12*\n" +
+	"\x02at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x12:\n" +
 	"\bsnapshot\x18\n" +
 	" \x01(\v2\x1c.heavylock.v2.BrokerSnapshotH\x00R\bsnapshot\x124\n" +
 	"\vjob_changed\x18\v \x01(\v2\x11.heavylock.v2.JobH\x00R\n" +
@@ -4766,120 +4765,145 @@ var file_heavylock_proto_goTypes = []any{
 	(*BrokerEvent)(nil),               // 56: heavylock.v2.BrokerEvent
 	(*BrokerSnapshot)(nil),            // 57: heavylock.v2.BrokerSnapshot
 	nil,                               // 58: heavylock.v2.Attribution.ExtraEntry
+	(*timestamppb.Timestamp)(nil),     // 59: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),       // 60: google.protobuf.Duration
 }
 var file_heavylock_proto_depIdxs = []int32{
-	2,  // 0: heavylock.v2.ClientInfo.os:type_name -> heavylock.v2.ClientOS
-	3,  // 1: heavylock.v2.ClientInfo.architecture:type_name -> heavylock.v2.ClientArchitecture
-	58, // 2: heavylock.v2.Attribution.extra:type_name -> heavylock.v2.Attribution.ExtraEntry
-	13, // 3: heavylock.v2.RunnerIncarnation.process:type_name -> heavylock.v2.ProcessIdentity
-	14, // 4: heavylock.v2.Grant.runner:type_name -> heavylock.v2.RunnerIncarnation
-	1,  // 5: heavylock.v2.Outcome.kind:type_name -> heavylock.v2.OutcomeKind
-	4,  // 6: heavylock.v2.ResourceSummary.completeness:type_name -> heavylock.v2.MeasurementCompleteness
-	0,  // 7: heavylock.v2.Job.state:type_name -> heavylock.v2.JobState
-	11, // 8: heavylock.v2.Job.client:type_name -> heavylock.v2.ClientInfo
-	12, // 9: heavylock.v2.Job.attribution:type_name -> heavylock.v2.Attribution
-	15, // 10: heavylock.v2.Job.grant:type_name -> heavylock.v2.Grant
-	13, // 11: heavylock.v2.Job.process:type_name -> heavylock.v2.ProcessIdentity
-	16, // 12: heavylock.v2.Job.outcome:type_name -> heavylock.v2.Outcome
-	17, // 13: heavylock.v2.Job.resources:type_name -> heavylock.v2.ResourceSummary
-	19, // 14: heavylock.v2.Job.broker_termination:type_name -> heavylock.v2.BrokerTermination
-	6,  // 15: heavylock.v2.Job.blocked_reason:type_name -> heavylock.v2.BlockedReason
-	10, // 16: heavylock.v2.BrokerTermination.reason:type_name -> heavylock.v2.BrokerTermination.Reason
-	11, // 17: heavylock.v2.SubmitJobRequest.client:type_name -> heavylock.v2.ClientInfo
-	12, // 18: heavylock.v2.SubmitJobRequest.attribution:type_name -> heavylock.v2.Attribution
-	14, // 19: heavylock.v2.SubmitJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	18, // 20: heavylock.v2.SubmitJobResponse.job:type_name -> heavylock.v2.Job
-	14, // 21: heavylock.v2.WatchJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	14, // 22: heavylock.v2.RejoinJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	14, // 23: heavylock.v2.ClaimLaunchRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	15, // 24: heavylock.v2.ClaimLaunchResponse.grant:type_name -> heavylock.v2.Grant
-	14, // 25: heavylock.v2.SealLaunchRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	18, // 26: heavylock.v2.JobEvent.snapshot:type_name -> heavylock.v2.Job
-	28, // 27: heavylock.v2.JobEvent.queue_position_changed:type_name -> heavylock.v2.QueuePositionChanged
-	15, // 28: heavylock.v2.JobEvent.granted:type_name -> heavylock.v2.Grant
-	29, // 29: heavylock.v2.JobEvent.cancel_requested:type_name -> heavylock.v2.CancelRequested
-	18, // 30: heavylock.v2.JobEvent.finished:type_name -> heavylock.v2.Job
-	30, // 31: heavylock.v2.JobEvent.heartbeat:type_name -> heavylock.v2.Heartbeat
-	6,  // 32: heavylock.v2.QueuePositionChanged.head_blocked_reason:type_name -> heavylock.v2.BlockedReason
-	14, // 33: heavylock.v2.AcknowledgeCancelRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	14, // 34: heavylock.v2.ReportCancelFailedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	13, // 35: heavylock.v2.ReportStartedRequest.process:type_name -> heavylock.v2.ProcessIdentity
-	14, // 36: heavylock.v2.ReportStartedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	14, // 37: heavylock.v2.ReportLaunchFailedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	16, // 38: heavylock.v2.ReportFinishedRequest.outcome:type_name -> heavylock.v2.Outcome
-	14, // 39: heavylock.v2.ReportFinishedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	13, // 40: heavylock.v2.ReportFinishedRequest.process:type_name -> heavylock.v2.ProcessIdentity
-	6,  // 41: heavylock.v2.BrokerStatus.head_blocked_reason:type_name -> heavylock.v2.BlockedReason
-	7,  // 42: heavylock.v2.BrokerStatus.queue_mode:type_name -> heavylock.v2.QueueMode
-	8,  // 43: heavylock.v2.BrokerStatus.queue_state:type_name -> heavylock.v2.QueueState
-	18, // 44: heavylock.v2.Queue.jobs:type_name -> heavylock.v2.Job
-	6,  // 45: heavylock.v2.Queue.head_blocked_reason:type_name -> heavylock.v2.BlockedReason
-	8,  // 46: heavylock.v2.Queue.queue_state:type_name -> heavylock.v2.QueueState
-	0,  // 47: heavylock.v2.ListJobsRequest.states:type_name -> heavylock.v2.JobState
-	18, // 48: heavylock.v2.ListJobsResponse.jobs:type_name -> heavylock.v2.Job
-	57, // 49: heavylock.v2.BrokerEvent.snapshot:type_name -> heavylock.v2.BrokerSnapshot
-	18, // 50: heavylock.v2.BrokerEvent.job_changed:type_name -> heavylock.v2.Job
-	41, // 51: heavylock.v2.BrokerEvent.queue_changed:type_name -> heavylock.v2.Queue
-	39, // 52: heavylock.v2.BrokerEvent.status_changed:type_name -> heavylock.v2.BrokerStatus
-	30, // 53: heavylock.v2.BrokerEvent.heartbeat:type_name -> heavylock.v2.Heartbeat
-	39, // 54: heavylock.v2.BrokerSnapshot.status:type_name -> heavylock.v2.BrokerStatus
-	41, // 55: heavylock.v2.BrokerSnapshot.queue:type_name -> heavylock.v2.Queue
-	18, // 56: heavylock.v2.BrokerSnapshot.active_jobs:type_name -> heavylock.v2.Job
-	20, // 57: heavylock.v2.RunnerService.SubmitJob:input_type -> heavylock.v2.SubmitJobRequest
-	20, // 58: heavylock.v2.RunnerService.TrySubmitAndWatch:input_type -> heavylock.v2.SubmitJobRequest
-	22, // 59: heavylock.v2.RunnerService.WatchJob:input_type -> heavylock.v2.WatchJobRequest
-	23, // 60: heavylock.v2.RunnerService.RejoinJob:input_type -> heavylock.v2.RejoinJobRequest
-	24, // 61: heavylock.v2.RunnerService.ClaimLaunch:input_type -> heavylock.v2.ClaimLaunchRequest
-	26, // 62: heavylock.v2.RunnerService.SealLaunch:input_type -> heavylock.v2.SealLaunchRequest
-	33, // 63: heavylock.v2.RunnerService.ReportStarted:input_type -> heavylock.v2.ReportStartedRequest
-	34, // 64: heavylock.v2.RunnerService.ReportLaunchFailed:input_type -> heavylock.v2.ReportLaunchFailedRequest
-	31, // 65: heavylock.v2.RunnerService.AcknowledgeCancel:input_type -> heavylock.v2.AcknowledgeCancelRequest
-	32, // 66: heavylock.v2.RunnerService.ReportCancelFailed:input_type -> heavylock.v2.ReportCancelFailedRequest
-	35, // 67: heavylock.v2.RunnerService.ReportFinished:input_type -> heavylock.v2.ReportFinishedRequest
-	36, // 68: heavylock.v2.ControlService.GetHealth:input_type -> heavylock.v2.GetHealthRequest
-	38, // 69: heavylock.v2.ControlService.GetStatus:input_type -> heavylock.v2.GetStatusRequest
-	40, // 70: heavylock.v2.ControlService.GetQueue:input_type -> heavylock.v2.GetQueueRequest
-	42, // 71: heavylock.v2.ControlService.ListJobs:input_type -> heavylock.v2.ListJobsRequest
-	44, // 72: heavylock.v2.ControlService.GetJob:input_type -> heavylock.v2.GetJobRequest
-	45, // 73: heavylock.v2.ControlService.GetSubmission:input_type -> heavylock.v2.GetSubmissionRequest
-	46, // 74: heavylock.v2.ControlService.CancelJob:input_type -> heavylock.v2.CancelJobRequest
-	47, // 75: heavylock.v2.ControlService.MoveJob:input_type -> heavylock.v2.MoveJobRequest
-	48, // 76: heavylock.v2.ControlService.ForceStartJob:input_type -> heavylock.v2.ForceStartJobRequest
-	49, // 77: heavylock.v2.ControlService.PauseQueue:input_type -> heavylock.v2.PauseQueueRequest
-	50, // 78: heavylock.v2.ControlService.ResumeQueue:input_type -> heavylock.v2.ResumeQueueRequest
-	51, // 79: heavylock.v2.ControlService.DeleteJob:input_type -> heavylock.v2.DeleteJobRequest
-	53, // 80: heavylock.v2.ControlService.DeleteHistory:input_type -> heavylock.v2.DeleteHistoryRequest
-	55, // 81: heavylock.v2.ControlService.WatchEvents:input_type -> heavylock.v2.WatchEventsRequest
-	21, // 82: heavylock.v2.RunnerService.SubmitJob:output_type -> heavylock.v2.SubmitJobResponse
-	27, // 83: heavylock.v2.RunnerService.TrySubmitAndWatch:output_type -> heavylock.v2.JobEvent
-	27, // 84: heavylock.v2.RunnerService.WatchJob:output_type -> heavylock.v2.JobEvent
-	18, // 85: heavylock.v2.RunnerService.RejoinJob:output_type -> heavylock.v2.Job
-	25, // 86: heavylock.v2.RunnerService.ClaimLaunch:output_type -> heavylock.v2.ClaimLaunchResponse
-	18, // 87: heavylock.v2.RunnerService.SealLaunch:output_type -> heavylock.v2.Job
-	18, // 88: heavylock.v2.RunnerService.ReportStarted:output_type -> heavylock.v2.Job
-	18, // 89: heavylock.v2.RunnerService.ReportLaunchFailed:output_type -> heavylock.v2.Job
-	18, // 90: heavylock.v2.RunnerService.AcknowledgeCancel:output_type -> heavylock.v2.Job
-	18, // 91: heavylock.v2.RunnerService.ReportCancelFailed:output_type -> heavylock.v2.Job
-	18, // 92: heavylock.v2.RunnerService.ReportFinished:output_type -> heavylock.v2.Job
-	37, // 93: heavylock.v2.ControlService.GetHealth:output_type -> heavylock.v2.Health
-	39, // 94: heavylock.v2.ControlService.GetStatus:output_type -> heavylock.v2.BrokerStatus
-	41, // 95: heavylock.v2.ControlService.GetQueue:output_type -> heavylock.v2.Queue
-	43, // 96: heavylock.v2.ControlService.ListJobs:output_type -> heavylock.v2.ListJobsResponse
-	18, // 97: heavylock.v2.ControlService.GetJob:output_type -> heavylock.v2.Job
-	18, // 98: heavylock.v2.ControlService.GetSubmission:output_type -> heavylock.v2.Job
-	18, // 99: heavylock.v2.ControlService.CancelJob:output_type -> heavylock.v2.Job
-	41, // 100: heavylock.v2.ControlService.MoveJob:output_type -> heavylock.v2.Queue
-	18, // 101: heavylock.v2.ControlService.ForceStartJob:output_type -> heavylock.v2.Job
-	39, // 102: heavylock.v2.ControlService.PauseQueue:output_type -> heavylock.v2.BrokerStatus
-	39, // 103: heavylock.v2.ControlService.ResumeQueue:output_type -> heavylock.v2.BrokerStatus
-	52, // 104: heavylock.v2.ControlService.DeleteJob:output_type -> heavylock.v2.DeleteJobResponse
-	54, // 105: heavylock.v2.ControlService.DeleteHistory:output_type -> heavylock.v2.DeleteHistoryResponse
-	56, // 106: heavylock.v2.ControlService.WatchEvents:output_type -> heavylock.v2.BrokerEvent
-	82, // [82:107] is the sub-list for method output_type
-	57, // [57:82] is the sub-list for method input_type
-	57, // [57:57] is the sub-list for extension type_name
-	57, // [57:57] is the sub-list for extension extendee
-	0,  // [0:57] is the sub-list for field type_name
+	2,   // 0: heavylock.v2.ClientInfo.os:type_name -> heavylock.v2.ClientOS
+	3,   // 1: heavylock.v2.ClientInfo.architecture:type_name -> heavylock.v2.ClientArchitecture
+	58,  // 2: heavylock.v2.Attribution.extra:type_name -> heavylock.v2.Attribution.ExtraEntry
+	59,  // 3: heavylock.v2.ProcessIdentity.start_time:type_name -> google.protobuf.Timestamp
+	13,  // 4: heavylock.v2.RunnerIncarnation.process:type_name -> heavylock.v2.ProcessIdentity
+	59,  // 5: heavylock.v2.Grant.granted_at:type_name -> google.protobuf.Timestamp
+	60,  // 6: heavylock.v2.Grant.launch_timeout:type_name -> google.protobuf.Duration
+	14,  // 7: heavylock.v2.Grant.runner:type_name -> heavylock.v2.RunnerIncarnation
+	1,   // 8: heavylock.v2.Outcome.kind:type_name -> heavylock.v2.OutcomeKind
+	60,  // 9: heavylock.v2.ResourceSummary.elapsed:type_name -> google.protobuf.Duration
+	60,  // 10: heavylock.v2.ResourceSummary.cpu_time:type_name -> google.protobuf.Duration
+	4,   // 11: heavylock.v2.ResourceSummary.completeness:type_name -> heavylock.v2.MeasurementCompleteness
+	0,   // 12: heavylock.v2.Job.state:type_name -> heavylock.v2.JobState
+	11,  // 13: heavylock.v2.Job.client:type_name -> heavylock.v2.ClientInfo
+	12,  // 14: heavylock.v2.Job.attribution:type_name -> heavylock.v2.Attribution
+	59,  // 15: heavylock.v2.Job.queued_at:type_name -> google.protobuf.Timestamp
+	59,  // 16: heavylock.v2.Job.admitted_at:type_name -> google.protobuf.Timestamp
+	59,  // 17: heavylock.v2.Job.started_at:type_name -> google.protobuf.Timestamp
+	59,  // 18: heavylock.v2.Job.finished_at:type_name -> google.protobuf.Timestamp
+	59,  // 19: heavylock.v2.Job.cancel_requested_at:type_name -> google.protobuf.Timestamp
+	60,  // 20: heavylock.v2.Job.grace_remaining:type_name -> google.protobuf.Duration
+	15,  // 21: heavylock.v2.Job.grant:type_name -> heavylock.v2.Grant
+	13,  // 22: heavylock.v2.Job.process:type_name -> heavylock.v2.ProcessIdentity
+	16,  // 23: heavylock.v2.Job.outcome:type_name -> heavylock.v2.Outcome
+	17,  // 24: heavylock.v2.Job.resources:type_name -> heavylock.v2.ResourceSummary
+	59,  // 25: heavylock.v2.Job.cancel_acknowledged_at:type_name -> google.protobuf.Timestamp
+	19,  // 26: heavylock.v2.Job.broker_termination:type_name -> heavylock.v2.BrokerTermination
+	6,   // 27: heavylock.v2.Job.blocked_reason:type_name -> heavylock.v2.BlockedReason
+	59,  // 28: heavylock.v2.BrokerTermination.started_at:type_name -> google.protobuf.Timestamp
+	10,  // 29: heavylock.v2.BrokerTermination.reason:type_name -> heavylock.v2.BrokerTermination.Reason
+	11,  // 30: heavylock.v2.SubmitJobRequest.client:type_name -> heavylock.v2.ClientInfo
+	12,  // 31: heavylock.v2.SubmitJobRequest.attribution:type_name -> heavylock.v2.Attribution
+	14,  // 32: heavylock.v2.SubmitJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	18,  // 33: heavylock.v2.SubmitJobResponse.job:type_name -> heavylock.v2.Job
+	14,  // 34: heavylock.v2.WatchJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	14,  // 35: heavylock.v2.RejoinJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	14,  // 36: heavylock.v2.ClaimLaunchRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	15,  // 37: heavylock.v2.ClaimLaunchResponse.grant:type_name -> heavylock.v2.Grant
+	14,  // 38: heavylock.v2.SealLaunchRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	59,  // 39: heavylock.v2.JobEvent.at:type_name -> google.protobuf.Timestamp
+	18,  // 40: heavylock.v2.JobEvent.snapshot:type_name -> heavylock.v2.Job
+	28,  // 41: heavylock.v2.JobEvent.queue_position_changed:type_name -> heavylock.v2.QueuePositionChanged
+	15,  // 42: heavylock.v2.JobEvent.granted:type_name -> heavylock.v2.Grant
+	29,  // 43: heavylock.v2.JobEvent.cancel_requested:type_name -> heavylock.v2.CancelRequested
+	18,  // 44: heavylock.v2.JobEvent.finished:type_name -> heavylock.v2.Job
+	30,  // 45: heavylock.v2.JobEvent.heartbeat:type_name -> heavylock.v2.Heartbeat
+	6,   // 46: heavylock.v2.QueuePositionChanged.head_blocked_reason:type_name -> heavylock.v2.BlockedReason
+	60,  // 47: heavylock.v2.Heartbeat.heartbeat_interval:type_name -> google.protobuf.Duration
+	14,  // 48: heavylock.v2.AcknowledgeCancelRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	14,  // 49: heavylock.v2.ReportCancelFailedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	13,  // 50: heavylock.v2.ReportStartedRequest.process:type_name -> heavylock.v2.ProcessIdentity
+	14,  // 51: heavylock.v2.ReportStartedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	14,  // 52: heavylock.v2.ReportLaunchFailedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	16,  // 53: heavylock.v2.ReportFinishedRequest.outcome:type_name -> heavylock.v2.Outcome
+	14,  // 54: heavylock.v2.ReportFinishedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	13,  // 55: heavylock.v2.ReportFinishedRequest.process:type_name -> heavylock.v2.ProcessIdentity
+	60,  // 56: heavylock.v2.ReportFinishedRequest.elapsed:type_name -> google.protobuf.Duration
+	60,  // 57: heavylock.v2.ReportFinishedRequest.root_cpu_time:type_name -> google.protobuf.Duration
+	59,  // 58: heavylock.v2.Health.started_at:type_name -> google.protobuf.Timestamp
+	59,  // 59: heavylock.v2.BrokerStatus.paused_at:type_name -> google.protobuf.Timestamp
+	6,   // 60: heavylock.v2.BrokerStatus.head_blocked_reason:type_name -> heavylock.v2.BlockedReason
+	7,   // 61: heavylock.v2.BrokerStatus.queue_mode:type_name -> heavylock.v2.QueueMode
+	8,   // 62: heavylock.v2.BrokerStatus.queue_state:type_name -> heavylock.v2.QueueState
+	18,  // 63: heavylock.v2.Queue.jobs:type_name -> heavylock.v2.Job
+	6,   // 64: heavylock.v2.Queue.head_blocked_reason:type_name -> heavylock.v2.BlockedReason
+	8,   // 65: heavylock.v2.Queue.queue_state:type_name -> heavylock.v2.QueueState
+	0,   // 66: heavylock.v2.ListJobsRequest.states:type_name -> heavylock.v2.JobState
+	59,  // 67: heavylock.v2.ListJobsRequest.queued_after:type_name -> google.protobuf.Timestamp
+	59,  // 68: heavylock.v2.ListJobsRequest.queued_before:type_name -> google.protobuf.Timestamp
+	18,  // 69: heavylock.v2.ListJobsResponse.jobs:type_name -> heavylock.v2.Job
+	59,  // 70: heavylock.v2.DeleteHistoryRequest.finished_before:type_name -> google.protobuf.Timestamp
+	59,  // 71: heavylock.v2.BrokerEvent.at:type_name -> google.protobuf.Timestamp
+	57,  // 72: heavylock.v2.BrokerEvent.snapshot:type_name -> heavylock.v2.BrokerSnapshot
+	18,  // 73: heavylock.v2.BrokerEvent.job_changed:type_name -> heavylock.v2.Job
+	41,  // 74: heavylock.v2.BrokerEvent.queue_changed:type_name -> heavylock.v2.Queue
+	39,  // 75: heavylock.v2.BrokerEvent.status_changed:type_name -> heavylock.v2.BrokerStatus
+	30,  // 76: heavylock.v2.BrokerEvent.heartbeat:type_name -> heavylock.v2.Heartbeat
+	39,  // 77: heavylock.v2.BrokerSnapshot.status:type_name -> heavylock.v2.BrokerStatus
+	41,  // 78: heavylock.v2.BrokerSnapshot.queue:type_name -> heavylock.v2.Queue
+	18,  // 79: heavylock.v2.BrokerSnapshot.active_jobs:type_name -> heavylock.v2.Job
+	20,  // 80: heavylock.v2.RunnerService.SubmitJob:input_type -> heavylock.v2.SubmitJobRequest
+	20,  // 81: heavylock.v2.RunnerService.TrySubmitAndWatch:input_type -> heavylock.v2.SubmitJobRequest
+	22,  // 82: heavylock.v2.RunnerService.WatchJob:input_type -> heavylock.v2.WatchJobRequest
+	23,  // 83: heavylock.v2.RunnerService.RejoinJob:input_type -> heavylock.v2.RejoinJobRequest
+	24,  // 84: heavylock.v2.RunnerService.ClaimLaunch:input_type -> heavylock.v2.ClaimLaunchRequest
+	26,  // 85: heavylock.v2.RunnerService.SealLaunch:input_type -> heavylock.v2.SealLaunchRequest
+	33,  // 86: heavylock.v2.RunnerService.ReportStarted:input_type -> heavylock.v2.ReportStartedRequest
+	34,  // 87: heavylock.v2.RunnerService.ReportLaunchFailed:input_type -> heavylock.v2.ReportLaunchFailedRequest
+	31,  // 88: heavylock.v2.RunnerService.AcknowledgeCancel:input_type -> heavylock.v2.AcknowledgeCancelRequest
+	32,  // 89: heavylock.v2.RunnerService.ReportCancelFailed:input_type -> heavylock.v2.ReportCancelFailedRequest
+	35,  // 90: heavylock.v2.RunnerService.ReportFinished:input_type -> heavylock.v2.ReportFinishedRequest
+	36,  // 91: heavylock.v2.ControlService.GetHealth:input_type -> heavylock.v2.GetHealthRequest
+	38,  // 92: heavylock.v2.ControlService.GetStatus:input_type -> heavylock.v2.GetStatusRequest
+	40,  // 93: heavylock.v2.ControlService.GetQueue:input_type -> heavylock.v2.GetQueueRequest
+	42,  // 94: heavylock.v2.ControlService.ListJobs:input_type -> heavylock.v2.ListJobsRequest
+	44,  // 95: heavylock.v2.ControlService.GetJob:input_type -> heavylock.v2.GetJobRequest
+	45,  // 96: heavylock.v2.ControlService.GetSubmission:input_type -> heavylock.v2.GetSubmissionRequest
+	46,  // 97: heavylock.v2.ControlService.CancelJob:input_type -> heavylock.v2.CancelJobRequest
+	47,  // 98: heavylock.v2.ControlService.MoveJob:input_type -> heavylock.v2.MoveJobRequest
+	48,  // 99: heavylock.v2.ControlService.ForceStartJob:input_type -> heavylock.v2.ForceStartJobRequest
+	49,  // 100: heavylock.v2.ControlService.PauseQueue:input_type -> heavylock.v2.PauseQueueRequest
+	50,  // 101: heavylock.v2.ControlService.ResumeQueue:input_type -> heavylock.v2.ResumeQueueRequest
+	51,  // 102: heavylock.v2.ControlService.DeleteJob:input_type -> heavylock.v2.DeleteJobRequest
+	53,  // 103: heavylock.v2.ControlService.DeleteHistory:input_type -> heavylock.v2.DeleteHistoryRequest
+	55,  // 104: heavylock.v2.ControlService.WatchEvents:input_type -> heavylock.v2.WatchEventsRequest
+	21,  // 105: heavylock.v2.RunnerService.SubmitJob:output_type -> heavylock.v2.SubmitJobResponse
+	27,  // 106: heavylock.v2.RunnerService.TrySubmitAndWatch:output_type -> heavylock.v2.JobEvent
+	27,  // 107: heavylock.v2.RunnerService.WatchJob:output_type -> heavylock.v2.JobEvent
+	18,  // 108: heavylock.v2.RunnerService.RejoinJob:output_type -> heavylock.v2.Job
+	25,  // 109: heavylock.v2.RunnerService.ClaimLaunch:output_type -> heavylock.v2.ClaimLaunchResponse
+	18,  // 110: heavylock.v2.RunnerService.SealLaunch:output_type -> heavylock.v2.Job
+	18,  // 111: heavylock.v2.RunnerService.ReportStarted:output_type -> heavylock.v2.Job
+	18,  // 112: heavylock.v2.RunnerService.ReportLaunchFailed:output_type -> heavylock.v2.Job
+	18,  // 113: heavylock.v2.RunnerService.AcknowledgeCancel:output_type -> heavylock.v2.Job
+	18,  // 114: heavylock.v2.RunnerService.ReportCancelFailed:output_type -> heavylock.v2.Job
+	18,  // 115: heavylock.v2.RunnerService.ReportFinished:output_type -> heavylock.v2.Job
+	37,  // 116: heavylock.v2.ControlService.GetHealth:output_type -> heavylock.v2.Health
+	39,  // 117: heavylock.v2.ControlService.GetStatus:output_type -> heavylock.v2.BrokerStatus
+	41,  // 118: heavylock.v2.ControlService.GetQueue:output_type -> heavylock.v2.Queue
+	43,  // 119: heavylock.v2.ControlService.ListJobs:output_type -> heavylock.v2.ListJobsResponse
+	18,  // 120: heavylock.v2.ControlService.GetJob:output_type -> heavylock.v2.Job
+	18,  // 121: heavylock.v2.ControlService.GetSubmission:output_type -> heavylock.v2.Job
+	18,  // 122: heavylock.v2.ControlService.CancelJob:output_type -> heavylock.v2.Job
+	41,  // 123: heavylock.v2.ControlService.MoveJob:output_type -> heavylock.v2.Queue
+	18,  // 124: heavylock.v2.ControlService.ForceStartJob:output_type -> heavylock.v2.Job
+	39,  // 125: heavylock.v2.ControlService.PauseQueue:output_type -> heavylock.v2.BrokerStatus
+	39,  // 126: heavylock.v2.ControlService.ResumeQueue:output_type -> heavylock.v2.BrokerStatus
+	52,  // 127: heavylock.v2.ControlService.DeleteJob:output_type -> heavylock.v2.DeleteJobResponse
+	54,  // 128: heavylock.v2.ControlService.DeleteHistory:output_type -> heavylock.v2.DeleteHistoryResponse
+	56,  // 129: heavylock.v2.ControlService.WatchEvents:output_type -> heavylock.v2.BrokerEvent
+	105, // [105:130] is the sub-list for method output_type
+	80,  // [80:105] is the sub-list for method input_type
+	80,  // [80:80] is the sub-list for extension type_name
+	80,  // [80:80] is the sub-list for extension extendee
+	0,   // [0:80] is the sub-list for field type_name
 }
 
 func init() { file_heavylock_proto_init() }
@@ -4902,7 +4926,6 @@ func file_heavylock_proto_init() {
 		(*JobEvent_Heartbeat)(nil),
 	}
 	file_heavylock_proto_msgTypes[18].OneofWrappers = []any{}
-	file_heavylock_proto_msgTypes[24].OneofWrappers = []any{}
 	file_heavylock_proto_msgTypes[26].OneofWrappers = []any{}
 	file_heavylock_proto_msgTypes[28].OneofWrappers = []any{}
 	file_heavylock_proto_msgTypes[31].OneofWrappers = []any{}

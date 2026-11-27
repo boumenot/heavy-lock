@@ -11,11 +11,12 @@
 /// heavy-lock v2 broker API.
 ///
 /// Conventions:
-/// - Every timestamp is UTC Unix nanoseconds in an int64 field ending in
-///   "_unix_ns". Every duration ends in "_us" or "_ms" and is measured by the
-///   broker's monotonic clock; durations are never derived from wall-clock
-///   subtraction. Wall-clock timestamps are informational: the system clock
-///   can move backwards, so they never order events or validate transitions.
+/// - Timestamps are UTC protobuf Timestamps with nanosecond precision. SQLite
+///   stores them as integer Unix nanoseconds. Durations use protobuf Duration;
+///   measurements use monotonic clocks, never wall-clock subtraction. Stored
+///   resource durations retain their existing millisecond precision.
+///   Wall-clock timestamps are informational: the system clock can move
+///   backwards, so they never order events or validate transitions.
 /// - IDs are lowercase canonical UUIDv4 strings.
 /// - Errors use standard gRPC status codes. Each non-OK status carries a
 ///   google.rpc.ErrorInfo detail with domain "heavylock.v2" and reason set to
@@ -876,15 +877,24 @@ public nonisolated struct Heavylock_V2_ProcessIdentity: Sendable {
 
   public var pid: Int64 = 0
 
-  /// Platform process start time in UTC Unix nanoseconds; with pid it
+  /// Platform process start time; with pid it
   /// helps distinguish PID reuse. Precision is platform-dependent; ambiguous
   /// identity is not proof of death. Compare only values derived by the same
   /// platform method.
-  public var startTimeUnixNs: Int64 = 0
+  public var startTime: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_startTime ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_startTime = newValue}
+  }
+  /// Returns true if `startTime` has been explicitly set.
+  public var hasStartTime: Bool {self._startTime != nil}
+  /// Clears the value of `startTime`. Subsequent reads from it will return its default value.
+  public mutating func clearStartTime() {self._startTime = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _startTime: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
 /// Each runner process generates a fresh UUIDv4 and pairs it with its OS
@@ -925,12 +935,26 @@ public nonisolated struct Heavylock_V2_Grant: Sendable {
 
   public var forced: Bool = false
 
-  public var grantedAtUnixNs: Int64 = 0
+  public var grantedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_grantedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_grantedAt = newValue}
+  }
+  /// Returns true if `grantedAt` has been explicitly set.
+  public var hasGrantedAt: Bool {self._grantedAt != nil}
+  /// Clears the value of `grantedAt`. Subsequent reads from it will return its default value.
+  public mutating func clearGrantedAt() {self._grantedAt = nil}
 
   /// Investigation timeout duration, measured by the broker from the durable
   /// reservation commit. Expiry alone never establishes fencing, no launch
   /// or process exit.
-  public var launchTimeoutMs: Int64 = 0
+  public var launchTimeout: SwiftProtobuf.Google_Protobuf_Duration {
+    get {_launchTimeout ?? SwiftProtobuf.Google_Protobuf_Duration()}
+    set {_launchTimeout = newValue}
+  }
+  /// Returns true if `launchTimeout` has been explicitly set.
+  public var hasLaunchTimeout: Bool {self._launchTimeout != nil}
+  /// Clears the value of `launchTimeout`. Subsequent reads from it will return its default value.
+  public mutating func clearLaunchTimeout() {self._launchTimeout = nil}
 
   public var runner: Heavylock_V2_RunnerIncarnation {
     get {_runner ?? Heavylock_V2_RunnerIncarnation()}
@@ -945,6 +969,8 @@ public nonisolated struct Heavylock_V2_Grant: Sendable {
 
   public init() {}
 
+  fileprivate var _grantedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
+  fileprivate var _launchTimeout: SwiftProtobuf.Google_Protobuf_Duration? = nil
   fileprivate var _runner: Heavylock_V2_RunnerIncarnation? = nil
 }
 
@@ -1011,23 +1037,24 @@ public nonisolated struct Heavylock_V2_ResourceSummary: Sendable {
   // methods supported on all messages.
 
   /// Root-command runtime from process start to exit; unknown if unrecoverable.
-  public var elapsedMs: Int64 {
-    get {_elapsedMs ?? 0}
-    set {_elapsedMs = newValue}
+  public var elapsed: SwiftProtobuf.Google_Protobuf_Duration {
+    get {_elapsed ?? SwiftProtobuf.Google_Protobuf_Duration()}
+    set {_elapsed = newValue}
   }
-  /// Returns true if `elapsedMs` has been explicitly set.
-  public var hasElapsedMs: Bool {self._elapsedMs != nil}
-  /// Clears the value of `elapsedMs`. Subsequent reads from it will return its default value.
-  public mutating func clearElapsedMs() {self._elapsedMs = nil}
+  /// Returns true if `elapsed` has been explicitly set.
+  public var hasElapsed: Bool {self._elapsed != nil}
+  /// Clears the value of `elapsed`. Subsequent reads from it will return its default value.
+  public mutating func clearElapsed() {self._elapsed = nil}
 
-  public var cpuTimeMs: Int64 {
-    get {_cpuTimeMs ?? 0}
-    set {_cpuTimeMs = newValue}
+  /// Observed process-tree CPU time; distinct from the root wait CPU time.
+  public var cpuTime: SwiftProtobuf.Google_Protobuf_Duration {
+    get {_cpuTime ?? SwiftProtobuf.Google_Protobuf_Duration()}
+    set {_cpuTime = newValue}
   }
-  /// Returns true if `cpuTimeMs` has been explicitly set.
-  public var hasCpuTimeMs: Bool {self._cpuTimeMs != nil}
-  /// Clears the value of `cpuTimeMs`. Subsequent reads from it will return its default value.
-  public mutating func clearCpuTimeMs() {self._cpuTimeMs = nil}
+  /// Returns true if `cpuTime` has been explicitly set.
+  public var hasCpuTime: Bool {self._cpuTime != nil}
+  /// Clears the value of `cpuTime`. Subsequent reads from it will return its default value.
+  public mutating func clearCpuTime() {self._cpuTime = nil}
 
   /// Peak interval CPU: 100% per logical CPU; may exceed 100%.
   public var peakCpuPercent: Double {
@@ -1066,8 +1093,8 @@ public nonisolated struct Heavylock_V2_ResourceSummary: Sendable {
 
   public init() {}
 
-  fileprivate var _elapsedMs: Int64? = nil
-  fileprivate var _cpuTimeMs: Int64? = nil
+  fileprivate var _elapsed: SwiftProtobuf.Google_Protobuf_Duration? = nil
+  fileprivate var _cpuTime: SwiftProtobuf.Google_Protobuf_Duration? = nil
   fileprivate var _peakCpuPercent: Double? = nil
   fileprivate var _peakCombinedRssBytes: Int64? = nil
   fileprivate var _incompletenessReason: String? = nil
@@ -1141,47 +1168,51 @@ public nonisolated struct Heavylock_V2_Job: @unchecked Sendable {
   }
 
   /// Submission commit; a no-wait job may have no durable queue entry.
-  public var queuedAtUnixNs: Int64 {
-    get {_storage._queuedAtUnixNs}
-    set {_uniqueStorage()._queuedAtUnixNs = newValue}
+  public var queuedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_storage._queuedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_uniqueStorage()._queuedAt = newValue}
   }
+  /// Returns true if `queuedAt` has been explicitly set.
+  public var hasQueuedAt: Bool {_storage._queuedAt != nil}
+  /// Clears the value of `queuedAt`. Subsequent reads from it will return its default value.
+  public mutating func clearQueuedAt() {_uniqueStorage()._queuedAt = nil}
 
-  public var admittedAtUnixNs: Int64 {
-    get {_storage._admittedAtUnixNs ?? 0}
-    set {_uniqueStorage()._admittedAtUnixNs = newValue}
+  public var admittedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_storage._admittedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_uniqueStorage()._admittedAt = newValue}
   }
-  /// Returns true if `admittedAtUnixNs` has been explicitly set.
-  public var hasAdmittedAtUnixNs: Bool {_storage._admittedAtUnixNs != nil}
-  /// Clears the value of `admittedAtUnixNs`. Subsequent reads from it will return its default value.
-  public mutating func clearAdmittedAtUnixNs() {_uniqueStorage()._admittedAtUnixNs = nil}
+  /// Returns true if `admittedAt` has been explicitly set.
+  public var hasAdmittedAt: Bool {_storage._admittedAt != nil}
+  /// Clears the value of `admittedAt`. Subsequent reads from it will return its default value.
+  public mutating func clearAdmittedAt() {_uniqueStorage()._admittedAt = nil}
 
   /// root process start, once recorded
-  public var startedAtUnixNs: Int64 {
-    get {_storage._startedAtUnixNs ?? 0}
-    set {_uniqueStorage()._startedAtUnixNs = newValue}
+  public var startedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_storage._startedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_uniqueStorage()._startedAt = newValue}
   }
-  /// Returns true if `startedAtUnixNs` has been explicitly set.
-  public var hasStartedAtUnixNs: Bool {_storage._startedAtUnixNs != nil}
-  /// Clears the value of `startedAtUnixNs`. Subsequent reads from it will return its default value.
-  public mutating func clearStartedAtUnixNs() {_uniqueStorage()._startedAtUnixNs = nil}
+  /// Returns true if `startedAt` has been explicitly set.
+  public var hasStartedAt: Bool {_storage._startedAt != nil}
+  /// Clears the value of `startedAt`. Subsequent reads from it will return its default value.
+  public mutating func clearStartedAt() {_uniqueStorage()._startedAt = nil}
 
-  public var finishedAtUnixNs: Int64 {
-    get {_storage._finishedAtUnixNs ?? 0}
-    set {_uniqueStorage()._finishedAtUnixNs = newValue}
+  public var finishedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_storage._finishedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_uniqueStorage()._finishedAt = newValue}
   }
-  /// Returns true if `finishedAtUnixNs` has been explicitly set.
-  public var hasFinishedAtUnixNs: Bool {_storage._finishedAtUnixNs != nil}
-  /// Clears the value of `finishedAtUnixNs`. Subsequent reads from it will return its default value.
-  public mutating func clearFinishedAtUnixNs() {_uniqueStorage()._finishedAtUnixNs = nil}
+  /// Returns true if `finishedAt` has been explicitly set.
+  public var hasFinishedAt: Bool {_storage._finishedAt != nil}
+  /// Clears the value of `finishedAt`. Subsequent reads from it will return its default value.
+  public mutating func clearFinishedAt() {_uniqueStorage()._finishedAt = nil}
 
-  public var cancelRequestedAtUnixNs: Int64 {
-    get {_storage._cancelRequestedAtUnixNs ?? 0}
-    set {_uniqueStorage()._cancelRequestedAtUnixNs = newValue}
+  public var cancelRequestedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_storage._cancelRequestedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_uniqueStorage()._cancelRequestedAt = newValue}
   }
-  /// Returns true if `cancelRequestedAtUnixNs` has been explicitly set.
-  public var hasCancelRequestedAtUnixNs: Bool {_storage._cancelRequestedAtUnixNs != nil}
-  /// Clears the value of `cancelRequestedAtUnixNs`. Subsequent reads from it will return its default value.
-  public mutating func clearCancelRequestedAtUnixNs() {_uniqueStorage()._cancelRequestedAtUnixNs = nil}
+  /// Returns true if `cancelRequestedAt` has been explicitly set.
+  public var hasCancelRequestedAt: Bool {_storage._cancelRequestedAt != nil}
+  /// Clears the value of `cancelRequestedAt`. Subsequent reads from it will return its default value.
+  public mutating func clearCancelRequestedAt() {_uniqueStorage()._cancelRequestedAt = nil}
 
   /// Present only while QUEUED; 0 is the head.
   public var queuePosition: UInt32 {
@@ -1198,14 +1229,14 @@ public nonisolated struct Heavylock_V2_Job: @unchecked Sendable {
     set {_uniqueStorage()._runnerConnected = newValue}
   }
 
-  public var graceRemainingMs: Int64 {
-    get {_storage._graceRemainingMs ?? 0}
-    set {_uniqueStorage()._graceRemainingMs = newValue}
+  public var graceRemaining: SwiftProtobuf.Google_Protobuf_Duration {
+    get {_storage._graceRemaining ?? SwiftProtobuf.Google_Protobuf_Duration()}
+    set {_uniqueStorage()._graceRemaining = newValue}
   }
-  /// Returns true if `graceRemainingMs` has been explicitly set.
-  public var hasGraceRemainingMs: Bool {_storage._graceRemainingMs != nil}
-  /// Clears the value of `graceRemainingMs`. Subsequent reads from it will return its default value.
-  public mutating func clearGraceRemainingMs() {_uniqueStorage()._graceRemainingMs = nil}
+  /// Returns true if `graceRemaining` has been explicitly set.
+  public var hasGraceRemaining: Bool {_storage._graceRemaining != nil}
+  /// Clears the value of `graceRemaining`. Subsequent reads from it will return its default value.
+  public mutating func clearGraceRemaining() {_uniqueStorage()._graceRemaining = nil}
 
   public var grant: Heavylock_V2_Grant {
     get {_storage._grant ?? Heavylock_V2_Grant()}
@@ -1291,14 +1322,14 @@ public nonisolated struct Heavylock_V2_Job: @unchecked Sendable {
   }
 
   /// Cancellation progress for a claimed grant; see ControlService.CancelJob.
-  public var cancelAcknowledgedAtUnixNs: Int64 {
-    get {_storage._cancelAcknowledgedAtUnixNs ?? 0}
-    set {_uniqueStorage()._cancelAcknowledgedAtUnixNs = newValue}
+  public var cancelAcknowledgedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_storage._cancelAcknowledgedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_uniqueStorage()._cancelAcknowledgedAt = newValue}
   }
-  /// Returns true if `cancelAcknowledgedAtUnixNs` has been explicitly set.
-  public var hasCancelAcknowledgedAtUnixNs: Bool {_storage._cancelAcknowledgedAtUnixNs != nil}
-  /// Clears the value of `cancelAcknowledgedAtUnixNs`. Subsequent reads from it will return its default value.
-  public mutating func clearCancelAcknowledgedAtUnixNs() {_uniqueStorage()._cancelAcknowledgedAtUnixNs = nil}
+  /// Returns true if `cancelAcknowledgedAt` has been explicitly set.
+  public var hasCancelAcknowledgedAt: Bool {_storage._cancelAcknowledgedAt != nil}
+  /// Clears the value of `cancelAcknowledgedAt`. Subsequent reads from it will return its default value.
+  public mutating func clearCancelAcknowledgedAt() {_uniqueStorage()._cancelAcknowledgedAt = nil}
 
   public var cancelFailureDetail: String {
     get {_storage._cancelFailureDetail ?? String()}
@@ -1339,7 +1370,14 @@ public nonisolated struct Heavylock_V2_BrokerTermination: Sendable {
   // methods supported on all messages.
 
   /// committed before the first signal
-  public var startedAtUnixNs: Int64 = 0
+  public var startedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_startedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_startedAt = newValue}
+  }
+  /// Returns true if `startedAt` has been explicitly set.
+  public var hasStartedAt: Bool {self._startedAt != nil}
+  /// Clears the value of `startedAt`. Subsequent reads from it will return its default value.
+  public mutating func clearStartedAt() {self._startedAt = nil}
 
   /// first committed trigger; never rewritten
   public var reason: Heavylock_V2_BrokerTermination.Reason = .unspecified
@@ -1395,6 +1433,8 @@ public nonisolated struct Heavylock_V2_BrokerTermination: Sendable {
   }
 
   public init() {}
+
+  fileprivate var _startedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
 public nonisolated struct Heavylock_V2_SubmitJobRequest: @unchecked Sendable {
@@ -1629,7 +1669,14 @@ public nonisolated struct Heavylock_V2_JobEvent: Sendable {
   /// Snapshots and heartbeats reuse the current value rather than allocating.
   public var eventSeq: Int64 = 0
 
-  public var atUnixNs: Int64 = 0
+  public var at: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_at ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_at = newValue}
+  }
+  /// Returns true if `at` has been explicitly set.
+  public var hasAt: Bool {self._at != nil}
+  /// Clears the value of `at`. Subsequent reads from it will return its default value.
+  public mutating func clearAt() {self._at = nil}
 
   public var event: Heavylock_V2_JobEvent.OneOf_Event? = nil
 
@@ -1698,6 +1745,8 @@ public nonisolated struct Heavylock_V2_JobEvent: Sendable {
   }
 
   public init() {}
+
+  fileprivate var _at: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
 public nonisolated struct Heavylock_V2_QueuePositionChanged: Sendable {
@@ -1746,11 +1795,20 @@ public nonisolated struct Heavylock_V2_Heartbeat: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var heartbeatIntervalMs: Int64 = 0
+  public var heartbeatInterval: SwiftProtobuf.Google_Protobuf_Duration {
+    get {_heartbeatInterval ?? SwiftProtobuf.Google_Protobuf_Duration()}
+    set {_heartbeatInterval = newValue}
+  }
+  /// Returns true if `heartbeatInterval` has been explicitly set.
+  public var hasHeartbeatInterval: Bool {self._heartbeatInterval != nil}
+  /// Clears the value of `heartbeatInterval`. Subsequent reads from it will return its default value.
+  public mutating func clearHeartbeatInterval() {self._heartbeatInterval = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _heartbeatInterval: SwiftProtobuf.Google_Protobuf_Duration? = nil
 }
 
 public nonisolated struct Heavylock_V2_AcknowledgeCancelRequest: Sendable {
@@ -1875,73 +1933,75 @@ public nonisolated struct Heavylock_V2_ReportLaunchFailedRequest: Sendable {
   fileprivate var _runner: Heavylock_V2_RunnerIncarnation? = nil
 }
 
-public nonisolated struct Heavylock_V2_ReportFinishedRequest: Sendable {
+public nonisolated struct Heavylock_V2_ReportFinishedRequest: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var jobID: String = String()
+  public var jobID: String {
+    get {_storage._jobID}
+    set {_uniqueStorage()._jobID = newValue}
+  }
 
-  public var grantID: String = String()
+  public var grantID: String {
+    get {_storage._grantID}
+    set {_uniqueStorage()._grantID = newValue}
+  }
 
   /// kind EXITED or SIGNALED
   public var outcome: Heavylock_V2_Outcome {
-    get {_outcome ?? Heavylock_V2_Outcome()}
-    set {_outcome = newValue}
+    get {_storage._outcome ?? Heavylock_V2_Outcome()}
+    set {_uniqueStorage()._outcome = newValue}
   }
   /// Returns true if `outcome` has been explicitly set.
-  public var hasOutcome: Bool {self._outcome != nil}
+  public var hasOutcome: Bool {_storage._outcome != nil}
   /// Clears the value of `outcome`. Subsequent reads from it will return its default value.
-  public mutating func clearOutcome() {self._outcome = nil}
+  public mutating func clearOutcome() {_uniqueStorage()._outcome = nil}
 
   public var runner: Heavylock_V2_RunnerIncarnation {
-    get {_runner ?? Heavylock_V2_RunnerIncarnation()}
-    set {_runner = newValue}
+    get {_storage._runner ?? Heavylock_V2_RunnerIncarnation()}
+    set {_uniqueStorage()._runner = newValue}
   }
   /// Returns true if `runner` has been explicitly set.
-  public var hasRunner: Bool {self._runner != nil}
+  public var hasRunner: Bool {_storage._runner != nil}
   /// Clears the value of `runner`. Subsequent reads from it will return its default value.
-  public mutating func clearRunner() {self._runner = nil}
+  public mutating func clearRunner() {_uniqueStorage()._runner = nil}
 
   /// root, even if ReportStarted was lost
   public var process: Heavylock_V2_ProcessIdentity {
-    get {_process ?? Heavylock_V2_ProcessIdentity()}
-    set {_process = newValue}
+    get {_storage._process ?? Heavylock_V2_ProcessIdentity()}
+    set {_uniqueStorage()._process = newValue}
   }
   /// Returns true if `process` has been explicitly set.
-  public var hasProcess: Bool {self._process != nil}
+  public var hasProcess: Bool {_storage._process != nil}
   /// Clears the value of `process`. Subsequent reads from it will return its default value.
-  public mutating func clearProcess() {self._process = nil}
+  public mutating func clearProcess() {_uniqueStorage()._process = nil}
 
   /// Runner-observed monotonic start-to-exit duration; absent when unknown.
-  public var elapsedMs: Int64 {
-    get {_elapsedMs ?? 0}
-    set {_elapsedMs = newValue}
+  public var elapsed: SwiftProtobuf.Google_Protobuf_Duration {
+    get {_storage._elapsed ?? SwiftProtobuf.Google_Protobuf_Duration()}
+    set {_uniqueStorage()._elapsed = newValue}
   }
-  /// Returns true if `elapsedMs` has been explicitly set.
-  public var hasElapsedMs: Bool {self._elapsedMs != nil}
-  /// Clears the value of `elapsedMs`. Subsequent reads from it will return its default value.
-  public mutating func clearElapsedMs() {self._elapsedMs = nil}
+  /// Returns true if `elapsed` has been explicitly set.
+  public var hasElapsed: Bool {_storage._elapsed != nil}
+  /// Clears the value of `elapsed`. Subsequent reads from it will return its default value.
+  public mutating func clearElapsed() {_uniqueStorage()._elapsed = nil}
 
   /// CPU time returned by the root's wait operation; absent when unknown.
-  public var rootCpuTimeMs: Int64 {
-    get {_rootCpuTimeMs ?? 0}
-    set {_rootCpuTimeMs = newValue}
+  public var rootCpuTime: SwiftProtobuf.Google_Protobuf_Duration {
+    get {_storage._rootCpuTime ?? SwiftProtobuf.Google_Protobuf_Duration()}
+    set {_uniqueStorage()._rootCpuTime = newValue}
   }
-  /// Returns true if `rootCpuTimeMs` has been explicitly set.
-  public var hasRootCpuTimeMs: Bool {self._rootCpuTimeMs != nil}
-  /// Clears the value of `rootCpuTimeMs`. Subsequent reads from it will return its default value.
-  public mutating func clearRootCpuTimeMs() {self._rootCpuTimeMs = nil}
+  /// Returns true if `rootCpuTime` has been explicitly set.
+  public var hasRootCpuTime: Bool {_storage._rootCpuTime != nil}
+  /// Clears the value of `rootCpuTime`. Subsequent reads from it will return its default value.
+  public mutating func clearRootCpuTime() {_uniqueStorage()._rootCpuTime = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
-  fileprivate var _outcome: Heavylock_V2_Outcome? = nil
-  fileprivate var _runner: Heavylock_V2_RunnerIncarnation? = nil
-  fileprivate var _process: Heavylock_V2_ProcessIdentity? = nil
-  fileprivate var _elapsedMs: Int64? = nil
-  fileprivate var _rootCpuTimeMs: Int64? = nil
+  fileprivate var _storage = _StorageClass.defaultInstance
 }
 
 public nonisolated struct Heavylock_V2_GetHealthRequest: Sendable {
@@ -1964,9 +2024,18 @@ public nonisolated struct Heavylock_V2_Health: Sendable {
   /// false during recovery or storage failure
   public var ready: Bool = false
 
+  /// SemVer: stable clients require the same major and their minimum minor;
+  /// if either peer is a prerelease, their complete versions must match.
   public var serviceVersion: String = String()
 
-  public var startedAtUnixNs: Int64 = 0
+  public var startedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_startedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_startedAt = newValue}
+  }
+  /// Returns true if `startedAt` has been explicitly set.
+  public var hasStartedAt: Bool {self._startedAt != nil}
+  /// Clears the value of `startedAt`. Subsequent reads from it will return its default value.
+  public mutating func clearStartedAt() {self._startedAt = nil}
 
   public var schemaVersion: Int64 = 0
 
@@ -1992,16 +2061,11 @@ public nonisolated struct Heavylock_V2_Health: Sendable {
   /// "heavylock.v2"; not authentication
   public var serviceIdentity: String = String()
 
-  /// 2; incompatible changes require a new major
-  public var apiMajor: UInt32 = 0
-
-  /// additive, backwards-compatible changes
-  public var apiMinor: UInt32 = 0
-
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
+  fileprivate var _startedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
   fileprivate var _recoveryDetail: String? = nil
   fileprivate var _storageDetail: String? = nil
 }
@@ -2016,80 +2080,135 @@ public nonisolated struct Heavylock_V2_GetStatusRequest: Sendable {
   public init() {}
 }
 
-public nonisolated struct Heavylock_V2_BrokerStatus: Sendable {
+public nonisolated struct Heavylock_V2_BrokerStatus: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var capacity: UInt32 = 0
+  public var capacity: UInt32 {
+    get {_storage._capacity}
+    set {_uniqueStorage()._capacity = newValue}
+  }
 
   /// may exceed capacity after force-start
-  public var occupied: UInt32 = 0
+  public var occupied: UInt32 {
+    get {_storage._occupied}
+    set {_uniqueStorage()._occupied = newValue}
+  }
 
   /// Deprecated since API 2.1: use queue_mode. Still set, to queue_mode ==
   /// QUEUE_MODE_PAUSED, for older clients.
   ///
   /// NOTE: This field was marked as deprecated in the .proto file.
-  public var paused: Bool = false
+  public var paused: Bool {
+    get {_storage._paused}
+    set {_uniqueStorage()._paused = newValue}
+  }
 
   /// set while queue_mode is PAUSED
-  public var pausedAtUnixNs: Int64 {
-    get {_pausedAtUnixNs ?? 0}
-    set {_pausedAtUnixNs = newValue}
+  public var pausedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_storage._pausedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_uniqueStorage()._pausedAt = newValue}
   }
-  /// Returns true if `pausedAtUnixNs` has been explicitly set.
-  public var hasPausedAtUnixNs: Bool {self._pausedAtUnixNs != nil}
-  /// Clears the value of `pausedAtUnixNs`. Subsequent reads from it will return its default value.
-  public mutating func clearPausedAtUnixNs() {self._pausedAtUnixNs = nil}
+  /// Returns true if `pausedAt` has been explicitly set.
+  public var hasPausedAt: Bool {_storage._pausedAt != nil}
+  /// Clears the value of `pausedAt`. Subsequent reads from it will return its default value.
+  public mutating func clearPausedAt() {_uniqueStorage()._pausedAt = nil}
 
-  public var recovering: Bool = false
+  public var recovering: Bool {
+    get {_storage._recovering}
+    set {_uniqueStorage()._recovering = newValue}
+  }
 
-  public var queuedJobs: UInt32 = 0
+  public var queuedJobs: UInt32 {
+    get {_storage._queuedJobs}
+    set {_uniqueStorage()._queuedJobs = newValue}
+  }
 
-  public var runningJobs: UInt32 = 0
+  public var runningJobs: UInt32 {
+    get {_storage._runningJobs}
+    set {_uniqueStorage()._runningJobs = newValue}
+  }
 
-  public var headBlockedReason: Heavylock_V2_BlockedReason = .unspecified
+  public var headBlockedReason: Heavylock_V2_BlockedReason {
+    get {_storage._headBlockedReason}
+    set {_uniqueStorage()._headBlockedReason = newValue}
+  }
 
   public var freeMemoryBytes: Int64 {
-    get {_freeMemoryBytes ?? 0}
-    set {_freeMemoryBytes = newValue}
+    get {_storage._freeMemoryBytes ?? 0}
+    set {_uniqueStorage()._freeMemoryBytes = newValue}
   }
   /// Returns true if `freeMemoryBytes` has been explicitly set.
-  public var hasFreeMemoryBytes: Bool {self._freeMemoryBytes != nil}
+  public var hasFreeMemoryBytes: Bool {_storage._freeMemoryBytes != nil}
   /// Clears the value of `freeMemoryBytes`. Subsequent reads from it will return its default value.
-  public mutating func clearFreeMemoryBytes() {self._freeMemoryBytes = nil}
+  public mutating func clearFreeMemoryBytes() {_uniqueStorage()._freeMemoryBytes = nil}
 
+  /// only this interval controls admission
   public var loadAverage1M: Double {
-    get {_loadAverage1M ?? 0}
-    set {_loadAverage1M = newValue}
+    get {_storage._loadAverage1M ?? 0}
+    set {_uniqueStorage()._loadAverage1M = newValue}
   }
   /// Returns true if `loadAverage1M` has been explicitly set.
-  public var hasLoadAverage1M: Bool {self._loadAverage1M != nil}
+  public var hasLoadAverage1M: Bool {_storage._loadAverage1M != nil}
   /// Clears the value of `loadAverage1M`. Subsequent reads from it will return its default value.
-  public mutating func clearLoadAverage1M() {self._loadAverage1M = nil}
+  public mutating func clearLoadAverage1M() {_uniqueStorage()._loadAverage1M = nil}
 
-  public var storageUnavailable: Bool = false
+  public var storageUnavailable: Bool {
+    get {_storage._storageUnavailable}
+    set {_uniqueStorage()._storageUnavailable = newValue}
+  }
 
   /// Held reservations not yet reconciled since the last broker restart.
   /// They count toward occupied but do not block unrelated admissions.
-  public var unreconciledReservations: UInt32 = 0
+  public var unreconciledReservations: UInt32 {
+    get {_storage._unreconciledReservations}
+    set {_uniqueStorage()._unreconciledReservations = newValue}
+  }
 
   /// per-head bypass limit; 0 is strict FIFO
-  public var backfillLimit: UInt32 = 0
+  public var backfillLimit: UInt32 {
+    get {_storage._backfillLimit}
+    set {_uniqueStorage()._backfillLimit = newValue}
+  }
 
   /// since API 2.1
-  public var queueMode: Heavylock_V2_QueueMode = .unspecified
+  public var queueMode: Heavylock_V2_QueueMode {
+    get {_storage._queueMode}
+    set {_uniqueStorage()._queueMode = newValue}
+  }
 
   /// since API 2.1
-  public var queueState: Heavylock_V2_QueueState = .unspecified
+  public var queueState: Heavylock_V2_QueueState {
+    get {_storage._queueState}
+    set {_uniqueStorage()._queueState = newValue}
+  }
+
+  /// informational
+  public var loadAverage5M: Double {
+    get {_storage._loadAverage5M ?? 0}
+    set {_uniqueStorage()._loadAverage5M = newValue}
+  }
+  /// Returns true if `loadAverage5M` has been explicitly set.
+  public var hasLoadAverage5M: Bool {_storage._loadAverage5M != nil}
+  /// Clears the value of `loadAverage5M`. Subsequent reads from it will return its default value.
+  public mutating func clearLoadAverage5M() {_uniqueStorage()._loadAverage5M = nil}
+
+  /// informational
+  public var loadAverage15M: Double {
+    get {_storage._loadAverage15M ?? 0}
+    set {_uniqueStorage()._loadAverage15M = newValue}
+  }
+  /// Returns true if `loadAverage15M` has been explicitly set.
+  public var hasLoadAverage15M: Bool {_storage._loadAverage15M != nil}
+  /// Clears the value of `loadAverage15M`. Subsequent reads from it will return its default value.
+  public mutating func clearLoadAverage15M() {_uniqueStorage()._loadAverage15M = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
-  fileprivate var _pausedAtUnixNs: Int64? = nil
-  fileprivate var _freeMemoryBytes: Int64? = nil
-  fileprivate var _loadAverage1M: Double? = nil
+  fileprivate var _storage = _StorageClass.defaultInstance
 }
 
 public nonisolated struct Heavylock_V2_GetQueueRequest: Sendable {
@@ -2150,24 +2269,24 @@ public nonisolated struct Heavylock_V2_ListJobsRequest: Sendable {
   public mutating func clearClientName() {self._clientName = nil}
 
   /// inclusive
-  public var queuedAfterUnixNs: Int64 {
-    get {_queuedAfterUnixNs ?? 0}
-    set {_queuedAfterUnixNs = newValue}
+  public var queuedAfter: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_queuedAfter ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_queuedAfter = newValue}
   }
-  /// Returns true if `queuedAfterUnixNs` has been explicitly set.
-  public var hasQueuedAfterUnixNs: Bool {self._queuedAfterUnixNs != nil}
-  /// Clears the value of `queuedAfterUnixNs`. Subsequent reads from it will return its default value.
-  public mutating func clearQueuedAfterUnixNs() {self._queuedAfterUnixNs = nil}
+  /// Returns true if `queuedAfter` has been explicitly set.
+  public var hasQueuedAfter: Bool {self._queuedAfter != nil}
+  /// Clears the value of `queuedAfter`. Subsequent reads from it will return its default value.
+  public mutating func clearQueuedAfter() {self._queuedAfter = nil}
 
   /// exclusive
-  public var queuedBeforeUnixNs: Int64 {
-    get {_queuedBeforeUnixNs ?? 0}
-    set {_queuedBeforeUnixNs = newValue}
+  public var queuedBefore: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_queuedBefore ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_queuedBefore = newValue}
   }
-  /// Returns true if `queuedBeforeUnixNs` has been explicitly set.
-  public var hasQueuedBeforeUnixNs: Bool {self._queuedBeforeUnixNs != nil}
-  /// Clears the value of `queuedBeforeUnixNs`. Subsequent reads from it will return its default value.
-  public mutating func clearQueuedBeforeUnixNs() {self._queuedBeforeUnixNs = nil}
+  /// Returns true if `queuedBefore` has been explicitly set.
+  public var hasQueuedBefore: Bool {self._queuedBefore != nil}
+  /// Clears the value of `queuedBefore`. Subsequent reads from it will return its default value.
+  public mutating func clearQueuedBefore() {self._queuedBefore = nil}
 
   /// 0 means 50; maximum 500
   public var pageSize: UInt32 = 0
@@ -2180,8 +2299,8 @@ public nonisolated struct Heavylock_V2_ListJobsRequest: Sendable {
 
   fileprivate var _repository: String? = nil
   fileprivate var _clientName: String? = nil
-  fileprivate var _queuedAfterUnixNs: Int64? = nil
-  fileprivate var _queuedBeforeUnixNs: Int64? = nil
+  fileprivate var _queuedAfter: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
+  fileprivate var _queuedBefore: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
 public nonisolated struct Heavylock_V2_ListJobsResponse: Sendable {
@@ -2189,7 +2308,7 @@ public nonisolated struct Heavylock_V2_ListJobsResponse: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// Newest first by (queued_at_unix_ns, job_id). Keyset pagination: the
+  /// Newest first by (queued_at, job_id). Keyset pagination: the
   /// token encodes the last key and filters, avoiding offset shifts. It is
   /// not a snapshot: concurrent inserts, updates or deletes may affect
   /// later pages.
@@ -2363,11 +2482,20 @@ public nonisolated struct Heavylock_V2_DeleteHistoryRequest: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var finishedBeforeUnixNs: Int64 = 0
+  public var finishedBefore: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_finishedBefore ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_finishedBefore = newValue}
+  }
+  /// Returns true if `finishedBefore` has been explicitly set.
+  public var hasFinishedBefore: Bool {self._finishedBefore != nil}
+  /// Clears the value of `finishedBefore`. Subsequent reads from it will return its default value.
+  public mutating func clearFinishedBefore() {self._finishedBefore = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _finishedBefore: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
 public nonisolated struct Heavylock_V2_DeleteHistoryResponse: Sendable {
@@ -2403,75 +2531,73 @@ public nonisolated struct Heavylock_V2_WatchEventsRequest: Sendable {
   public init() {}
 }
 
-public nonisolated struct Heavylock_V2_BrokerEvent: @unchecked Sendable {
+public nonisolated struct Heavylock_V2_BrokerEvent: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// Equals the stored event's sequence; snapshots and heartbeats carry the
   /// last committed sequence they reflect.
-  public var eventSeq: Int64 {
-    get {_storage._eventSeq}
-    set {_uniqueStorage()._eventSeq = newValue}
-  }
+  public var eventSeq: Int64 = 0
 
-  public var atUnixNs: Int64 {
-    get {_storage._atUnixNs}
-    set {_uniqueStorage()._atUnixNs = newValue}
+  public var at: SwiftProtobuf.Google_Protobuf_Timestamp {
+    get {_at ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_at = newValue}
   }
+  /// Returns true if `at` has been explicitly set.
+  public var hasAt: Bool {self._at != nil}
+  /// Clears the value of `at`. Subsequent reads from it will return its default value.
+  public mutating func clearAt() {self._at = nil}
 
-  public var event: OneOf_Event? {
-    get {return _storage._event}
-    set {_uniqueStorage()._event = newValue}
-  }
+  public var event: Heavylock_V2_BrokerEvent.OneOf_Event? = nil
 
   public var snapshot: Heavylock_V2_BrokerSnapshot {
     get {
-      if case .snapshot(let v)? = _storage._event {return v}
+      if case .snapshot(let v)? = event {return v}
       return Heavylock_V2_BrokerSnapshot()
     }
-    set {_uniqueStorage()._event = .snapshot(newValue)}
+    set {event = .snapshot(newValue)}
   }
 
   public var jobChanged: Heavylock_V2_Job {
     get {
-      if case .jobChanged(let v)? = _storage._event {return v}
+      if case .jobChanged(let v)? = event {return v}
       return Heavylock_V2_Job()
     }
-    set {_uniqueStorage()._event = .jobChanged(newValue)}
+    set {event = .jobChanged(newValue)}
   }
 
   public var queueChanged: Heavylock_V2_Queue {
     get {
-      if case .queueChanged(let v)? = _storage._event {return v}
+      if case .queueChanged(let v)? = event {return v}
       return Heavylock_V2_Queue()
     }
-    set {_uniqueStorage()._event = .queueChanged(newValue)}
+    set {event = .queueChanged(newValue)}
   }
 
   public var statusChanged: Heavylock_V2_BrokerStatus {
     get {
-      if case .statusChanged(let v)? = _storage._event {return v}
+      if case .statusChanged(let v)? = event {return v}
       return Heavylock_V2_BrokerStatus()
     }
-    set {_uniqueStorage()._event = .statusChanged(newValue)}
+    set {event = .statusChanged(newValue)}
   }
 
   /// job_id
   public var jobDeleted: String {
     get {
-      if case .jobDeleted(let v)? = _storage._event {return v}
+      if case .jobDeleted(let v)? = event {return v}
       return String()
     }
-    set {_uniqueStorage()._event = .jobDeleted(newValue)}
+    set {event = .jobDeleted(newValue)}
   }
 
   public var heartbeat: Heavylock_V2_Heartbeat {
     get {
-      if case .heartbeat(let v)? = _storage._event {return v}
+      if case .heartbeat(let v)? = event {return v}
       return Heavylock_V2_Heartbeat()
     }
-    set {_uniqueStorage()._event = .heartbeat(newValue)}
+    set {event = .heartbeat(newValue)}
   }
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
@@ -2489,43 +2615,41 @@ public nonisolated struct Heavylock_V2_BrokerEvent: @unchecked Sendable {
 
   public init() {}
 
-  fileprivate var _storage = _StorageClass.defaultInstance
+  fileprivate var _at: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
-public nonisolated struct Heavylock_V2_BrokerSnapshot: @unchecked Sendable {
+public nonisolated struct Heavylock_V2_BrokerSnapshot: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   public var status: Heavylock_V2_BrokerStatus {
-    get {_storage._status ?? Heavylock_V2_BrokerStatus()}
-    set {_uniqueStorage()._status = newValue}
+    get {_status ?? Heavylock_V2_BrokerStatus()}
+    set {_status = newValue}
   }
   /// Returns true if `status` has been explicitly set.
-  public var hasStatus: Bool {_storage._status != nil}
+  public var hasStatus: Bool {self._status != nil}
   /// Clears the value of `status`. Subsequent reads from it will return its default value.
-  public mutating func clearStatus() {_uniqueStorage()._status = nil}
+  public mutating func clearStatus() {self._status = nil}
 
   public var queue: Heavylock_V2_Queue {
-    get {_storage._queue ?? Heavylock_V2_Queue()}
-    set {_uniqueStorage()._queue = newValue}
+    get {_queue ?? Heavylock_V2_Queue()}
+    set {_queue = newValue}
   }
   /// Returns true if `queue` has been explicitly set.
-  public var hasQueue: Bool {_storage._queue != nil}
+  public var hasQueue: Bool {self._queue != nil}
   /// Clears the value of `queue`. Subsequent reads from it will return its default value.
-  public mutating func clearQueue() {_uniqueStorage()._queue = nil}
+  public mutating func clearQueue() {self._queue = nil}
 
   /// RESERVED, RUNNING and FINISHING
-  public var activeJobs: [Heavylock_V2_Job] {
-    get {_storage._activeJobs}
-    set {_uniqueStorage()._activeJobs = newValue}
-  }
+  public var activeJobs: [Heavylock_V2_Job] = []
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
-  fileprivate var _storage = _StorageClass.defaultInstance
+  fileprivate var _status: Heavylock_V2_BrokerStatus? = nil
+  fileprivate var _queue: Heavylock_V2_Queue? = nil
 }
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
@@ -2702,7 +2826,7 @@ nonisolated extension Heavylock_V2_Attribution: SwiftProtobuf.Message, SwiftProt
 
 nonisolated extension Heavylock_V2_ProcessIdentity: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ProcessIdentity"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}pid\0\u{3}start_time_unix_ns\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}pid\0\u{3}start_time\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2711,25 +2835,29 @@ nonisolated extension Heavylock_V2_ProcessIdentity: SwiftProtobuf.Message, Swift
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularInt64Field(value: &self.pid) }()
-      case 2: try { try decoder.decodeSingularInt64Field(value: &self.startTimeUnixNs) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._startTime) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
     if self.pid != 0 {
       try visitor.visitSingularInt64Field(value: self.pid, fieldNumber: 1)
     }
-    if self.startTimeUnixNs != 0 {
-      try visitor.visitSingularInt64Field(value: self.startTimeUnixNs, fieldNumber: 2)
-    }
+    try { if let v = self._startTime {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Heavylock_V2_ProcessIdentity, rhs: Heavylock_V2_ProcessIdentity) -> Bool {
     if lhs.pid != rhs.pid {return false}
-    if lhs.startTimeUnixNs != rhs.startTimeUnixNs {return false}
+    if lhs._startTime != rhs._startTime {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -2776,7 +2904,7 @@ nonisolated extension Heavylock_V2_RunnerIncarnation: SwiftProtobuf.Message, Swi
 
 nonisolated extension Heavylock_V2_Grant: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Grant"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}grant_id\0\u{1}weight\0\u{1}forced\0\u{3}granted_at_unix_ns\0\u{3}launch_timeout_ms\0\u{1}runner\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}grant_id\0\u{1}weight\0\u{1}forced\0\u{3}granted_at\0\u{3}launch_timeout\0\u{1}runner\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2787,8 +2915,8 @@ nonisolated extension Heavylock_V2_Grant: SwiftProtobuf.Message, SwiftProtobuf._
       case 1: try { try decoder.decodeSingularStringField(value: &self.grantID) }()
       case 2: try { try decoder.decodeSingularUInt32Field(value: &self.weight) }()
       case 3: try { try decoder.decodeSingularBoolField(value: &self.forced) }()
-      case 4: try { try decoder.decodeSingularInt64Field(value: &self.grantedAtUnixNs) }()
-      case 5: try { try decoder.decodeSingularInt64Field(value: &self.launchTimeoutMs) }()
+      case 4: try { try decoder.decodeSingularMessageField(value: &self._grantedAt) }()
+      case 5: try { try decoder.decodeSingularMessageField(value: &self._launchTimeout) }()
       case 6: try { try decoder.decodeSingularMessageField(value: &self._runner) }()
       default: break
       }
@@ -2809,12 +2937,12 @@ nonisolated extension Heavylock_V2_Grant: SwiftProtobuf.Message, SwiftProtobuf._
     if self.forced != false {
       try visitor.visitSingularBoolField(value: self.forced, fieldNumber: 3)
     }
-    if self.grantedAtUnixNs != 0 {
-      try visitor.visitSingularInt64Field(value: self.grantedAtUnixNs, fieldNumber: 4)
-    }
-    if self.launchTimeoutMs != 0 {
-      try visitor.visitSingularInt64Field(value: self.launchTimeoutMs, fieldNumber: 5)
-    }
+    try { if let v = self._grantedAt {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+    } }()
+    try { if let v = self._launchTimeout {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
+    } }()
     try { if let v = self._runner {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
     } }()
@@ -2825,8 +2953,8 @@ nonisolated extension Heavylock_V2_Grant: SwiftProtobuf.Message, SwiftProtobuf._
     if lhs.grantID != rhs.grantID {return false}
     if lhs.weight != rhs.weight {return false}
     if lhs.forced != rhs.forced {return false}
-    if lhs.grantedAtUnixNs != rhs.grantedAtUnixNs {return false}
-    if lhs.launchTimeoutMs != rhs.launchTimeoutMs {return false}
+    if lhs._grantedAt != rhs._grantedAt {return false}
+    if lhs._launchTimeout != rhs._launchTimeout {return false}
     if lhs._runner != rhs._runner {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
@@ -2889,7 +3017,7 @@ nonisolated extension Heavylock_V2_Outcome: SwiftProtobuf.Message, SwiftProtobuf
 
 nonisolated extension Heavylock_V2_ResourceSummary: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ResourceSummary"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}elapsed_ms\0\u{3}cpu_time_ms\0\u{3}peak_cpu_percent\0\u{3}peak_combined_rss_bytes\0\u{3}sample_count\0\u{1}completeness\0\u{3}incompleteness_reason\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}elapsed\0\u{3}cpu_time\0\u{3}peak_cpu_percent\0\u{3}peak_combined_rss_bytes\0\u{3}sample_count\0\u{1}completeness\0\u{3}incompleteness_reason\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2897,8 +3025,8 @@ nonisolated extension Heavylock_V2_ResourceSummary: SwiftProtobuf.Message, Swift
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularInt64Field(value: &self._elapsedMs) }()
-      case 2: try { try decoder.decodeSingularInt64Field(value: &self._cpuTimeMs) }()
+      case 1: try { try decoder.decodeSingularMessageField(value: &self._elapsed) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._cpuTime) }()
       case 3: try { try decoder.decodeSingularDoubleField(value: &self._peakCpuPercent) }()
       case 4: try { try decoder.decodeSingularInt64Field(value: &self._peakCombinedRssBytes) }()
       case 5: try { try decoder.decodeSingularUInt32Field(value: &self.sampleCount) }()
@@ -2914,11 +3042,11 @@ nonisolated extension Heavylock_V2_ResourceSummary: SwiftProtobuf.Message, Swift
     // allocates stack space for every if/case branch local when no optimizations
     // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
     // https://github.com/apple/swift-protobuf/issues/1182
-    try { if let v = self._elapsedMs {
-      try visitor.visitSingularInt64Field(value: v, fieldNumber: 1)
+    try { if let v = self._elapsed {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
     } }()
-    try { if let v = self._cpuTimeMs {
-      try visitor.visitSingularInt64Field(value: v, fieldNumber: 2)
+    try { if let v = self._cpuTime {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
     } }()
     try { if let v = self._peakCpuPercent {
       try visitor.visitSingularDoubleField(value: v, fieldNumber: 3)
@@ -2939,8 +3067,8 @@ nonisolated extension Heavylock_V2_ResourceSummary: SwiftProtobuf.Message, Swift
   }
 
   public static func ==(lhs: Heavylock_V2_ResourceSummary, rhs: Heavylock_V2_ResourceSummary) -> Bool {
-    if lhs._elapsedMs != rhs._elapsedMs {return false}
-    if lhs._cpuTimeMs != rhs._cpuTimeMs {return false}
+    if lhs._elapsed != rhs._elapsed {return false}
+    if lhs._cpuTime != rhs._cpuTime {return false}
     if lhs._peakCpuPercent != rhs._peakCpuPercent {return false}
     if lhs._peakCombinedRssBytes != rhs._peakCombinedRssBytes {return false}
     if lhs.sampleCount != rhs.sampleCount {return false}
@@ -2953,7 +3081,7 @@ nonisolated extension Heavylock_V2_ResourceSummary: SwiftProtobuf.Message, Swift
 
 nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Job"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}job_id\0\u{3}idempotency_key\0\u{1}state\0\u{1}command\0\u{1}cwd\0\u{1}weight\0\u{1}forced\0\u{1}client\0\u{1}attribution\0\u{3}service_version\0\u{3}queued_at_unix_ns\0\u{3}admitted_at_unix_ns\0\u{3}started_at_unix_ns\0\u{3}finished_at_unix_ns\0\u{3}cancel_requested_at_unix_ns\0\u{3}queue_position\0\u{3}runner_connected\0\u{3}grace_remaining_ms\0\u{1}grant\0\u{1}process\0\u{3}free_memory_at_admission_bytes\0\u{1}outcome\0\u{1}resources\0\u{3}cancel_reason\0\u{3}admitted_by_backfill\0\u{3}backfill_bypass_count\0\u{3}retry_of_job_id\0\u{1}attempt\0\u{3}cancel_acknowledged_at_unix_ns\0\u{3}cancel_failure_detail\0\u{3}broker_termination\0\u{3}blocked_reason\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}job_id\0\u{3}idempotency_key\0\u{1}state\0\u{1}command\0\u{1}cwd\0\u{1}weight\0\u{1}forced\0\u{1}client\0\u{1}attribution\0\u{3}service_version\0\u{3}queued_at\0\u{3}admitted_at\0\u{3}started_at\0\u{3}finished_at\0\u{3}cancel_requested_at\0\u{3}queue_position\0\u{3}runner_connected\0\u{3}grace_remaining\0\u{1}grant\0\u{1}process\0\u{3}free_memory_at_admission_bytes\0\u{1}outcome\0\u{1}resources\0\u{3}cancel_reason\0\u{3}admitted_by_backfill\0\u{3}backfill_bypass_count\0\u{3}retry_of_job_id\0\u{1}attempt\0\u{3}cancel_acknowledged_at\0\u{3}cancel_failure_detail\0\u{3}broker_termination\0\u{3}blocked_reason\0")
 
   fileprivate class _StorageClass {
     var _jobID: String = String()
@@ -2966,14 +3094,14 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
     var _client: Heavylock_V2_ClientInfo? = nil
     var _attribution: Heavylock_V2_Attribution? = nil
     var _serviceVersion: String = String()
-    var _queuedAtUnixNs: Int64 = 0
-    var _admittedAtUnixNs: Int64? = nil
-    var _startedAtUnixNs: Int64? = nil
-    var _finishedAtUnixNs: Int64? = nil
-    var _cancelRequestedAtUnixNs: Int64? = nil
+    var _queuedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
+    var _admittedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
+    var _startedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
+    var _finishedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
+    var _cancelRequestedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
     var _queuePosition: UInt32? = nil
     var _runnerConnected: Bool = false
-    var _graceRemainingMs: Int64? = nil
+    var _graceRemaining: SwiftProtobuf.Google_Protobuf_Duration? = nil
     var _grant: Heavylock_V2_Grant? = nil
     var _process: Heavylock_V2_ProcessIdentity? = nil
     var _freeMemoryAtAdmissionBytes: Int64? = nil
@@ -2984,7 +3112,7 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
     var _backfillBypassCount: UInt32 = 0
     var _retryOfJobID: String? = nil
     var _attempt: UInt32 = 0
-    var _cancelAcknowledgedAtUnixNs: Int64? = nil
+    var _cancelAcknowledgedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
     var _cancelFailureDetail: String? = nil
     var _brokerTermination: Heavylock_V2_BrokerTermination? = nil
     var _blockedReason: Heavylock_V2_BlockedReason = .unspecified
@@ -3008,14 +3136,14 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
       _client = source._client
       _attribution = source._attribution
       _serviceVersion = source._serviceVersion
-      _queuedAtUnixNs = source._queuedAtUnixNs
-      _admittedAtUnixNs = source._admittedAtUnixNs
-      _startedAtUnixNs = source._startedAtUnixNs
-      _finishedAtUnixNs = source._finishedAtUnixNs
-      _cancelRequestedAtUnixNs = source._cancelRequestedAtUnixNs
+      _queuedAt = source._queuedAt
+      _admittedAt = source._admittedAt
+      _startedAt = source._startedAt
+      _finishedAt = source._finishedAt
+      _cancelRequestedAt = source._cancelRequestedAt
       _queuePosition = source._queuePosition
       _runnerConnected = source._runnerConnected
-      _graceRemainingMs = source._graceRemainingMs
+      _graceRemaining = source._graceRemaining
       _grant = source._grant
       _process = source._process
       _freeMemoryAtAdmissionBytes = source._freeMemoryAtAdmissionBytes
@@ -3026,7 +3154,7 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
       _backfillBypassCount = source._backfillBypassCount
       _retryOfJobID = source._retryOfJobID
       _attempt = source._attempt
-      _cancelAcknowledgedAtUnixNs = source._cancelAcknowledgedAtUnixNs
+      _cancelAcknowledgedAt = source._cancelAcknowledgedAt
       _cancelFailureDetail = source._cancelFailureDetail
       _brokerTermination = source._brokerTermination
       _blockedReason = source._blockedReason
@@ -3058,14 +3186,14 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
         case 8: try { try decoder.decodeSingularMessageField(value: &_storage._client) }()
         case 9: try { try decoder.decodeSingularMessageField(value: &_storage._attribution) }()
         case 10: try { try decoder.decodeSingularStringField(value: &_storage._serviceVersion) }()
-        case 11: try { try decoder.decodeSingularInt64Field(value: &_storage._queuedAtUnixNs) }()
-        case 12: try { try decoder.decodeSingularInt64Field(value: &_storage._admittedAtUnixNs) }()
-        case 13: try { try decoder.decodeSingularInt64Field(value: &_storage._startedAtUnixNs) }()
-        case 14: try { try decoder.decodeSingularInt64Field(value: &_storage._finishedAtUnixNs) }()
-        case 15: try { try decoder.decodeSingularInt64Field(value: &_storage._cancelRequestedAtUnixNs) }()
+        case 11: try { try decoder.decodeSingularMessageField(value: &_storage._queuedAt) }()
+        case 12: try { try decoder.decodeSingularMessageField(value: &_storage._admittedAt) }()
+        case 13: try { try decoder.decodeSingularMessageField(value: &_storage._startedAt) }()
+        case 14: try { try decoder.decodeSingularMessageField(value: &_storage._finishedAt) }()
+        case 15: try { try decoder.decodeSingularMessageField(value: &_storage._cancelRequestedAt) }()
         case 16: try { try decoder.decodeSingularUInt32Field(value: &_storage._queuePosition) }()
         case 17: try { try decoder.decodeSingularBoolField(value: &_storage._runnerConnected) }()
-        case 18: try { try decoder.decodeSingularInt64Field(value: &_storage._graceRemainingMs) }()
+        case 18: try { try decoder.decodeSingularMessageField(value: &_storage._graceRemaining) }()
         case 19: try { try decoder.decodeSingularMessageField(value: &_storage._grant) }()
         case 20: try { try decoder.decodeSingularMessageField(value: &_storage._process) }()
         case 21: try { try decoder.decodeSingularInt64Field(value: &_storage._freeMemoryAtAdmissionBytes) }()
@@ -3076,7 +3204,7 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
         case 26: try { try decoder.decodeSingularUInt32Field(value: &_storage._backfillBypassCount) }()
         case 27: try { try decoder.decodeSingularStringField(value: &_storage._retryOfJobID) }()
         case 28: try { try decoder.decodeSingularUInt32Field(value: &_storage._attempt) }()
-        case 29: try { try decoder.decodeSingularInt64Field(value: &_storage._cancelAcknowledgedAtUnixNs) }()
+        case 29: try { try decoder.decodeSingularMessageField(value: &_storage._cancelAcknowledgedAt) }()
         case 30: try { try decoder.decodeSingularStringField(value: &_storage._cancelFailureDetail) }()
         case 31: try { try decoder.decodeSingularMessageField(value: &_storage._brokerTermination) }()
         case 32: try { try decoder.decodeSingularEnumField(value: &_storage._blockedReason) }()
@@ -3122,20 +3250,20 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
       if !_storage._serviceVersion.isEmpty {
         try visitor.visitSingularStringField(value: _storage._serviceVersion, fieldNumber: 10)
       }
-      if _storage._queuedAtUnixNs != 0 {
-        try visitor.visitSingularInt64Field(value: _storage._queuedAtUnixNs, fieldNumber: 11)
-      }
-      try { if let v = _storage._admittedAtUnixNs {
-        try visitor.visitSingularInt64Field(value: v, fieldNumber: 12)
+      try { if let v = _storage._queuedAt {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 11)
       } }()
-      try { if let v = _storage._startedAtUnixNs {
-        try visitor.visitSingularInt64Field(value: v, fieldNumber: 13)
+      try { if let v = _storage._admittedAt {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 12)
       } }()
-      try { if let v = _storage._finishedAtUnixNs {
-        try visitor.visitSingularInt64Field(value: v, fieldNumber: 14)
+      try { if let v = _storage._startedAt {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 13)
       } }()
-      try { if let v = _storage._cancelRequestedAtUnixNs {
-        try visitor.visitSingularInt64Field(value: v, fieldNumber: 15)
+      try { if let v = _storage._finishedAt {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 14)
+      } }()
+      try { if let v = _storage._cancelRequestedAt {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 15)
       } }()
       try { if let v = _storage._queuePosition {
         try visitor.visitSingularUInt32Field(value: v, fieldNumber: 16)
@@ -3143,8 +3271,8 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
       if _storage._runnerConnected != false {
         try visitor.visitSingularBoolField(value: _storage._runnerConnected, fieldNumber: 17)
       }
-      try { if let v = _storage._graceRemainingMs {
-        try visitor.visitSingularInt64Field(value: v, fieldNumber: 18)
+      try { if let v = _storage._graceRemaining {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 18)
       } }()
       try { if let v = _storage._grant {
         try visitor.visitSingularMessageField(value: v, fieldNumber: 19)
@@ -3176,8 +3304,8 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
       if _storage._attempt != 0 {
         try visitor.visitSingularUInt32Field(value: _storage._attempt, fieldNumber: 28)
       }
-      try { if let v = _storage._cancelAcknowledgedAtUnixNs {
-        try visitor.visitSingularInt64Field(value: v, fieldNumber: 29)
+      try { if let v = _storage._cancelAcknowledgedAt {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 29)
       } }()
       try { if let v = _storage._cancelFailureDetail {
         try visitor.visitSingularStringField(value: v, fieldNumber: 30)
@@ -3207,14 +3335,14 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
         if _storage._client != rhs_storage._client {return false}
         if _storage._attribution != rhs_storage._attribution {return false}
         if _storage._serviceVersion != rhs_storage._serviceVersion {return false}
-        if _storage._queuedAtUnixNs != rhs_storage._queuedAtUnixNs {return false}
-        if _storage._admittedAtUnixNs != rhs_storage._admittedAtUnixNs {return false}
-        if _storage._startedAtUnixNs != rhs_storage._startedAtUnixNs {return false}
-        if _storage._finishedAtUnixNs != rhs_storage._finishedAtUnixNs {return false}
-        if _storage._cancelRequestedAtUnixNs != rhs_storage._cancelRequestedAtUnixNs {return false}
+        if _storage._queuedAt != rhs_storage._queuedAt {return false}
+        if _storage._admittedAt != rhs_storage._admittedAt {return false}
+        if _storage._startedAt != rhs_storage._startedAt {return false}
+        if _storage._finishedAt != rhs_storage._finishedAt {return false}
+        if _storage._cancelRequestedAt != rhs_storage._cancelRequestedAt {return false}
         if _storage._queuePosition != rhs_storage._queuePosition {return false}
         if _storage._runnerConnected != rhs_storage._runnerConnected {return false}
-        if _storage._graceRemainingMs != rhs_storage._graceRemainingMs {return false}
+        if _storage._graceRemaining != rhs_storage._graceRemaining {return false}
         if _storage._grant != rhs_storage._grant {return false}
         if _storage._process != rhs_storage._process {return false}
         if _storage._freeMemoryAtAdmissionBytes != rhs_storage._freeMemoryAtAdmissionBytes {return false}
@@ -3225,7 +3353,7 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
         if _storage._backfillBypassCount != rhs_storage._backfillBypassCount {return false}
         if _storage._retryOfJobID != rhs_storage._retryOfJobID {return false}
         if _storage._attempt != rhs_storage._attempt {return false}
-        if _storage._cancelAcknowledgedAtUnixNs != rhs_storage._cancelAcknowledgedAtUnixNs {return false}
+        if _storage._cancelAcknowledgedAt != rhs_storage._cancelAcknowledgedAt {return false}
         if _storage._cancelFailureDetail != rhs_storage._cancelFailureDetail {return false}
         if _storage._brokerTermination != rhs_storage._brokerTermination {return false}
         if _storage._blockedReason != rhs_storage._blockedReason {return false}
@@ -3240,7 +3368,7 @@ nonisolated extension Heavylock_V2_Job: SwiftProtobuf.Message, SwiftProtobuf._Me
 
 nonisolated extension Heavylock_V2_BrokerTermination: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BrokerTermination"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}started_at_unix_ns\0\u{1}reason\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}started_at\0\u{1}reason\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3248,7 +3376,7 @@ nonisolated extension Heavylock_V2_BrokerTermination: SwiftProtobuf.Message, Swi
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularInt64Field(value: &self.startedAtUnixNs) }()
+      case 1: try { try decoder.decodeSingularMessageField(value: &self._startedAt) }()
       case 2: try { try decoder.decodeSingularEnumField(value: &self.reason) }()
       default: break
       }
@@ -3256,9 +3384,13 @@ nonisolated extension Heavylock_V2_BrokerTermination: SwiftProtobuf.Message, Swi
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.startedAtUnixNs != 0 {
-      try visitor.visitSingularInt64Field(value: self.startedAtUnixNs, fieldNumber: 1)
-    }
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._startedAt {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
     if self.reason != .unspecified {
       try visitor.visitSingularEnumField(value: self.reason, fieldNumber: 2)
     }
@@ -3266,7 +3398,7 @@ nonisolated extension Heavylock_V2_BrokerTermination: SwiftProtobuf.Message, Swi
   }
 
   public static func ==(lhs: Heavylock_V2_BrokerTermination, rhs: Heavylock_V2_BrokerTermination) -> Bool {
-    if lhs.startedAtUnixNs != rhs.startedAtUnixNs {return false}
+    if lhs._startedAt != rhs._startedAt {return false}
     if lhs.reason != rhs.reason {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
@@ -3647,7 +3779,7 @@ nonisolated extension Heavylock_V2_SealLaunchRequest: SwiftProtobuf.Message, Swi
 
 nonisolated extension Heavylock_V2_JobEvent: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".JobEvent"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}event_seq\0\u{3}at_unix_ns\0\u{2}\u{8}snapshot\0\u{3}queue_position_changed\0\u{1}granted\0\u{3}cancel_requested\0\u{1}finished\0\u{1}heartbeat\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}event_seq\0\u{1}at\0\u{2}\u{8}snapshot\0\u{3}queue_position_changed\0\u{1}granted\0\u{3}cancel_requested\0\u{1}finished\0\u{1}heartbeat\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3656,7 +3788,7 @@ nonisolated extension Heavylock_V2_JobEvent: SwiftProtobuf.Message, SwiftProtobu
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularInt64Field(value: &self.eventSeq) }()
-      case 2: try { try decoder.decodeSingularInt64Field(value: &self.atUnixNs) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._at) }()
       case 10: try {
         var v: Heavylock_V2_Job?
         var hadOneofValue = false
@@ -3748,9 +3880,9 @@ nonisolated extension Heavylock_V2_JobEvent: SwiftProtobuf.Message, SwiftProtobu
     if self.eventSeq != 0 {
       try visitor.visitSingularInt64Field(value: self.eventSeq, fieldNumber: 1)
     }
-    if self.atUnixNs != 0 {
-      try visitor.visitSingularInt64Field(value: self.atUnixNs, fieldNumber: 2)
-    }
+    try { if let v = self._at {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    } }()
     switch self.event {
     case .snapshot?: try {
       guard case .snapshot(let v)? = self.event else { preconditionFailure() }
@@ -3783,7 +3915,7 @@ nonisolated extension Heavylock_V2_JobEvent: SwiftProtobuf.Message, SwiftProtobu
 
   public static func ==(lhs: Heavylock_V2_JobEvent, rhs: Heavylock_V2_JobEvent) -> Bool {
     if lhs.eventSeq != rhs.eventSeq {return false}
-    if lhs.atUnixNs != rhs.atUnixNs {return false}
+    if lhs._at != rhs._at {return false}
     if lhs.event != rhs.event {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
@@ -3871,7 +4003,7 @@ nonisolated extension Heavylock_V2_CancelRequested: SwiftProtobuf.Message, Swift
 
 nonisolated extension Heavylock_V2_Heartbeat: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Heartbeat"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}heartbeat_interval_ms\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}heartbeat_interval\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3879,21 +4011,25 @@ nonisolated extension Heavylock_V2_Heartbeat: SwiftProtobuf.Message, SwiftProtob
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularInt64Field(value: &self.heartbeatIntervalMs) }()
+      case 1: try { try decoder.decodeSingularMessageField(value: &self._heartbeatInterval) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.heartbeatIntervalMs != 0 {
-      try visitor.visitSingularInt64Field(value: self.heartbeatIntervalMs, fieldNumber: 1)
-    }
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._heartbeatInterval {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Heavylock_V2_Heartbeat, rhs: Heavylock_V2_Heartbeat) -> Bool {
-    if lhs.heartbeatIntervalMs != rhs.heartbeatIntervalMs {return false}
+    if lhs._heartbeatInterval != rhs._heartbeatInterval {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -4097,63 +4233,111 @@ nonisolated extension Heavylock_V2_ReportLaunchFailedRequest: SwiftProtobuf.Mess
 
 nonisolated extension Heavylock_V2_ReportFinishedRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ReportFinishedRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}job_id\0\u{3}grant_id\0\u{1}outcome\0\u{1}runner\0\u{1}process\0\u{3}elapsed_ms\0\u{3}root_cpu_time_ms\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}job_id\0\u{3}grant_id\0\u{1}outcome\0\u{1}runner\0\u{1}process\0\u{1}elapsed\0\u{3}root_cpu_time\0")
+
+  fileprivate class _StorageClass {
+    var _jobID: String = String()
+    var _grantID: String = String()
+    var _outcome: Heavylock_V2_Outcome? = nil
+    var _runner: Heavylock_V2_RunnerIncarnation? = nil
+    var _process: Heavylock_V2_ProcessIdentity? = nil
+    var _elapsed: SwiftProtobuf.Google_Protobuf_Duration? = nil
+    var _rootCpuTime: SwiftProtobuf.Google_Protobuf_Duration? = nil
+
+      // This property is used as the initial default value for new instances of the type.
+      // The type itself is protecting the reference to its storage via CoW semantics.
+      // This will force a copy to be made of this reference when the first mutation occurs;
+      // hence, it is safe to mark this as `nonisolated(unsafe)`.
+      static nonisolated(unsafe) let defaultInstance = _StorageClass()
+
+    private init() {}
+
+    init(copying source: _StorageClass) {
+      _jobID = source._jobID
+      _grantID = source._grantID
+      _outcome = source._outcome
+      _runner = source._runner
+      _process = source._process
+      _elapsed = source._elapsed
+      _rootCpuTime = source._rootCpuTime
+    }
+  }
+
+  fileprivate mutating func _uniqueStorage() -> _StorageClass {
+    if !isKnownUniquelyReferenced(&_storage) {
+      _storage = _StorageClass(copying: _storage)
+    }
+    return _storage
+  }
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularStringField(value: &self.jobID) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.grantID) }()
-      case 3: try { try decoder.decodeSingularMessageField(value: &self._outcome) }()
-      case 4: try { try decoder.decodeSingularMessageField(value: &self._runner) }()
-      case 5: try { try decoder.decodeSingularMessageField(value: &self._process) }()
-      case 6: try { try decoder.decodeSingularInt64Field(value: &self._elapsedMs) }()
-      case 7: try { try decoder.decodeSingularInt64Field(value: &self._rootCpuTimeMs) }()
-      default: break
+    _ = _uniqueStorage()
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      while let fieldNumber = try decoder.nextFieldNumber() {
+        // The use of inline closures is to circumvent an issue where the compiler
+        // allocates stack space for every case branch when no optimizations are
+        // enabled. https://github.com/apple/swift-protobuf/issues/1034
+        switch fieldNumber {
+        case 1: try { try decoder.decodeSingularStringField(value: &_storage._jobID) }()
+        case 2: try { try decoder.decodeSingularStringField(value: &_storage._grantID) }()
+        case 3: try { try decoder.decodeSingularMessageField(value: &_storage._outcome) }()
+        case 4: try { try decoder.decodeSingularMessageField(value: &_storage._runner) }()
+        case 5: try { try decoder.decodeSingularMessageField(value: &_storage._process) }()
+        case 6: try { try decoder.decodeSingularMessageField(value: &_storage._elapsed) }()
+        case 7: try { try decoder.decodeSingularMessageField(value: &_storage._rootCpuTime) }()
+        default: break
+        }
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    if !self.jobID.isEmpty {
-      try visitor.visitSingularStringField(value: self.jobID, fieldNumber: 1)
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every if/case branch local when no optimizations
+      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+      // https://github.com/apple/swift-protobuf/issues/1182
+      if !_storage._jobID.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._jobID, fieldNumber: 1)
+      }
+      if !_storage._grantID.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._grantID, fieldNumber: 2)
+      }
+      try { if let v = _storage._outcome {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+      } }()
+      try { if let v = _storage._runner {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+      } }()
+      try { if let v = _storage._process {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
+      } }()
+      try { if let v = _storage._elapsed {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
+      } }()
+      try { if let v = _storage._rootCpuTime {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
+      } }()
     }
-    if !self.grantID.isEmpty {
-      try visitor.visitSingularStringField(value: self.grantID, fieldNumber: 2)
-    }
-    try { if let v = self._outcome {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-    } }()
-    try { if let v = self._runner {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
-    } }()
-    try { if let v = self._process {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
-    } }()
-    try { if let v = self._elapsedMs {
-      try visitor.visitSingularInt64Field(value: v, fieldNumber: 6)
-    } }()
-    try { if let v = self._rootCpuTimeMs {
-      try visitor.visitSingularInt64Field(value: v, fieldNumber: 7)
-    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Heavylock_V2_ReportFinishedRequest, rhs: Heavylock_V2_ReportFinishedRequest) -> Bool {
-    if lhs.jobID != rhs.jobID {return false}
-    if lhs.grantID != rhs.grantID {return false}
-    if lhs._outcome != rhs._outcome {return false}
-    if lhs._runner != rhs._runner {return false}
-    if lhs._process != rhs._process {return false}
-    if lhs._elapsedMs != rhs._elapsedMs {return false}
-    if lhs._rootCpuTimeMs != rhs._rootCpuTimeMs {return false}
+    if lhs._storage !== rhs._storage {
+      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
+        let _storage = _args.0
+        let rhs_storage = _args.1
+        if _storage._jobID != rhs_storage._jobID {return false}
+        if _storage._grantID != rhs_storage._grantID {return false}
+        if _storage._outcome != rhs_storage._outcome {return false}
+        if _storage._runner != rhs_storage._runner {return false}
+        if _storage._process != rhs_storage._process {return false}
+        if _storage._elapsed != rhs_storage._elapsed {return false}
+        if _storage._rootCpuTime != rhs_storage._rootCpuTime {return false}
+        return true
+      }
+      if !storagesAreEqual {return false}
+    }
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -4180,7 +4364,7 @@ nonisolated extension Heavylock_V2_GetHealthRequest: SwiftProtobuf.Message, Swif
 
 nonisolated extension Heavylock_V2_Health: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Health"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}live\0\u{1}ready\0\u{3}service_version\0\u{3}started_at_unix_ns\0\u{3}schema_version\0\u{3}recovery_detail\0\u{3}storage_detail\0\u{3}service_identity\0\u{3}api_major\0\u{3}api_minor\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}live\0\u{1}ready\0\u{3}service_version\0\u{3}started_at\0\u{3}schema_version\0\u{3}recovery_detail\0\u{3}storage_detail\0\u{3}service_identity\0\u{b}api_major\0\u{b}api_minor\0\u{c}\u{9}\u{1}\u{c}\u{a}\u{1}")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4191,13 +4375,11 @@ nonisolated extension Heavylock_V2_Health: SwiftProtobuf.Message, SwiftProtobuf.
       case 1: try { try decoder.decodeSingularBoolField(value: &self.live) }()
       case 2: try { try decoder.decodeSingularBoolField(value: &self.ready) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.serviceVersion) }()
-      case 4: try { try decoder.decodeSingularInt64Field(value: &self.startedAtUnixNs) }()
+      case 4: try { try decoder.decodeSingularMessageField(value: &self._startedAt) }()
       case 5: try { try decoder.decodeSingularInt64Field(value: &self.schemaVersion) }()
       case 6: try { try decoder.decodeSingularStringField(value: &self._recoveryDetail) }()
       case 7: try { try decoder.decodeSingularStringField(value: &self._storageDetail) }()
       case 8: try { try decoder.decodeSingularStringField(value: &self.serviceIdentity) }()
-      case 9: try { try decoder.decodeSingularUInt32Field(value: &self.apiMajor) }()
-      case 10: try { try decoder.decodeSingularUInt32Field(value: &self.apiMinor) }()
       default: break
       }
     }
@@ -4217,9 +4399,9 @@ nonisolated extension Heavylock_V2_Health: SwiftProtobuf.Message, SwiftProtobuf.
     if !self.serviceVersion.isEmpty {
       try visitor.visitSingularStringField(value: self.serviceVersion, fieldNumber: 3)
     }
-    if self.startedAtUnixNs != 0 {
-      try visitor.visitSingularInt64Field(value: self.startedAtUnixNs, fieldNumber: 4)
-    }
+    try { if let v = self._startedAt {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+    } }()
     if self.schemaVersion != 0 {
       try visitor.visitSingularInt64Field(value: self.schemaVersion, fieldNumber: 5)
     }
@@ -4232,12 +4414,6 @@ nonisolated extension Heavylock_V2_Health: SwiftProtobuf.Message, SwiftProtobuf.
     if !self.serviceIdentity.isEmpty {
       try visitor.visitSingularStringField(value: self.serviceIdentity, fieldNumber: 8)
     }
-    if self.apiMajor != 0 {
-      try visitor.visitSingularUInt32Field(value: self.apiMajor, fieldNumber: 9)
-    }
-    if self.apiMinor != 0 {
-      try visitor.visitSingularUInt32Field(value: self.apiMinor, fieldNumber: 10)
-    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -4245,13 +4421,11 @@ nonisolated extension Heavylock_V2_Health: SwiftProtobuf.Message, SwiftProtobuf.
     if lhs.live != rhs.live {return false}
     if lhs.ready != rhs.ready {return false}
     if lhs.serviceVersion != rhs.serviceVersion {return false}
-    if lhs.startedAtUnixNs != rhs.startedAtUnixNs {return false}
+    if lhs._startedAt != rhs._startedAt {return false}
     if lhs.schemaVersion != rhs.schemaVersion {return false}
     if lhs._recoveryDetail != rhs._recoveryDetail {return false}
     if lhs._storageDetail != rhs._storageDetail {return false}
     if lhs.serviceIdentity != rhs.serviceIdentity {return false}
-    if lhs.apiMajor != rhs.apiMajor {return false}
-    if lhs.apiMinor != rhs.apiMinor {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -4278,103 +4452,181 @@ nonisolated extension Heavylock_V2_GetStatusRequest: SwiftProtobuf.Message, Swif
 
 nonisolated extension Heavylock_V2_BrokerStatus: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BrokerStatus"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}capacity\0\u{1}occupied\0\u{1}paused\0\u{3}paused_at_unix_ns\0\u{1}recovering\0\u{3}queued_jobs\0\u{3}running_jobs\0\u{3}head_blocked_reason\0\u{3}free_memory_bytes\0\u{3}load_average_1m\0\u{3}storage_unavailable\0\u{3}unreconciled_reservations\0\u{3}backfill_limit\0\u{3}queue_mode\0\u{3}queue_state\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}capacity\0\u{1}occupied\0\u{1}paused\0\u{3}paused_at\0\u{1}recovering\0\u{3}queued_jobs\0\u{3}running_jobs\0\u{3}head_blocked_reason\0\u{3}free_memory_bytes\0\u{3}load_average_1m\0\u{3}storage_unavailable\0\u{3}unreconciled_reservations\0\u{3}backfill_limit\0\u{3}queue_mode\0\u{3}queue_state\0\u{3}load_average_5m\0\u{3}load_average_15m\0")
+
+  fileprivate class _StorageClass {
+    var _capacity: UInt32 = 0
+    var _occupied: UInt32 = 0
+    var _paused: Bool = false
+    var _pausedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
+    var _recovering: Bool = false
+    var _queuedJobs: UInt32 = 0
+    var _runningJobs: UInt32 = 0
+    var _headBlockedReason: Heavylock_V2_BlockedReason = .unspecified
+    var _freeMemoryBytes: Int64? = nil
+    var _loadAverage1M: Double? = nil
+    var _storageUnavailable: Bool = false
+    var _unreconciledReservations: UInt32 = 0
+    var _backfillLimit: UInt32 = 0
+    var _queueMode: Heavylock_V2_QueueMode = .unspecified
+    var _queueState: Heavylock_V2_QueueState = .unspecified
+    var _loadAverage5M: Double? = nil
+    var _loadAverage15M: Double? = nil
+
+      // This property is used as the initial default value for new instances of the type.
+      // The type itself is protecting the reference to its storage via CoW semantics.
+      // This will force a copy to be made of this reference when the first mutation occurs;
+      // hence, it is safe to mark this as `nonisolated(unsafe)`.
+      static nonisolated(unsafe) let defaultInstance = _StorageClass()
+
+    private init() {}
+
+    init(copying source: _StorageClass) {
+      _capacity = source._capacity
+      _occupied = source._occupied
+      _paused = source._paused
+      _pausedAt = source._pausedAt
+      _recovering = source._recovering
+      _queuedJobs = source._queuedJobs
+      _runningJobs = source._runningJobs
+      _headBlockedReason = source._headBlockedReason
+      _freeMemoryBytes = source._freeMemoryBytes
+      _loadAverage1M = source._loadAverage1M
+      _storageUnavailable = source._storageUnavailable
+      _unreconciledReservations = source._unreconciledReservations
+      _backfillLimit = source._backfillLimit
+      _queueMode = source._queueMode
+      _queueState = source._queueState
+      _loadAverage5M = source._loadAverage5M
+      _loadAverage15M = source._loadAverage15M
+    }
+  }
+
+  fileprivate mutating func _uniqueStorage() -> _StorageClass {
+    if !isKnownUniquelyReferenced(&_storage) {
+      _storage = _StorageClass(copying: _storage)
+    }
+    return _storage
+  }
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.capacity) }()
-      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.occupied) }()
-      case 3: try { try decoder.decodeSingularBoolField(value: &self.paused) }()
-      case 4: try { try decoder.decodeSingularInt64Field(value: &self._pausedAtUnixNs) }()
-      case 5: try { try decoder.decodeSingularBoolField(value: &self.recovering) }()
-      case 6: try { try decoder.decodeSingularUInt32Field(value: &self.queuedJobs) }()
-      case 7: try { try decoder.decodeSingularUInt32Field(value: &self.runningJobs) }()
-      case 8: try { try decoder.decodeSingularEnumField(value: &self.headBlockedReason) }()
-      case 9: try { try decoder.decodeSingularInt64Field(value: &self._freeMemoryBytes) }()
-      case 10: try { try decoder.decodeSingularDoubleField(value: &self._loadAverage1M) }()
-      case 11: try { try decoder.decodeSingularBoolField(value: &self.storageUnavailable) }()
-      case 12: try { try decoder.decodeSingularUInt32Field(value: &self.unreconciledReservations) }()
-      case 13: try { try decoder.decodeSingularUInt32Field(value: &self.backfillLimit) }()
-      case 14: try { try decoder.decodeSingularEnumField(value: &self.queueMode) }()
-      case 15: try { try decoder.decodeSingularEnumField(value: &self.queueState) }()
-      default: break
+    _ = _uniqueStorage()
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      while let fieldNumber = try decoder.nextFieldNumber() {
+        // The use of inline closures is to circumvent an issue where the compiler
+        // allocates stack space for every case branch when no optimizations are
+        // enabled. https://github.com/apple/swift-protobuf/issues/1034
+        switch fieldNumber {
+        case 1: try { try decoder.decodeSingularUInt32Field(value: &_storage._capacity) }()
+        case 2: try { try decoder.decodeSingularUInt32Field(value: &_storage._occupied) }()
+        case 3: try { try decoder.decodeSingularBoolField(value: &_storage._paused) }()
+        case 4: try { try decoder.decodeSingularMessageField(value: &_storage._pausedAt) }()
+        case 5: try { try decoder.decodeSingularBoolField(value: &_storage._recovering) }()
+        case 6: try { try decoder.decodeSingularUInt32Field(value: &_storage._queuedJobs) }()
+        case 7: try { try decoder.decodeSingularUInt32Field(value: &_storage._runningJobs) }()
+        case 8: try { try decoder.decodeSingularEnumField(value: &_storage._headBlockedReason) }()
+        case 9: try { try decoder.decodeSingularInt64Field(value: &_storage._freeMemoryBytes) }()
+        case 10: try { try decoder.decodeSingularDoubleField(value: &_storage._loadAverage1M) }()
+        case 11: try { try decoder.decodeSingularBoolField(value: &_storage._storageUnavailable) }()
+        case 12: try { try decoder.decodeSingularUInt32Field(value: &_storage._unreconciledReservations) }()
+        case 13: try { try decoder.decodeSingularUInt32Field(value: &_storage._backfillLimit) }()
+        case 14: try { try decoder.decodeSingularEnumField(value: &_storage._queueMode) }()
+        case 15: try { try decoder.decodeSingularEnumField(value: &_storage._queueState) }()
+        case 16: try { try decoder.decodeSingularDoubleField(value: &_storage._loadAverage5M) }()
+        case 17: try { try decoder.decodeSingularDoubleField(value: &_storage._loadAverage15M) }()
+        default: break
+        }
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    if self.capacity != 0 {
-      try visitor.visitSingularUInt32Field(value: self.capacity, fieldNumber: 1)
-    }
-    if self.occupied != 0 {
-      try visitor.visitSingularUInt32Field(value: self.occupied, fieldNumber: 2)
-    }
-    if self.paused != false {
-      try visitor.visitSingularBoolField(value: self.paused, fieldNumber: 3)
-    }
-    try { if let v = self._pausedAtUnixNs {
-      try visitor.visitSingularInt64Field(value: v, fieldNumber: 4)
-    } }()
-    if self.recovering != false {
-      try visitor.visitSingularBoolField(value: self.recovering, fieldNumber: 5)
-    }
-    if self.queuedJobs != 0 {
-      try visitor.visitSingularUInt32Field(value: self.queuedJobs, fieldNumber: 6)
-    }
-    if self.runningJobs != 0 {
-      try visitor.visitSingularUInt32Field(value: self.runningJobs, fieldNumber: 7)
-    }
-    if self.headBlockedReason != .unspecified {
-      try visitor.visitSingularEnumField(value: self.headBlockedReason, fieldNumber: 8)
-    }
-    try { if let v = self._freeMemoryBytes {
-      try visitor.visitSingularInt64Field(value: v, fieldNumber: 9)
-    } }()
-    try { if let v = self._loadAverage1M {
-      try visitor.visitSingularDoubleField(value: v, fieldNumber: 10)
-    } }()
-    if self.storageUnavailable != false {
-      try visitor.visitSingularBoolField(value: self.storageUnavailable, fieldNumber: 11)
-    }
-    if self.unreconciledReservations != 0 {
-      try visitor.visitSingularUInt32Field(value: self.unreconciledReservations, fieldNumber: 12)
-    }
-    if self.backfillLimit != 0 {
-      try visitor.visitSingularUInt32Field(value: self.backfillLimit, fieldNumber: 13)
-    }
-    if self.queueMode != .unspecified {
-      try visitor.visitSingularEnumField(value: self.queueMode, fieldNumber: 14)
-    }
-    if self.queueState != .unspecified {
-      try visitor.visitSingularEnumField(value: self.queueState, fieldNumber: 15)
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every if/case branch local when no optimizations
+      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+      // https://github.com/apple/swift-protobuf/issues/1182
+      if _storage._capacity != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._capacity, fieldNumber: 1)
+      }
+      if _storage._occupied != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._occupied, fieldNumber: 2)
+      }
+      if _storage._paused != false {
+        try visitor.visitSingularBoolField(value: _storage._paused, fieldNumber: 3)
+      }
+      try { if let v = _storage._pausedAt {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+      } }()
+      if _storage._recovering != false {
+        try visitor.visitSingularBoolField(value: _storage._recovering, fieldNumber: 5)
+      }
+      if _storage._queuedJobs != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._queuedJobs, fieldNumber: 6)
+      }
+      if _storage._runningJobs != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._runningJobs, fieldNumber: 7)
+      }
+      if _storage._headBlockedReason != .unspecified {
+        try visitor.visitSingularEnumField(value: _storage._headBlockedReason, fieldNumber: 8)
+      }
+      try { if let v = _storage._freeMemoryBytes {
+        try visitor.visitSingularInt64Field(value: v, fieldNumber: 9)
+      } }()
+      try { if let v = _storage._loadAverage1M {
+        try visitor.visitSingularDoubleField(value: v, fieldNumber: 10)
+      } }()
+      if _storage._storageUnavailable != false {
+        try visitor.visitSingularBoolField(value: _storage._storageUnavailable, fieldNumber: 11)
+      }
+      if _storage._unreconciledReservations != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._unreconciledReservations, fieldNumber: 12)
+      }
+      if _storage._backfillLimit != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._backfillLimit, fieldNumber: 13)
+      }
+      if _storage._queueMode != .unspecified {
+        try visitor.visitSingularEnumField(value: _storage._queueMode, fieldNumber: 14)
+      }
+      if _storage._queueState != .unspecified {
+        try visitor.visitSingularEnumField(value: _storage._queueState, fieldNumber: 15)
+      }
+      try { if let v = _storage._loadAverage5M {
+        try visitor.visitSingularDoubleField(value: v, fieldNumber: 16)
+      } }()
+      try { if let v = _storage._loadAverage15M {
+        try visitor.visitSingularDoubleField(value: v, fieldNumber: 17)
+      } }()
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Heavylock_V2_BrokerStatus, rhs: Heavylock_V2_BrokerStatus) -> Bool {
-    if lhs.capacity != rhs.capacity {return false}
-    if lhs.occupied != rhs.occupied {return false}
-    if lhs.paused != rhs.paused {return false}
-    if lhs._pausedAtUnixNs != rhs._pausedAtUnixNs {return false}
-    if lhs.recovering != rhs.recovering {return false}
-    if lhs.queuedJobs != rhs.queuedJobs {return false}
-    if lhs.runningJobs != rhs.runningJobs {return false}
-    if lhs.headBlockedReason != rhs.headBlockedReason {return false}
-    if lhs._freeMemoryBytes != rhs._freeMemoryBytes {return false}
-    if lhs._loadAverage1M != rhs._loadAverage1M {return false}
-    if lhs.storageUnavailable != rhs.storageUnavailable {return false}
-    if lhs.unreconciledReservations != rhs.unreconciledReservations {return false}
-    if lhs.backfillLimit != rhs.backfillLimit {return false}
-    if lhs.queueMode != rhs.queueMode {return false}
-    if lhs.queueState != rhs.queueState {return false}
+    if lhs._storage !== rhs._storage {
+      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
+        let _storage = _args.0
+        let rhs_storage = _args.1
+        if _storage._capacity != rhs_storage._capacity {return false}
+        if _storage._occupied != rhs_storage._occupied {return false}
+        if _storage._paused != rhs_storage._paused {return false}
+        if _storage._pausedAt != rhs_storage._pausedAt {return false}
+        if _storage._recovering != rhs_storage._recovering {return false}
+        if _storage._queuedJobs != rhs_storage._queuedJobs {return false}
+        if _storage._runningJobs != rhs_storage._runningJobs {return false}
+        if _storage._headBlockedReason != rhs_storage._headBlockedReason {return false}
+        if _storage._freeMemoryBytes != rhs_storage._freeMemoryBytes {return false}
+        if _storage._loadAverage1M != rhs_storage._loadAverage1M {return false}
+        if _storage._storageUnavailable != rhs_storage._storageUnavailable {return false}
+        if _storage._unreconciledReservations != rhs_storage._unreconciledReservations {return false}
+        if _storage._backfillLimit != rhs_storage._backfillLimit {return false}
+        if _storage._queueMode != rhs_storage._queueMode {return false}
+        if _storage._queueState != rhs_storage._queueState {return false}
+        if _storage._loadAverage5M != rhs_storage._loadAverage5M {return false}
+        if _storage._loadAverage15M != rhs_storage._loadAverage15M {return false}
+        return true
+      }
+      if !storagesAreEqual {return false}
+    }
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -4441,7 +4693,7 @@ nonisolated extension Heavylock_V2_Queue: SwiftProtobuf.Message, SwiftProtobuf._
 
 nonisolated extension Heavylock_V2_ListJobsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListJobsRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}states\0\u{1}repository\0\u{3}client_name\0\u{3}queued_after_unix_ns\0\u{3}queued_before_unix_ns\0\u{3}page_size\0\u{3}page_token\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}states\0\u{1}repository\0\u{3}client_name\0\u{3}queued_after\0\u{3}queued_before\0\u{3}page_size\0\u{3}page_token\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4452,8 +4704,8 @@ nonisolated extension Heavylock_V2_ListJobsRequest: SwiftProtobuf.Message, Swift
       case 1: try { try decoder.decodeRepeatedEnumField(value: &self.states) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._repository) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self._clientName) }()
-      case 4: try { try decoder.decodeSingularInt64Field(value: &self._queuedAfterUnixNs) }()
-      case 5: try { try decoder.decodeSingularInt64Field(value: &self._queuedBeforeUnixNs) }()
+      case 4: try { try decoder.decodeSingularMessageField(value: &self._queuedAfter) }()
+      case 5: try { try decoder.decodeSingularMessageField(value: &self._queuedBefore) }()
       case 6: try { try decoder.decodeSingularUInt32Field(value: &self.pageSize) }()
       case 7: try { try decoder.decodeSingularStringField(value: &self.pageToken) }()
       default: break
@@ -4475,11 +4727,11 @@ nonisolated extension Heavylock_V2_ListJobsRequest: SwiftProtobuf.Message, Swift
     try { if let v = self._clientName {
       try visitor.visitSingularStringField(value: v, fieldNumber: 3)
     } }()
-    try { if let v = self._queuedAfterUnixNs {
-      try visitor.visitSingularInt64Field(value: v, fieldNumber: 4)
+    try { if let v = self._queuedAfter {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
     } }()
-    try { if let v = self._queuedBeforeUnixNs {
-      try visitor.visitSingularInt64Field(value: v, fieldNumber: 5)
+    try { if let v = self._queuedBefore {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
     } }()
     if self.pageSize != 0 {
       try visitor.visitSingularUInt32Field(value: self.pageSize, fieldNumber: 6)
@@ -4494,8 +4746,8 @@ nonisolated extension Heavylock_V2_ListJobsRequest: SwiftProtobuf.Message, Swift
     if lhs.states != rhs.states {return false}
     if lhs._repository != rhs._repository {return false}
     if lhs._clientName != rhs._clientName {return false}
-    if lhs._queuedAfterUnixNs != rhs._queuedAfterUnixNs {return false}
-    if lhs._queuedBeforeUnixNs != rhs._queuedBeforeUnixNs {return false}
+    if lhs._queuedAfter != rhs._queuedAfter {return false}
+    if lhs._queuedBefore != rhs._queuedBefore {return false}
     if lhs.pageSize != rhs.pageSize {return false}
     if lhs.pageToken != rhs.pageToken {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
@@ -4842,7 +5094,7 @@ nonisolated extension Heavylock_V2_DeleteJobResponse: SwiftProtobuf.Message, Swi
 
 nonisolated extension Heavylock_V2_DeleteHistoryRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DeleteHistoryRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}finished_before_unix_ns\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}finished_before\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4850,21 +5102,25 @@ nonisolated extension Heavylock_V2_DeleteHistoryRequest: SwiftProtobuf.Message, 
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularInt64Field(value: &self.finishedBeforeUnixNs) }()
+      case 1: try { try decoder.decodeSingularMessageField(value: &self._finishedBefore) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.finishedBeforeUnixNs != 0 {
-      try visitor.visitSingularInt64Field(value: self.finishedBeforeUnixNs, fieldNumber: 1)
-    }
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._finishedBefore {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Heavylock_V2_DeleteHistoryRequest, rhs: Heavylock_V2_DeleteHistoryRequest) -> Bool {
-    if lhs.finishedBeforeUnixNs != rhs.finishedBeforeUnixNs {return false}
+    if lhs._finishedBefore != rhs._finishedBefore {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -4937,179 +5193,139 @@ nonisolated extension Heavylock_V2_WatchEventsRequest: SwiftProtobuf.Message, Sw
 
 nonisolated extension Heavylock_V2_BrokerEvent: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BrokerEvent"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}event_seq\0\u{3}at_unix_ns\0\u{2}\u{8}snapshot\0\u{3}job_changed\0\u{3}queue_changed\0\u{3}status_changed\0\u{3}job_deleted\0\u{1}heartbeat\0")
-
-  fileprivate class _StorageClass {
-    var _eventSeq: Int64 = 0
-    var _atUnixNs: Int64 = 0
-    var _event: Heavylock_V2_BrokerEvent.OneOf_Event?
-
-      // This property is used as the initial default value for new instances of the type.
-      // The type itself is protecting the reference to its storage via CoW semantics.
-      // This will force a copy to be made of this reference when the first mutation occurs;
-      // hence, it is safe to mark this as `nonisolated(unsafe)`.
-      static nonisolated(unsafe) let defaultInstance = _StorageClass()
-
-    private init() {}
-
-    init(copying source: _StorageClass) {
-      _eventSeq = source._eventSeq
-      _atUnixNs = source._atUnixNs
-      _event = source._event
-    }
-  }
-
-  fileprivate mutating func _uniqueStorage() -> _StorageClass {
-    if !isKnownUniquelyReferenced(&_storage) {
-      _storage = _StorageClass(copying: _storage)
-    }
-    return _storage
-  }
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}event_seq\0\u{1}at\0\u{2}\u{8}snapshot\0\u{3}job_changed\0\u{3}queue_changed\0\u{3}status_changed\0\u{3}job_deleted\0\u{1}heartbeat\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    _ = _uniqueStorage()
-    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
-      while let fieldNumber = try decoder.nextFieldNumber() {
-        // The use of inline closures is to circumvent an issue where the compiler
-        // allocates stack space for every case branch when no optimizations are
-        // enabled. https://github.com/apple/swift-protobuf/issues/1034
-        switch fieldNumber {
-        case 1: try { try decoder.decodeSingularInt64Field(value: &_storage._eventSeq) }()
-        case 2: try { try decoder.decodeSingularInt64Field(value: &_storage._atUnixNs) }()
-        case 10: try {
-          var v: Heavylock_V2_BrokerSnapshot?
-          var hadOneofValue = false
-          if let current = _storage._event {
-            hadOneofValue = true
-            if case .snapshot(let m) = current {v = m}
-          }
-          try decoder.decodeSingularMessageField(value: &v)
-          if let v = v {
-            if hadOneofValue {try decoder.handleConflictingOneOf()}
-            _storage._event = .snapshot(v)
-          }
-        }()
-        case 11: try {
-          var v: Heavylock_V2_Job?
-          var hadOneofValue = false
-          if let current = _storage._event {
-            hadOneofValue = true
-            if case .jobChanged(let m) = current {v = m}
-          }
-          try decoder.decodeSingularMessageField(value: &v)
-          if let v = v {
-            if hadOneofValue {try decoder.handleConflictingOneOf()}
-            _storage._event = .jobChanged(v)
-          }
-        }()
-        case 12: try {
-          var v: Heavylock_V2_Queue?
-          var hadOneofValue = false
-          if let current = _storage._event {
-            hadOneofValue = true
-            if case .queueChanged(let m) = current {v = m}
-          }
-          try decoder.decodeSingularMessageField(value: &v)
-          if let v = v {
-            if hadOneofValue {try decoder.handleConflictingOneOf()}
-            _storage._event = .queueChanged(v)
-          }
-        }()
-        case 13: try {
-          var v: Heavylock_V2_BrokerStatus?
-          var hadOneofValue = false
-          if let current = _storage._event {
-            hadOneofValue = true
-            if case .statusChanged(let m) = current {v = m}
-          }
-          try decoder.decodeSingularMessageField(value: &v)
-          if let v = v {
-            if hadOneofValue {try decoder.handleConflictingOneOf()}
-            _storage._event = .statusChanged(v)
-          }
-        }()
-        case 14: try {
-          var v: String?
-          try decoder.decodeSingularStringField(value: &v)
-          if let v = v {
-            if _storage._event != nil {try decoder.handleConflictingOneOf()}
-            _storage._event = .jobDeleted(v)
-          }
-        }()
-        case 15: try {
-          var v: Heavylock_V2_Heartbeat?
-          var hadOneofValue = false
-          if let current = _storage._event {
-            hadOneofValue = true
-            if case .heartbeat(let m) = current {v = m}
-          }
-          try decoder.decodeSingularMessageField(value: &v)
-          if let v = v {
-            if hadOneofValue {try decoder.handleConflictingOneOf()}
-            _storage._event = .heartbeat(v)
-          }
-        }()
-        default: break
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularInt64Field(value: &self.eventSeq) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._at) }()
+      case 10: try {
+        var v: Heavylock_V2_BrokerSnapshot?
+        var hadOneofValue = false
+        if let current = self.event {
+          hadOneofValue = true
+          if case .snapshot(let m) = current {v = m}
         }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.event = .snapshot(v)
+        }
+      }()
+      case 11: try {
+        var v: Heavylock_V2_Job?
+        var hadOneofValue = false
+        if let current = self.event {
+          hadOneofValue = true
+          if case .jobChanged(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.event = .jobChanged(v)
+        }
+      }()
+      case 12: try {
+        var v: Heavylock_V2_Queue?
+        var hadOneofValue = false
+        if let current = self.event {
+          hadOneofValue = true
+          if case .queueChanged(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.event = .queueChanged(v)
+        }
+      }()
+      case 13: try {
+        var v: Heavylock_V2_BrokerStatus?
+        var hadOneofValue = false
+        if let current = self.event {
+          hadOneofValue = true
+          if case .statusChanged(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.event = .statusChanged(v)
+        }
+      }()
+      case 14: try {
+        var v: String?
+        try decoder.decodeSingularStringField(value: &v)
+        if let v = v {
+          if self.event != nil {try decoder.handleConflictingOneOf()}
+          self.event = .jobDeleted(v)
+        }
+      }()
+      case 15: try {
+        var v: Heavylock_V2_Heartbeat?
+        var hadOneofValue = false
+        if let current = self.event {
+          hadOneofValue = true
+          if case .heartbeat(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.event = .heartbeat(v)
+        }
+      }()
+      default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every if/case branch local when no optimizations
-      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-      // https://github.com/apple/swift-protobuf/issues/1182
-      if _storage._eventSeq != 0 {
-        try visitor.visitSingularInt64Field(value: _storage._eventSeq, fieldNumber: 1)
-      }
-      if _storage._atUnixNs != 0 {
-        try visitor.visitSingularInt64Field(value: _storage._atUnixNs, fieldNumber: 2)
-      }
-      switch _storage._event {
-      case .snapshot?: try {
-        guard case .snapshot(let v)? = _storage._event else { preconditionFailure() }
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 10)
-      }()
-      case .jobChanged?: try {
-        guard case .jobChanged(let v)? = _storage._event else { preconditionFailure() }
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 11)
-      }()
-      case .queueChanged?: try {
-        guard case .queueChanged(let v)? = _storage._event else { preconditionFailure() }
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 12)
-      }()
-      case .statusChanged?: try {
-        guard case .statusChanged(let v)? = _storage._event else { preconditionFailure() }
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 13)
-      }()
-      case .jobDeleted?: try {
-        guard case .jobDeleted(let v)? = _storage._event else { preconditionFailure() }
-        try visitor.visitSingularStringField(value: v, fieldNumber: 14)
-      }()
-      case .heartbeat?: try {
-        guard case .heartbeat(let v)? = _storage._event else { preconditionFailure() }
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 15)
-      }()
-      case nil: break
-      }
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if self.eventSeq != 0 {
+      try visitor.visitSingularInt64Field(value: self.eventSeq, fieldNumber: 1)
+    }
+    try { if let v = self._at {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    } }()
+    switch self.event {
+    case .snapshot?: try {
+      guard case .snapshot(let v)? = self.event else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 10)
+    }()
+    case .jobChanged?: try {
+      guard case .jobChanged(let v)? = self.event else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 11)
+    }()
+    case .queueChanged?: try {
+      guard case .queueChanged(let v)? = self.event else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 12)
+    }()
+    case .statusChanged?: try {
+      guard case .statusChanged(let v)? = self.event else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 13)
+    }()
+    case .jobDeleted?: try {
+      guard case .jobDeleted(let v)? = self.event else { preconditionFailure() }
+      try visitor.visitSingularStringField(value: v, fieldNumber: 14)
+    }()
+    case .heartbeat?: try {
+      guard case .heartbeat(let v)? = self.event else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 15)
+    }()
+    case nil: break
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Heavylock_V2_BrokerEvent, rhs: Heavylock_V2_BrokerEvent) -> Bool {
-    if lhs._storage !== rhs._storage {
-      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
-        let _storage = _args.0
-        let rhs_storage = _args.1
-        if _storage._eventSeq != rhs_storage._eventSeq {return false}
-        if _storage._atUnixNs != rhs_storage._atUnixNs {return false}
-        if _storage._event != rhs_storage._event {return false}
-        return true
-      }
-      if !storagesAreEqual {return false}
-    }
+    if lhs.eventSeq != rhs.eventSeq {return false}
+    if lhs._at != rhs._at {return false}
+    if lhs.event != rhs.event {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -5119,81 +5335,41 @@ nonisolated extension Heavylock_V2_BrokerSnapshot: SwiftProtobuf.Message, SwiftP
   public static let protoMessageName: String = _protobuf_package + ".BrokerSnapshot"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}status\0\u{1}queue\0\u{3}active_jobs\0")
 
-  fileprivate class _StorageClass {
-    var _status: Heavylock_V2_BrokerStatus? = nil
-    var _queue: Heavylock_V2_Queue? = nil
-    var _activeJobs: [Heavylock_V2_Job] = []
-
-      // This property is used as the initial default value for new instances of the type.
-      // The type itself is protecting the reference to its storage via CoW semantics.
-      // This will force a copy to be made of this reference when the first mutation occurs;
-      // hence, it is safe to mark this as `nonisolated(unsafe)`.
-      static nonisolated(unsafe) let defaultInstance = _StorageClass()
-
-    private init() {}
-
-    init(copying source: _StorageClass) {
-      _status = source._status
-      _queue = source._queue
-      _activeJobs = source._activeJobs
-    }
-  }
-
-  fileprivate mutating func _uniqueStorage() -> _StorageClass {
-    if !isKnownUniquelyReferenced(&_storage) {
-      _storage = _StorageClass(copying: _storage)
-    }
-    return _storage
-  }
-
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    _ = _uniqueStorage()
-    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
-      while let fieldNumber = try decoder.nextFieldNumber() {
-        // The use of inline closures is to circumvent an issue where the compiler
-        // allocates stack space for every case branch when no optimizations are
-        // enabled. https://github.com/apple/swift-protobuf/issues/1034
-        switch fieldNumber {
-        case 1: try { try decoder.decodeSingularMessageField(value: &_storage._status) }()
-        case 2: try { try decoder.decodeSingularMessageField(value: &_storage._queue) }()
-        case 3: try { try decoder.decodeRepeatedMessageField(value: &_storage._activeJobs) }()
-        default: break
-        }
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularMessageField(value: &self._status) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._queue) }()
+      case 3: try { try decoder.decodeRepeatedMessageField(value: &self.activeJobs) }()
+      default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every if/case branch local when no optimizations
-      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-      // https://github.com/apple/swift-protobuf/issues/1182
-      try { if let v = _storage._status {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
-      } }()
-      try { if let v = _storage._queue {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
-      } }()
-      if !_storage._activeJobs.isEmpty {
-        try visitor.visitRepeatedMessageField(value: _storage._activeJobs, fieldNumber: 3)
-      }
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._status {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
+    try { if let v = self._queue {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    } }()
+    if !self.activeJobs.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.activeJobs, fieldNumber: 3)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Heavylock_V2_BrokerSnapshot, rhs: Heavylock_V2_BrokerSnapshot) -> Bool {
-    if lhs._storage !== rhs._storage {
-      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
-        let _storage = _args.0
-        let rhs_storage = _args.1
-        if _storage._status != rhs_storage._status {return false}
-        if _storage._queue != rhs_storage._queue {return false}
-        if _storage._activeJobs != rhs_storage._activeJobs {return false}
-        return true
-      }
-      if !storagesAreEqual {return false}
-    }
+    if lhs._status != rhs._status {return false}
+    if lhs._queue != rhs._queue {return false}
+    if lhs.activeJobs != rhs.activeJobs {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

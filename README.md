@@ -508,9 +508,14 @@ tuna force-start --job JOB_UUID
 
 Controls default to port 49783 and a total five-second RPC deadline
 (`--timeout 10s` overrides it); runners still require an explicit port.
-`--json` emits protobuf JSON including default fields; human output labels
-forced jobs `FORCED`. Usage errors exit 64, failed/unavailable/incompatible
-RPCs or output failures exit 70, successful controls exit 0. Error output
+`--json` emits protobuf JSON including scalar defaults while omitting unknown
+optional values. Human output labels forced jobs `FORCED`, shows job times in
+the local time zone and reports available 1-, 5- and 15-minute load averages;
+only the 1-minute load affects admission. These are the last values sampled
+for an admission decision, not a continuous poll; the monitor sees updates
+when a status event is published, so readings can lag. Usage errors exit 64,
+failed/unavailable/incompatible RPCs or output failures exit 70, successful
+controls exit 0. Error output
 includes the gRPC code and stable reason. All CLI controls execute without
 confirmation, including cancel and force-start; monitor confirmations
 remain the monitor's responsibility.
@@ -519,10 +524,19 @@ Unary REST routes are `/v1/health`, `/v1/status`, `/v1/queue`, `/v1/jobs`,
 `/v1/jobs/{job_id}` and `/v1/submissions/{idempotency_key}` for inspection;
 POST `/v1/queue/pause`, `/v1/queue/resume`,
 `/v1/jobs/{job_id}/move`, `/cancel` and `/force-start` invoke controls.
-DELETE `/v1/jobs/{job_id}` and `/v1/history?finishedBeforeUnixNs=...`
-delete safe terminal history. Responses use protobuf JSON; errors use
+DELETE `/v1/jobs/{job_id}` and `/v1/history?finishedBefore=...`
+delete safe terminal history. Time query parameters such as `queuedAfter`,
+`queuedBefore` and `finishedBefore` accept RFC 3339 timestamps; encode `+` in
+offsets as `%2B`. Responses use protobuf JSON: timestamps are RFC 3339 strings,
+durations are strings such as `"1.234s"`, scalar defaults are emitted and
+unknown optionals are absent. Errors use
 `google.rpc.Status` JSON with the same code/message/details as gRPC.
 REST is unary/polling only, not an event or runner-lifecycle endpoint.
+
+Health reports a SemVer service version. Stable clients require the same
+major and the minimum minor they need; prerelease clients and brokers require
+an exact version match. This unreleased contract uses `2.2.0-dev.34`, so
+update the v2 broker, runner and monitor together.
 
 gRPC `WatchEvents` starts from an atomic snapshot/cursor at sequence 0;
 reconnects resume after the last processed sequence. The service maintains

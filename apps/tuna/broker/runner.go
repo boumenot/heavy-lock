@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"math"
 	"regexp"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // DefaultHeartbeatInterval is the initial runner stream heartbeat period.
@@ -60,10 +62,7 @@ func validRunner(r *pb.RunnerIncarnation) error {
 	if r == nil || !uuidV4.MatchString(r.IncarnationId) {
 		return invalid("runner.incarnation_id", "a lowercase canonical UUIDv4 runner incarnation is required")
 	}
-	if r.Process == nil || r.Process.Pid <= 0 || r.Process.StartTimeUnixNs <= 0 {
-		return invalid("runner.process", "the runner process identity is required")
-	}
-	return nil
+	return validProcess("runner.process", r.Process)
 }
 
 func validSubmit(req *pb.SubmitJobRequest) error {
@@ -91,7 +90,11 @@ func validGrant(jobID, grantID string, runner *pb.RunnerIncarnation) error {
 }
 
 func validProcess(field string, p *pb.ProcessIdentity) error {
-	if p == nil || p.Pid <= 0 || p.StartTimeUnixNs <= 0 {
+	if p == nil || p.Pid <= 0 {
+		return invalid(field, "a process identity with PID and start time is required")
+	}
+	start, err := contract.UnixNano(p.StartTime)
+	if err != nil || start <= 0 {
 		return invalid(field, "a process identity with PID and start time is required")
 	}
 	return nil
@@ -204,7 +207,7 @@ func (b *Runner) serve(ctx context.Context, stream grpc.ServerStreamingServer[pb
 	}
 	now := func() int64 { return time.Now().UnixNano() }
 	send := func(e *pb.JobEvent) error {
-		e.EventSeq, e.AtUnixNs = seq, now()
+		e.EventSeq, e.At = seq, contract.Timestamp(now())
 		return stream.Send(e)
 	}
 	if err := send(&pb.JobEvent{Event: &pb.JobEvent_Snapshot{Snapshot: job}}); err != nil {
@@ -227,7 +230,7 @@ func (b *Runner) serve(ctx context.Context, stream grpc.ServerStreamingServer[pb
 			if reg != nil && !b.sched.Current(reg) {
 				return nil // superseded by a newer stream for the same job
 			}
-			if err := send(&pb.JobEvent{Event: &pb.JobEvent_Heartbeat{Heartbeat: &pb.Heartbeat{HeartbeatIntervalMs: b.heartbeat.Milliseconds()}}}); err != nil {
+			if err := send(&pb.JobEvent{Event: &pb.JobEvent_Heartbeat{Heartbeat: &pb.Heartbeat{HeartbeatInterval: durationpb.New(b.heartbeat)}}}); err != nil {
 				return err
 			}
 		case e := <-sub.Events():
@@ -240,7 +243,7 @@ func (b *Runner) serve(ctx context.Context, stream grpc.ServerStreamingServer[pb
 			}
 			out, done := t.apply(e, job.JobId)
 			for _, o := range out {
-				o.EventSeq, o.AtUnixNs = seq, e.AtUnixNs
+				o.EventSeq, o.At = seq, e.At
 				if err := stream.Send(o); err != nil {
 					return err
 				}
@@ -260,7 +263,7 @@ type tracker struct {
 }
 
 func newTracker(j *pb.Job) *tracker {
-	t := &tracker{granted: j.Grant != nil, cancelled: j.CancelRequestedAtUnixNs != nil}
+	t := &tracker{granted: j.Grant != nil, cancelled: j.CancelRequestedAt != nil}
 	if j.QueuePosition != nil {
 		t.position = &pb.QueuePositionChanged{Position: *j.QueuePosition}
 	}
@@ -291,7 +294,7 @@ func (t *tracker) apply(e *pb.BrokerEvent, id string) ([]*pb.JobEvent, bool) {
 		t.position = nil
 		out = append(out, &pb.JobEvent{Event: &pb.JobEvent_Granted{Granted: j.Grant}})
 	}
-	if !t.cancelled && j.CancelRequestedAtUnixNs != nil && j.State != pb.JobState_JOB_STATE_FINISHED {
+	if !t.cancelled && j.CancelRequestedAt != nil && j.State != pb.JobState_JOB_STATE_FINISHED {
 		t.cancelled = true
 		running := j.State == pb.JobState_JOB_STATE_RUNNING || j.State == pb.JobState_JOB_STATE_FINISHING
 		out = append(out, &pb.JobEvent{Event: &pb.JobEvent_CancelRequested{CancelRequested: &pb.CancelRequested{TerminateRunning: running, Reason: j.CancelReason}}})
@@ -386,24 +389,29 @@ func (b *Runner) ReportFinished(ctx context.Context, req *pb.ReportFinishedReque
 	if err := validOutcome(req.Outcome); err != nil {
 		return nil, err
 	}
-	if req.ElapsedMs != nil && *req.ElapsedMs < 0 {
-		return nil, invalid("elapsed_ms", "the observed runtime must not be negative")
+	elapsed, err := contract.OptionalMilliseconds(req.Elapsed)
+	if err != nil {
+		return nil, invalid("elapsed", err.Error())
 	}
-	if req.RootCpuTimeMs != nil && *req.RootCpuTimeMs < 0 {
-		return nil, invalid("root_cpu_time_ms", "the observed root CPU time must not be negative")
+	cpu, err := contract.OptionalMilliseconds(req.RootCpuTime)
+	if err != nil || cpu != nil && *cpu > math.MaxInt64/int64(time.Millisecond) {
+		return nil, invalid("root_cpu_time", "the observed root CPU time must be nonnegative, representable and have millisecond precision")
 	}
 	commit := func(summary *pb.ResourceSummary) (*pb.Job, error) {
 		job, _, err := b.sched.ReportFinishedWithResources(ctx, req.JobId, req.GrantId, req.Runner, req.Process, req.Outcome, summary)
 		return job, err
 	}
 	var job *pb.Job
-	var err error
 	if b.resources != nil {
 		job, err = b.resources.Finish(ctx, req, commit)
 	} else {
-		root := jobmetrics.Identity{PID: req.Process.Pid, StartTimeUnixNs: req.Process.StartTimeUnixNs}
+		start, startErr := contract.UnixNano(req.Process.StartTime)
+		if startErr != nil {
+			return nil, invalid("process.start_time", startErr.Error())
+		}
+		root := jobmetrics.Identity{PID: req.Process.Pid, StartTimeUnixNs: start}
 		a := jobmetrics.New(root, nil, false)
-		a.Finish(req.ElapsedMs, req.RootCpuTimeMs)
+		a.Finish(elapsed, cpu)
 		job, err = commit(a.Summary())
 	}
 	return b.result(ctx, req.JobId, req.GrantId, req.Runner, job, err)

@@ -99,6 +99,7 @@ public final class MonitorSession {
         case gap
         case streamEnded
         case heartbeatTimeout(Duration)
+        case invalidHeartbeat
     }
 
     private func run() async {
@@ -135,6 +136,8 @@ public final class MonitorSession {
                         self.markUnavailable("the broker closed the event stream")
                     case .heartbeatTimeout(let timeout):
                         self.markUnavailable("no heartbeat from the broker for \(timeout)")
+                    case .invalidHeartbeat:
+                        self.markUnavailable("the broker sent an invalid heartbeat interval")
                     }
                 } else if let failure = error as? BrokerFailure, failure.isEventsExpired {
                     self.state.requireSnapshot(
@@ -203,8 +206,14 @@ public final class MonitorSession {
 
     private func receive(_ event: Heavylock_V2_BrokerEvent) async throws {
         self.lastMessage = .now
-        if case .heartbeat(let heartbeat) = event.event, heartbeat.heartbeatIntervalMs > 0 {
-            self.heartbeatInterval = .milliseconds(heartbeat.heartbeatIntervalMs)
+        if case .heartbeat(let heartbeat) = event.event, heartbeat.hasHeartbeatInterval {
+            let interval = heartbeat.heartbeatInterval
+            guard interval.seconds >= 0, interval.seconds <= 315_576_000_000,
+                interval.nanos >= 0, interval.nanos < 1_000_000_000
+            else { throw Restart.invalidHeartbeat }
+            if interval.seconds > 0 || interval.nanos > 0 {
+                self.heartbeatInterval = .seconds(interval.seconds) + .nanoseconds(Int64(interval.nanos))
+            }
         }
         let wasSnapshot: Bool
         if case .snapshot = event.event { wasSnapshot = true } else { wasSnapshot = false }

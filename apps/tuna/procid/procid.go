@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 )
 
@@ -39,7 +40,7 @@ func Of(pid int) (*pb.ProcessIdentity, error) {
 	if state == Absent {
 		return nil, errors.New("process is not present")
 	}
-	return &pb.ProcessIdentity{Pid: int64(pid), StartTimeUnixNs: start}, nil
+	return &pb.ProcessIdentity{Pid: int64(pid), StartTime: contract.Timestamp(start)}, nil
 }
 
 // Self returns the identity of the calling process.
@@ -52,11 +53,15 @@ func Exited(p *pb.ProcessIdentity) (bool, error) {
 	if p == nil || p.Pid <= 0 || p.Pid > int64(^uint32(0)>>1) {
 		return false, errors.New("a valid process identity is required")
 	}
+	expected, err := contract.UnixNano(p.StartTime)
+	if err != nil || expected <= 0 {
+		return false, errors.New("a valid process start time is required")
+	}
 	start, state, err := observe(int(p.Pid))
 	if err != nil {
 		return false, err
 	}
-	return state == Absent || state == Zombie || start != p.StartTimeUnixNs, nil
+	return state == Absent || state == Zombie || start != expected, nil
 }
 
 // Probe adapts Exited to the scheduler's process probe.

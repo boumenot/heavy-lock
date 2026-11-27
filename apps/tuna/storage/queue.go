@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 )
 
@@ -98,7 +99,8 @@ func (tx *Tx) SetQueueConnection(id string, runner *pb.RunnerIncarnation, connec
 		[]any{id}, &incarnation, &pid, &start); err != nil {
 		return err
 	}
-	if incarnation != runner.IncarnationId || pid != runner.Process.Pid || start != runner.Process.StartTimeUnixNs {
+	runnerStart, err := processStart(runner.Process)
+	if err != nil || incarnation != runner.IncarnationId || pid != runner.Process.Pid || start != runnerStart {
 		return ErrIdentity
 	}
 	if j.RunnerConnected == connected {
@@ -223,10 +225,12 @@ func (tx *Tx) Reserve(id string, run int64, admission Admission) error {
 		return ErrTransition
 	}
 	runner := &pb.RunnerIncarnation{Process: &pb.ProcessIdentity{}}
+	var start int64
 	if err := tx.scan("SELECT runner_incarnation_id,runner_pid,runner_start_time_ns FROM queue_entries WHERE job_id=?",
-		[]any{id}, &runner.IncarnationId, &runner.Process.Pid, &runner.Process.StartTimeUnixNs); err != nil {
+		[]any{id}, &runner.IncarnationId, &runner.Process.Pid, &start); err != nil {
 		return err
 	}
+	runner.Process.StartTime = contract.Timestamp(start)
 	if err := tx.reserve(id, runner, run, admission); err != nil {
 		return err
 	}
@@ -247,6 +251,10 @@ func (tx *Tx) reserve(id string, runner *pb.RunnerIncarnation, run int64, admiss
 		return errors.New("invalid admission")
 	}
 	grant, err := newID()
+	if err != nil {
+		return err
+	}
+	start, err := processStart(runner.Process)
 	if err != nil {
 		return err
 	}
@@ -273,5 +281,5 @@ func (tx *Tx) reserve(id string, runner *pb.RunnerIncarnation, run int64, admiss
 	return tx.exec(`INSERT INTO reservations(job_id,grant_id,weight,forced,granted_at_ns,
 		service_run_id,runner_incarnation_id,runner_pid,runner_start_time_ns)
 		SELECT id,?,weight,forced,?,?,?,?,? FROM jobs WHERE id=?`,
-		grant, tx.at, run, runner.IncarnationId, runner.Process.Pid, runner.Process.StartTimeUnixNs, id)
+		grant, tx.at, run, runner.IncarnationId, runner.Process.Pid, start, id)
 }

@@ -54,6 +54,18 @@ import Testing
         #expect(state.queue.map(\.jobID) == ["q1"])
         #expect(state.apply(jobEvent(seq: 10, job("q2", .queued)), at: self.now) == .gap)
     }
+
+    @Test func activeJobsSortByTimestampIncludingNanoseconds() {
+        var first = job("a", .running)
+        first.admittedAt.seconds = 100
+        first.admittedAt.nanos = 2
+        var second = job("b", .running)
+        second.admittedAt.seconds = 100
+        second.admittedAt.nanos = 1
+        var state = MonitorState()
+        _ = state.apply(snapshotEvent(seq: 1, active: [first, job("missing", .running), second]), at: self.now)
+        #expect(state.active.map(\.jobID) == ["b", "a", "missing"])
+    }
 }
 
 @Suite struct PresentationTests {
@@ -104,6 +116,29 @@ import Testing
         #expect(Presentation.statusLine(state)?.hasPrefix("Capacity 0/2 · 0 running · 1 queued") == true)
         _ = state.apply(jobEvent(seq: 2, job("q", .running, weight: 2)), at: self.now)
         #expect(Presentation.statusLine(state)?.hasPrefix("Capacity 2/2 · 1 running · 0 queued") == true)
+    }
+
+    @Test func displaysPresentLoadsAndLocalJobTime() {
+        var state = MonitorState()
+        var sample = status()
+        sample.loadAverage1M = 0
+        sample.loadAverage15M = 2.5
+        state.status = sample
+        let line = Presentation.statusLine(state) ?? ""
+        #expect(line.contains("load 1m 0.00 / 15m 2.50"))
+        #expect(!line.contains(" / 5m "))
+
+        var running = job("r", .running)
+        running.startedAt.seconds = 900
+        let row = Presentation.row(running, capacity: 2, now: self.now)
+        let local = DateFormatter.localizedString(
+            from: Date(timeIntervalSince1970: 900), dateStyle: .short, timeStyle: .medium)
+        #expect(row.summary.contains("1m 40s"))
+        #expect(row.details.contains("Started \(local)"))
+
+        var finished = job("f", .finished)
+        finished.resources.elapsed.seconds = 90
+        #expect(Presentation.row(finished, capacity: 2, now: self.now).details.contains("Ran 1m 30s"))
     }
 
     @Test func unavailableBannerLabelsLastKnownStateAsNotLive() {
@@ -262,7 +297,7 @@ import Testing
 
     @Test func brokerWithoutExplicitQueueStateIsIncompatible() async {
         var health = FakeBroker.liveHealth()
-        health.apiMinor = 0
+        health.serviceVersion = "2.0.0"
         let broker = FakeBroker(health: health)
         let session = MonitorSession(client: broker, reconnectDelay: .milliseconds(20))
         session.start()
@@ -272,6 +307,21 @@ import Testing
             return false
         })
         #expect(broker.snapshot.watches.isEmpty)
+    }
+
+    @Test func invalidHeartbeatMarksConnectionUnavailable() async {
+        let broker = FakeBroker()
+        let (session, stream) = await self.liveSession(broker, snapshot: snapshotEvent(seq: 1))
+        defer { session.stop() }
+        var event = heartbeatEvent(seq: 1, intervalMs: 1_000)
+        event.heartbeat.heartbeatInterval.nanos = 1_000_000_000
+        stream.yield(event)
+        #expect(await eventually {
+            if case .unavailable(let detail) = session.state.connection {
+                return detail.contains("invalid heartbeat interval")
+            }
+            return false
+        })
     }
 
     @Test func failedBrokerStorageIsAnErrorAndNotWatched() async {

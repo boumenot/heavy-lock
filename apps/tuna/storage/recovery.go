@@ -3,6 +3,7 @@ package storage
 import (
 	"errors"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 )
 
@@ -27,9 +28,11 @@ func (r *Reader) Processes(id string) ([]Process, error) {
 	var processes []Process
 	for rows.Next() {
 		p := Process{Identity: &pb.ProcessIdentity{}}
-		if err = rows.Scan(&p.Identity.Pid, &p.Identity.StartTimeUnixNs, &p.Role, &p.FirstSeenAt, &p.LastSeenAt, &p.ExitedVerifiedAt); err != nil {
+		var start int64
+		if err = rows.Scan(&p.Identity.Pid, &start, &p.Role, &p.FirstSeenAt, &p.LastSeenAt, &p.ExitedVerifiedAt); err != nil {
 			break
 		}
+		p.Identity.StartTime = contract.Timestamp(start)
 		processes = append(processes, p)
 	}
 	err = errors.Join(err, rows.Err(), rows.Close())
@@ -62,10 +65,14 @@ type Grace struct {
 
 func (r *Reader) QueueGrace(id string) (*Grace, error) {
 	g := &Grace{Runner: &pb.RunnerIncarnation{Process: &pb.ProcessIdentity{}}}
+	var start int64
 	err := r.scan(`SELECT grace_elapsed_us,grace_started_at_ns,grace_service_run_id,
 		runner_incarnation_id,runner_pid,runner_start_time_ns,runner_connected
 		FROM queue_entries WHERE job_id=?`, []any{id}, &g.ElapsedUS, &g.StartedAt, &g.ServiceRunID,
-		&g.Runner.IncarnationId, &g.Runner.Process.Pid, &g.Runner.Process.StartTimeUnixNs, &g.Connected)
+		&g.Runner.IncarnationId, &g.Runner.Process.Pid, &start, &g.Connected)
+	if err == nil {
+		g.Runner.Process.StartTime = contract.Timestamp(start)
+	}
 	return g, err
 }
 

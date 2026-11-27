@@ -5,14 +5,17 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"syscall"
 	"time"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/procid"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 type streamMsg struct {
@@ -260,8 +263,13 @@ func (a *attempt) handle(ctx context.Context, ev *pb.JobEvent) (result, bool) {
 	case *pb.JobEvent_QueuePositionChanged:
 		a.waiting(e.QueuePositionChanged.GetPosition(), e.QueuePositionChanged.GetQueueLength())
 	case *pb.JobEvent_Heartbeat:
-		if ms := e.Heartbeat.GetHeartbeatIntervalMs(); ms > 0 {
-			a.heartbeat = time.Duration(ms) * time.Millisecond
+		if interval := e.Heartbeat.GetHeartbeatInterval(); interval != nil {
+			heartbeat := interval.AsDuration()
+			if err := interval.CheckValid(); err != nil || heartbeat <= 0 || heartbeat > time.Duration(math.MaxInt64/3) {
+				a.r.logf("broker sent an invalid heartbeat interval")
+			} else {
+				a.heartbeat = heartbeat
+			}
 		}
 	}
 	return result{}, false
@@ -288,7 +296,7 @@ func (a *attempt) apply(ctx context.Context, job *pb.Job) (result, bool) {
 	if a.grant == nil && job.Grant != nil {
 		a.grant = job.Grant
 	}
-	if job.CancelRequestedAtUnixNs != nil {
+	if job.CancelRequestedAt != nil {
 		if res, done := a.cancel(ctx); done {
 			return res, true
 		}
@@ -454,7 +462,7 @@ func (a *attempt) childExited(exit childExit) (result, bool) {
 	if _, err := retry(context.WithoutCancel(a.r.interrupt), a.r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
 		return a.r.client.ReportFinished(c, &pb.ReportFinishedRequest{
 			JobId: a.jobID, GrantId: a.grant.GetGrantId(), Outcome: outcome, Runner: a.r.inc, Process: a.proc,
-			ElapsedMs: exit.elapsedMs, RootCpuTimeMs: exit.rootCPUMs,
+			Elapsed: optionalMilliseconds(exit.elapsedMs), RootCpuTime: optionalMilliseconds(exit.rootCPUMs),
 		})
 	}); err != nil {
 		a.r.logf("finish report for job %s not delivered: %s; its reservation stays held until the broker verifies the command exited", a.jobID, describe(err))
@@ -469,6 +477,13 @@ func (a *attempt) childExited(exit childExit) (result, bool) {
 	return result{}, false
 }
 
+func optionalMilliseconds(ms *int64) *durationpb.Duration {
+	if ms == nil {
+		return nil
+	}
+	return contract.MillisecondDuration(*ms)
+}
+
 func (a *attempt) finished(job *pb.Job) (result, bool) {
 	if a.running {
 		// The command is still this runner's; keep waiting for it.
@@ -478,7 +493,7 @@ func (a *attempt) finished(job *pb.Job) (result, bool) {
 	o := job.GetOutcome()
 	if a.ran {
 		eligible := !a.awaitFinal.IsZero() && o.GetKind() == pb.OutcomeKind_OUTCOME_KIND_EXITED &&
-			o.GetExitCode() != 0 && job.CancelRequestedAtUnixNs == nil && !job.GetForced()
+			o.GetExitCode() != 0 && job.CancelRequestedAt == nil && !job.GetForced()
 		return result{code: a.code, jobID: a.jobID, retryable: eligible}, true
 	}
 	switch o.GetKind() {
