@@ -655,7 +655,9 @@ The port comes from `--port`, then `TUNA_MONITOR_PORT`, then 49783. On
 every (re)connect the monitor checks `Health` for a compatible
 `heavylock.v2` service, then watches events from a snapshot and resumes
 after the last processed sequence. A sequence gap or `EVENTS_EXPIRED`
-rebuilds from a fresh snapshot with a notice. No message for
+rebuilds from a fresh snapshot with a notice. An empty or unrecognized event
+marks the connection unavailable and retries from a snapshot after the normal
+reconnect delay. No message for
 max(15 s, 3 × heartbeat interval) marks the broker unavailable. When not
 live it keeps the last known state dimmed and labelled with its age, never
 as live, and disables controls.

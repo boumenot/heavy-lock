@@ -2,6 +2,7 @@
 """Run bounded TLC cases; fail unless their documented outcomes occur."""
 
 import argparse
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -70,6 +71,26 @@ CASES = {
     "RunnerFinishDropped": "NoDroppedEarlyFinal",
     "RunnerFinishEarlyAck": "NeverEarlyAck",
     "RunnerFinishEarlyFinal": "NeverEarlyFinal",
+    "MonitorDelivery": None,
+    "MonitorLoss": None,
+    "MonitorRestart": None,
+    "MonitorStorage": None,
+    "MonitorGap": None,
+    "MonitorFair": None,
+    "MonitorUnknownSafe": None,
+    "MonitorEmptySafe": None,
+    "MonitorStaleLive": "NoDetectedLossLive",
+    "MonitorStaleMode": "NonLiveModeUnknown",
+    "MonitorUnknownMode": "EnabledOnlyWhenKnown",
+    "MonitorBlindReplay": "LiveHasAttemptHealth",
+    "MonitorUnknownEvent": "LiveReflectsDeliveredSeq",
+    "MonitorEmptyFirst": "LiveHasSnapshot",
+    "MonitorReplayReached": "NeverReplayAfterDisconnect",
+    "MonitorGapReached": "NeverGapRefresh",
+    "MonitorStorageReached": "NeverStorageObserved",
+    "MonitorRecoveryReached": "NeverRecoveringLive",
+    "MonitorEpochWitness": "LiveHealthSameEpoch",
+    "MonitorLagWitness": "LiveAtBrokerHead",
 }
 
 
@@ -77,29 +98,42 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", nargs="+", choices=CASES)
     parser.add_argument("--logs", type=Path, required=True)
+    parser.add_argument("--timeout", type=float, help="maximum seconds per TLC case")
     args = parser.parse_args()
+    if args.timeout is not None and (not math.isfinite(args.timeout) or args.timeout <= 0):
+        parser.error("--timeout must be finite and positive")
     args.logs.mkdir(parents=True, exist_ok=True)
 
     for case in args.cases:
         log = args.logs.resolve() / f"{case}.log"
         with tempfile.TemporaryDirectory(prefix=f"heavy-lock-{case}-") as tmp:
             with log.open("w") as output:
-                result = subprocess.run(
-                    [
-                        "tlc", "-workers", "1", "-fpmem", "0.05",
-                        "-noGenerateSpecTE", "-metadir", tmp,
-                        "-config", f"{case}.cfg",
-                        (
-                            "DescendantScan.tla" if case.startswith("DescendantScan")
-                            else "RunnerFinish.tla" if case.startswith("RunnerFinish")
-                            else "BrokerRunner.tla"
-                        ),
-                    ],
-                    cwd=Path(__file__).resolve().parent,
-                    stdout=output,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                )
+                command = [
+                    "tlc", "-workers", "1", "-fpmem", "0.05",
+                    "-noGenerateSpecTE", "-metadir", tmp,
+                ]
+                if case.startswith("Monitor"):
+                    command.extend(["-coverage", "1"])
+                command.extend([
+                    "-config", f"{case}.cfg",
+                    (
+                        "DescendantScan.tla" if case.startswith("DescendantScan")
+                        else "RunnerFinish.tla" if case.startswith("RunnerFinish")
+                        else "MonitorFreshness.tla" if case.startswith("Monitor")
+                        else "BrokerRunner.tla"
+                    ),
+                ])
+                try:
+                    result = subprocess.run(
+                        command,
+                        cwd=Path(__file__).resolve().parent,
+                        stdout=output,
+                        stderr=subprocess.STDOUT,
+                        check=False,
+                        timeout=args.timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    raise SystemExit(f"{case}: exceeded {args.timeout}s; log: {log}")
         text = log.read_text()
         expected = CASES[case]
         violation = re.search(r"Error: Invariant (\w+) is violated\.", text)

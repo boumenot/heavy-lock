@@ -100,6 +100,7 @@ public final class MonitorSession {
         case streamEnded
         case heartbeatTimeout(Duration)
         case invalidHeartbeat
+        case unrecognizedEvent
     }
 
     private func run() async {
@@ -138,6 +139,8 @@ public final class MonitorSession {
                         self.markUnavailable("no heartbeat from the broker for \(timeout)")
                     case .invalidHeartbeat:
                         self.markUnavailable("the broker sent an invalid heartbeat interval")
+                    case .unrecognizedEvent:
+                        break
                     }
                 } else if let failure = error as? BrokerFailure, failure.isEventsExpired {
                     self.state.requireSnapshot(
@@ -220,6 +223,10 @@ public final class MonitorSession {
         switch self.state.apply(event, at: Date()) {
         case .gap:
             throw Restart.gap
+        case .unrecognized:
+            self.state.requireSnapshot(notice: "Received an unrecognized broker event; refreshing from a new snapshot.")
+            self.markUnavailable("unrecognized broker event; refreshing")
+            throw Restart.unrecognizedEvent
         case .applied, .duplicate:
             break
         }
