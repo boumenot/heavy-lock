@@ -61,7 +61,7 @@ failed build or install keeps the previous artifact.
 |---|---|---|---|
 | `heavy-lock` | `build/heavy-lock/heavy-lock`, `heavy-lock-status` | `~/.local/bin/heavy-lock` | Atomic replace via `tool/install.sh` (macOS/Linux) |
 | `monitor-macos` | `build/monitor-macos/Heavy Lock Status.app` | `~/Applications/Heavy Lock Status.app` | Copied beside the target, then swapped in; the old bundle is restored on failure |
-| `tuna` | `build/tuna/tuna` | — | Not installable (v2 prototype) |
+| `tuna` | `build/tuna/tuna`, `tuna-test-broker` | — | Not installable (v2 prototype; the test broker is for integration tests only) |
 | `heavylock-v2-swift` | SwiftPM `.build/` only | — | Not installable (library) |
 
 The orchestrator does not acquire the lock itself. Wrap builds and test
@@ -390,14 +390,17 @@ tuna --port 49783 [--weight heavy|light|N] [--repository [HOST/]OWNER/NAME] \
 ```
 
 `tuna service` takes the non-blocking per-user singleton lock
-(`broker.lock`, never unlinked) and opens `broker.db` in the data directory
-(default `~/Library/Application Support/heavy-lock/v2`), then serves control
-gRPC, unary REST and the runner service on one IPv4 loopback port using
-plaintext HTTP/2 and HTTP/1.1. It logs `ready on 127.0.0.1:PORT` once
+(`broker.lock`, never unlinked) in the OS account's home directory and opens
+`broker.db` in the data directory (default
+`~/Library/Application Support/heavy-lock/v2`), then serves control gRPC,
+unary REST and the runner service on one IPv4 loopback port using plaintext
+HTTP/2 and HTTP/1.1. It logs `ready on 127.0.0.1:PORT` once
 admission is open and stops cleanly on SIGINT/SIGTERM. A second broker exits
-75 on the lock even with a different port (the design leaves the exit code
-unspecified); a port conflict exits 70. Login startup and crash restart (#17)
-are not provided. The runner:
+75 on the lock even with a different port or data directory (the design leaves
+the exit code unspecified); a port conflict exits 70. A per-user launchd agent
+can start and supervise it at login; see the [supervision and installation
+guide](docs/v2-supervision.md) for manual-check evidence and limitations.
+The runner:
 
 - requires an explicit `--port`, a running, ready broker, and a command
   after `--`; an unreachable, incompatible or recovering broker exits 69.
@@ -734,10 +737,12 @@ full commands, arguments, working directories and history, and can control
 the queue. The v1 monitor and `heavy-lock-status` are not views of v2 jobs.
 `dart tool/dev.dart test tuna-monitor-macos` runs the model, presentation
 and session tests against a scripted broker, and an integration test
-against a temporary real broker when `build/tuna/tuna` exists (set
-`TUNA_MONITOR_TEST_TUNA` to choose a binary for direct `swift test`).
-Cancellation of a single running root is covered; cancellation of a
-process tree and recovery are not yet verified end to end (#15).
+against a temporary real broker when `build/tuna/tuna-test-broker` exists
+(set `TUNA_MONITOR_TEST_TUNA` to that build for direct `swift test`). That
+build requires an isolated `TUNA_TEST_LOCK_DIR`, so the test never takes the
+account's real singleton lock; never point the test at a production `tuna`.
+The monitor integration test covers cancellation of a single running root,
+not process-tree cancellation or recovery.
 
 The shell deliberately uses `mkShellNoCC` and does not provide Swift: on
 macOS the monitor builds with the system Xcode `swift` (`xcode-select

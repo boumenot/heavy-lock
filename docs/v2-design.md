@@ -1049,8 +1049,22 @@ singleton lock before opening the database or accepting requests. If another
 broker holds it, fail clearly; the OS releases ownership when its owner
 exits. The lock identity is independent of the configured port. Do not
 unlink a lock file to infer or clear ownership: replacing its inode can
-create a second lock. Exact paths, primitives, filesystem support and
-platform-specific process/handle lifetime remain to be designed and tested.
+create a second lock. Platform-specific paths, primitives, filesystem support
+and process/handle lifetime require implementation and verification.
+
+**macOS implementation.** The CLI takes an exclusive non-blocking `flock`
+on `broker.lock` under the OS account home at
+`Library/Application Support/heavy-lock/v2` before opening storage. The
+identity does not depend on `HOME`, the port or `--data-dir`; lock ownership
+ends when the process exits, and the file is never unlinked. Data must be on
+a local filesystem supporting `flock` and SQLite WAL. The broker requires
+user-owned private state directories and database/WAL/SHM files, conservatively
+rejecting ACLs; it rejects insecure existing state rather than silently
+changing it. The production executable has no lock-directory override; only
+a separate `tuna_test_broker` build, used by integration tests outside the Go
+test binary, requires an isolated `TUNA_TEST_LOCK_DIR`. The launchd agent,
+manual verification and its limits are described in
+[v2 supervision](v2-supervision.md).
 
 SQLite serializes writers, not broker ownership: two schedulers can take
 turns committing transactions while making decisions from different

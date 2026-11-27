@@ -6,9 +6,9 @@ import Testing
 @testable import TunaMonitorCore
 
 /// Drives the monitor's gRPC client and session against a real broker. Opt
-/// in with `TUNA_MONITOR_TEST_TUNA=<path to a built tuna>`; the broker gets a
-/// temporary data directory and a free port, so it never touches the user's
-/// broker. Descendant cancellation and recovery are left to the recovery worklog.
+/// in with `TUNA_MONITOR_TEST_TUNA=<path to a tuna_test_broker build>`; the
+/// broker gets a temporary data directory, singleton lock directory and free
+/// port, so it never touches the user's broker. Descendant cancellation and recovery are left to the recovery worklog.
 @MainActor
 @Suite(
     .enabled(
@@ -20,12 +20,17 @@ import Testing
 struct BrokerIntegrationTests {
     @Test func monitorsAndControlsARealBroker() async throws {
         let tuna = try #require(ProcessInfo.processInfo.environment["TUNA_MONITOR_TEST_TUNA"])
-        let dataDir = FileManager.default.temporaryDirectory
+        let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("tuna-monitor-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dataDir) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // The broker creates both directories privately.
+        let dataDir = root.appendingPathComponent("data")
+        let lockDir = root.appendingPathComponent("singleton")
         let port = try freePort()
-        let broker = try launch(tuna, ["service", "--port", "\(port)", "--data-dir", dataDir.path])
+        let broker = try launch(
+            tuna, ["service", "--port", "\(port)", "--data-dir", dataDir.path],
+            environment: ["TUNA_TEST_LOCK_DIR": lockDir.path])
         var runners: [Process] = []
         defer {
             for process in runners + [broker] where process.isRunning {
@@ -108,10 +113,13 @@ private func waitFor(seconds: Int = 10, _ condition: () -> Bool) async -> Bool {
     return condition()
 }
 
-private func launch(_ executable: String, _ arguments: [String]) throws -> Process {
+private func launch(_ executable: String, _ arguments: [String], environment: [String: String] = [:]) throws -> Process {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: executable)
     process.arguments = arguments
+    if !environment.isEmpty {
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
+    }
     process.standardOutput = FileHandle.nullDevice
     try process.run()
     return process

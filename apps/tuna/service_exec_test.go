@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/boumenot/heavy-lock/apps/tuna/procid"
+	"github.com/boumenot/heavy-lock/apps/tuna/service"
 )
 
 const execEnv = "TUNA_TEST_EXEC_MAIN"
@@ -27,7 +28,16 @@ const execEnv = "TUNA_TEST_EXEC_MAIN"
 // public entry point is exercised in separate processes.
 func TestMain(m *testing.M) {
 	if os.Getenv(execEnv) == "1" {
-		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+		os.Exit(runWithService(os.Args[1:], os.Stdout, os.Stderr, func(ctx context.Context, o service.Options) error {
+			o.LockDir = os.Getenv("TUNA_TEST_LOCK_DIR")
+			if o.LockDir == "" {
+				return fmt.Errorf("test singleton directory is not set")
+			}
+			if os.Getenv("TUNA_TEST_CRASH_AFTER_READY") == "1" {
+				o.Ready = func(int) { os.Exit(73) }
+			}
+			return service.Run(ctx, o)
+		}))
 	}
 	os.Exit(m.Run())
 }
@@ -51,7 +61,7 @@ func (b *syncBuffer) String() string {
 
 func tunaCommand(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, os.Args[0], args...)
-	cmd.Env = append(os.Environ(), execEnv+"=1")
+	cmd.Env = append(os.Environ(), execEnv+"=1", "TUNA_TEST_CRASH_AFTER_READY=0")
 	return cmd
 }
 
@@ -122,6 +132,9 @@ type serviceProcess struct {
 
 func startService(t *testing.T, port int, dir string) *serviceProcess {
 	t.Helper()
+	if os.Getenv("TUNA_TEST_LOCK_DIR") == "" {
+		t.Fatal("test singleton directory is not set")
+	}
 	p := &serviceProcess{stderr: &syncBuffer{}, done: make(chan error, 1)}
 	p.cmd = tunaCommand(context.Background(), "service", "--port", fmt.Sprint(port), "--data-dir", dir)
 	p.cmd.Stdout, p.cmd.Stderr = io.Discard, p.stderr
@@ -196,7 +209,8 @@ func restCall(t *testing.T, port int, method, path string, header map[string]str
 }
 
 func TestExecutableServiceAndControls(t *testing.T) {
-	dir := t.TempDir()
+	t.Setenv("TUNA_TEST_LOCK_DIR", filepath.Join(t.TempDir(), "singleton"))
+	dir := filepath.Join(t.TempDir(), "state")
 	port := freePort(t)
 	p := startService(t, port, dir)
 	ps := fmt.Sprint(port)
@@ -251,10 +265,7 @@ func TestExecutableServiceAndControls(t *testing.T) {
 		t.Fatalf("preflight = %d %v", status, header)
 	}
 
-	if code, _, errOut = tuna(t, "service", "--port", ps, "--data-dir", t.TempDir()); code != 70 || !strings.Contains(errOut, "already in use") {
-		t.Fatalf("port conflict = %d %q", code, errOut)
-	}
-	if code, _, errOut = tuna(t, "service", "--port", fmt.Sprint(freePort(t)), "--data-dir", dir); code != 75 || !strings.Contains(errOut, "singleton lock") {
+	if code, _, errOut = tuna(t, "service", "--port", fmt.Sprint(freePort(t)), "--data-dir", filepath.Join(t.TempDir(), "state")); code != 75 || !strings.Contains(errOut, "singleton lock") {
 		t.Fatalf("lock conflict = %d %q", code, errOut)
 	}
 
@@ -262,8 +273,31 @@ func TestExecutableServiceAndControls(t *testing.T) {
 		t.Fatalf("pause = %d %q %q", code, out, errOut)
 	}
 	p.stop(t)
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	conflictPort := listener.Addr().(*net.TCPAddr).Port
+	if code, _, errOut = tuna(t, "service", "--port", fmt.Sprint(conflictPort), "--data-dir", filepath.Join(t.TempDir(), "state")); code != 70 || !strings.Contains(errOut, "already in use") {
+		t.Fatalf("port conflict = %d %q", code, errOut)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if code, _, errOut = tuna(t, "status", "--port", ps, "--timeout", "1s"); code != 70 || !strings.Contains(errOut, "broker unavailable") {
 		t.Fatalf("stopped broker = %d %q", code, errOut)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	crash := tunaCommand(ctx, "service", "--port", ps, "--data-dir", dir)
+	crash.Cancel = func() error { return crash.Process.Signal(syscall.SIGTERM) }
+	crash.Env = append(crash.Env, "TUNA_TEST_CRASH_AFTER_READY=1")
+	output, err := crash.CombinedOutput()
+	exit, ok := err.(*exec.ExitError)
+	if !ok || exit.ExitCode() != 73 || !strings.Contains(string(output), "ready on 127.0.0.1:") {
+		t.Fatalf("crashing broker = %v %q", err, output)
 	}
 
 	startService(t, port, dir)

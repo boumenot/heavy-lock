@@ -70,12 +70,19 @@ type launcher struct {
 	control func(args []string, stdout, stderr io.Writer) (int, bool)
 }
 
+// serviceRunner is replaced only by the tuna_test_broker build.
+var serviceRunner = service.Run
+
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithService(args, stdout, stderr, serviceRunner)
+}
+
+func runWithService(args []string, stdout, stderr io.Writer, runService func(context.Context, service.Options) error) int {
 	return dispatch(args, stdout, stderr, launcher{
 		service: func(o service.Options) int {
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			err := service.Run(ctx, o)
+			err := runService(ctx, o)
 			switch {
 			case errors.Is(err, service.ErrLocked):
 				_, _ = fmt.Fprintf(stderr, "tuna service: %v\n", err)
