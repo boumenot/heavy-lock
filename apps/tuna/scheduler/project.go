@@ -55,13 +55,17 @@ func (s *Scheduler) projectJob(r *storage.Reader, j *pb.Job) error {
 	return nil
 }
 
-func (s *Scheduler) headBlocked(status *pb.BrokerStatus, queue *pb.Queue, ready bool) pb.BlockedReason {
+// queueView projects the head's blocked reason and the operational queue
+// state from one decision over committed state.
+func (s *Scheduler) queueView(status *pb.BrokerStatus, queue *pb.Queue, ready bool) (pb.BlockedReason, pb.QueueState) {
 	view := func() Sharing {
 		since := s.clock() - s.lastAdmission
 		reason := s.cfg.SharingRefusal(s.lastSample, since)
 		return Sharing{Allowed: reason == "", Reason: reason}
 	}
-	return Decide(s.stateOf(status, queue, ready, view)).HeadBlocked
+	state := s.stateOf(status, queue, ready, view)
+	d := Decide(state)
+	return d.HeadBlocked, QueueState(state, d)
 }
 
 func (s *Scheduler) projectQueue(r *storage.Reader, q *pb.Queue, ready bool) error {
@@ -74,7 +78,7 @@ func (s *Scheduler) projectQueue(r *storage.Reader, q *pb.Queue, ready bool) err
 	if err != nil {
 		return err
 	}
-	q.HeadBlockedReason = s.headBlocked(status, q, ready)
+	q.HeadBlockedReason, q.QueueState = s.queueView(status, q, ready)
 	return nil
 }
 
@@ -86,7 +90,7 @@ func (s *Scheduler) projectStatus(r *storage.Reader, st *pb.BrokerStatus, ready 
 	st.Capacity = s.cfg.Capacity
 	st.BackfillLimit = s.cfg.BackfillLimit
 	st.Recovering = !ready
-	st.HeadBlockedReason = s.headBlocked(st, queue, ready)
+	st.HeadBlockedReason, st.QueueState = s.queueView(st, queue, ready)
 	st.FreeMemoryBytes, st.LoadAverage_1M = nil, nil
 	if sample := s.lastSample; sample != nil {
 		free := int64(min(sample.AvailableMemoryBytes, math.MaxInt64))

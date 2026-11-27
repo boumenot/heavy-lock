@@ -42,7 +42,8 @@ struct BrokerIntegrationTests {
         #expect(capacity > 0)
 
         session.request(.pause)
-        #expect(await waitFor { session.state.status?.paused == true })
+        #expect(await waitFor { session.state.status?.queueMode == .paused && session.state.queueState == .paused })
+        #expect(Presentation.dockTile(session.state).light == .stopped)
 
         runners.append(try launch(tuna, ["--port", "\(port)", "--", "/bin/sleep", "30"]))
         #expect(await waitFor { session.state.queue.count == 1 })
@@ -71,7 +72,8 @@ struct BrokerIntegrationTests {
         #expect(session.state.queue.isEmpty)
 
         session.request(.resume)
-        #expect(await waitFor { session.state.status?.paused == false })
+        #expect(await waitFor { session.state.status?.queueMode == .enabled })
+        #expect(await waitFor { session.state.queueState == .idle })
         #expect(session.state.controlError == nil)
 
         runners.append(try launch(tuna, ["--port", "\(port)", "--", "/bin/sleep", "30"]))

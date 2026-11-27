@@ -79,7 +79,7 @@ func controlError(err error) error {
 
 func (c *Control) GetHealth(ctx context.Context, _ *pb.GetHealthRequest) (*pb.Health, error) {
 	h := &pb.Health{Live: true, ServiceVersion: c.opts.ServiceVersion, StartedAtUnixNs: c.started,
-		SchemaVersion: 1, ServiceIdentity: contract.ServiceIdentity, ApiMajor: contract.APIMajor, ApiMinor: contract.APIMinor}
+		SchemaVersion: storage.SchemaVersion, ServiceIdentity: contract.ServiceIdentity, ApiMajor: contract.APIMajor, ApiMinor: contract.APIMinor}
 	snapshot, err := c.s.Snapshot(ctx)
 	if errors.Is(err, storage.ErrUnavailable) {
 		detail := err.Error()
@@ -99,6 +99,14 @@ func (c *Control) GetHealth(ctx context.Context, _ *pb.GetHealthRequest) (*pb.He
 
 func (c *Control) GetStatus(ctx context.Context, _ *pb.GetStatusRequest) (*pb.BrokerStatus, error) {
 	snapshot, err := c.s.Snapshot(ctx)
+	if errors.Is(err, storage.ErrUnavailable) {
+		// Durable mode and counts are unknown; only configuration is trusted.
+		config := c.s.Config()
+		return &pb.BrokerStatus{Capacity: config.Capacity, BackfillLimit: config.BackfillLimit,
+			Recovering: !c.s.Ready(), StorageUnavailable: true,
+			HeadBlockedReason: pb.BlockedReason_BLOCKED_REASON_STORAGE_UNAVAILABLE,
+			QueueState:        pb.QueueState_QUEUE_STATE_ERROR}, nil
+	}
 	if err != nil {
 		return nil, controlError(err)
 	}
@@ -149,14 +157,14 @@ func (c *Control) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb.Li
 }
 
 func (c *Control) PauseQueue(ctx context.Context, _ *pb.PauseQueueRequest) (*pb.BrokerStatus, error) {
-	if _, err := c.s.Pause(ctx, true); err != nil {
+	if _, err := c.s.SetQueueMode(ctx, pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 		return nil, controlError(err)
 	}
 	return c.GetStatus(ctx, &pb.GetStatusRequest{})
 }
 
 func (c *Control) ResumeQueue(ctx context.Context, _ *pb.ResumeQueueRequest) (*pb.BrokerStatus, error) {
-	if _, err := c.s.Pause(ctx, false); err != nil {
+	if _, err := c.s.SetQueueMode(ctx, pb.QueueMode_QUEUE_MODE_ENABLED); err != nil {
 		return nil, controlError(err)
 	}
 	return c.GetStatus(ctx, &pb.GetStatusRequest{})

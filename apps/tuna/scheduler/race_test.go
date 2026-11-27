@@ -80,7 +80,7 @@ func TestRaceConcurrentAdmissionsNeverExceedCapacity(t *testing.T) {
 func TestRaceReconnectAndExpiryNeverRevive(t *testing.T) {
 	for range 20 {
 		h := newHarness(t, 1, nil)
-		if _, err := h.s.Pause(h.ctx, true); err != nil {
+		if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 			t.Fatal(err)
 		}
 		req, id := h.submit(1)

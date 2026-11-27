@@ -2,6 +2,7 @@ package storage
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 
@@ -51,19 +52,31 @@ func (tx *Tx) StopService(id int64) error {
 	return tx.exec("UPDATE service_runs SET stopped_at_ns=?,clean_shutdown=1 WHERE id=? AND stopped_at_ns IS NULL", tx.at, id)
 }
 
-func (tx *Tx) Pause(paused bool) error {
-	s, err := tx.Status()
-	if err != nil || s.Paused == paused {
-		return err
-	}
+// SetQueueMode durably sets the admission mode. Setting the current mode is
+// a no-op; a change commits status and queue snapshots, whose projected
+// queue state and head reason depend on it.
+func (tx *Tx) SetQueueMode(mode pb.QueueMode) error {
+	var value string
 	var at any
-	if paused {
-		at = tx.at
+	switch mode {
+	case pb.QueueMode_QUEUE_MODE_ENABLED:
+		value = "enabled"
+	case pb.QueueMode_QUEUE_MODE_PAUSED:
+		value, at = "paused", tx.at
+	default:
+		return fmt.Errorf("invalid queue mode %v", mode)
 	}
-	if err := tx.exec("UPDATE broker_state SET paused=?,paused_at_ns=? WHERE id=1", paused, at); err != nil {
+	s, err := tx.Status()
+	if err != nil || s.QueueMode == mode {
 		return err
 	}
-	return tx.statusChanged()
+	if err := tx.exec("UPDATE broker_state SET queue_mode=?,paused_at_ns=? WHERE id=1", value, at); err != nil {
+		return err
+	}
+	if err := tx.statusChanged(); err != nil {
+		return err
+	}
+	return tx.queueChanged()
 }
 
 // SetQueueConnection must be invoked only for the current stream registration;

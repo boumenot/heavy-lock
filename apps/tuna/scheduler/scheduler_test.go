@@ -278,14 +278,16 @@ func TestSharingChecksSettleAndRecordFreeMemory(t *testing.T) {
 
 func TestPausePersistsAndForceStartBypassesPauseAndCapacity(t *testing.T) {
 	h := newHarness(t, 2, nil)
-	if _, err := h.s.Pause(h.ctx, true); err != nil {
+	if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 		t.Fatal(err)
 	}
 	reqA, a, _ := h.queued(2)
 	h.expectState(a, pb.JobState_JOB_STATE_QUEUED)
 	h.restart(2)
 	snap := h.snapshot()
-	if !snap.Status.Paused || snap.Status.HeadBlockedReason != pb.BlockedReason_BLOCKED_REASON_PAUSED {
+	if snap.Status.QueueMode != pb.QueueMode_QUEUE_MODE_PAUSED || !snap.Status.Paused ||
+		snap.Status.QueueState != pb.QueueState_QUEUE_STATE_PAUSED || snap.Queue.QueueState != pb.QueueState_QUEUE_STATE_PAUSED ||
+		snap.Status.HeadBlockedReason != pb.BlockedReason_BLOCKED_REASON_PAUSED {
 		t.Fatalf("after restart: %+v", snap.Status)
 	}
 	if j := h.job(a); j.RunnerConnected || j.GraceRemainingMs == nil || *j.GraceRemainingMs != 30000 {
@@ -309,13 +311,14 @@ func TestPausePersistsAndForceStartBypassesPauseAndCapacity(t *testing.T) {
 	if _, _, err := h.s.ForceStart(h.ctx, b); !errors.Is(err, ErrNotWaiting) {
 		t.Fatalf("second force-start: %v", err)
 	}
-	if _, err := h.s.Pause(h.ctx, false); err != nil {
+	if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_ENABLED); err != nil {
 		t.Fatal(err)
 	}
 	_, c, _ := h.queued(1)
 	h.expectState(c, pb.JobState_JOB_STATE_QUEUED)
-	if r := h.snapshot().Status.HeadBlockedReason; r != pb.BlockedReason_BLOCKED_REASON_INSUFFICIENT_SLOTS {
-		t.Fatalf("head reason %v", r)
+	if st := h.snapshot().Status; st.HeadBlockedReason != pb.BlockedReason_BLOCKED_REASON_INSUFFICIENT_SLOTS ||
+		st.QueueMode != pb.QueueMode_QUEUE_MODE_ENABLED || st.QueueState != pb.QueueState_QUEUE_STATE_BLOCKED {
+		t.Fatalf("after resume: %+v", st)
 	}
 	h.cancel(a)
 	h.expectState(c, pb.JobState_JOB_STATE_QUEUED)
@@ -399,7 +402,7 @@ func TestOversizedQueuedJobAfterCapacityDecrease(t *testing.T) {
 
 func TestGraceExpiryReconnectAndDowntime(t *testing.T) {
 	h := newHarness(t, 1, nil)
-	if _, err := h.s.Pause(h.ctx, true); err != nil {
+	if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 		t.Fatal(err)
 	}
 	_, unregistered := h.submit(1)
@@ -443,7 +446,7 @@ func TestGraceExpiryReconnectAndDowntime(t *testing.T) {
 
 func TestLatestRegistrationIsAuthoritative(t *testing.T) {
 	h := newHarness(t, 1, nil)
-	if _, err := h.s.Pause(h.ctx, true); err != nil {
+	if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 		t.Fatal(err)
 	}
 	req, id, old := h.queued(1)
@@ -467,7 +470,7 @@ func TestLatestRegistrationIsAuthoritative(t *testing.T) {
 
 func TestTickDisconnectsDurablyConnectedJobWithoutStream(t *testing.T) {
 	h := newHarness(t, 1, nil)
-	if _, err := h.s.Pause(h.ctx, true); err != nil {
+	if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 		t.Fatal(err)
 	}
 	req, id := h.submit(1)
@@ -543,13 +546,13 @@ func TestNoWaitAdmissionBusyAndBackfill(t *testing.T) {
 
 func TestNoWaitRespectsOlderWorkPauseAndClosedStreams(t *testing.T) {
 	h := newHarness(t, 2, nil)
-	if _, err := h.s.Pause(h.ctx, true); err != nil {
+	if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := h.s.TrySubmitAndWatch(h.ctx, request(t, 1)); !errors.Is(err, storage.ErrAdmissionBusy) {
 		t.Fatalf("paused no-wait: %v", err)
 	}
-	if _, err := h.s.Pause(h.ctx, false); err != nil {
+	if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_ENABLED); err != nil {
 		t.Fatal(err)
 	}
 	h.queued(2)
@@ -652,10 +655,52 @@ func TestEventsCarryPolicyProjection(t *testing.T) {
 			sawJob = j.GraceRemainingMs != nil && *j.GraceRemainingMs == 30000
 		}
 		if q := e.GetQueueChanged(); q != nil {
-			sawQueue = q.HeadBlockedReason == pb.BlockedReason_BLOCKED_REASON_RUNNER_DISCONNECTED
+			sawQueue = q.HeadBlockedReason == pb.BlockedReason_BLOCKED_REASON_RUNNER_DISCONNECTED &&
+				q.QueueState == pb.QueueState_QUEUE_STATE_BLOCKED
 		}
 	}
 	if !sawJob || !sawQueue {
 		t.Fatalf("events not projected: %v", events)
+	}
+}
+
+func TestQueueModeChangesEmitStatusAndQueueAndAreIdempotent(t *testing.T) {
+	h := newHarness(t, 2, nil)
+	check := func(mode pb.QueueMode, state pb.QueueState, wantEvents bool) {
+		t.Helper()
+		events, err := h.s.SetQueueMode(h.ctx, mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status *pb.BrokerStatus
+		var queue *pb.Queue
+		for _, e := range events {
+			if s := e.GetStatusChanged(); s != nil {
+				status = s
+			}
+			if q := e.GetQueueChanged(); q != nil {
+				queue = q
+			}
+		}
+		if !wantEvents {
+			if len(events) != 0 {
+				t.Fatalf("idempotent %v emitted %v", mode, events)
+			}
+			return
+		}
+		if status == nil || queue == nil || status.QueueMode != mode || status.QueueState != state || queue.QueueState != state ||
+			status.Paused != (mode == pb.QueueMode_QUEUE_MODE_PAUSED) {
+			t.Fatalf("mode %v events %v", mode, events)
+		}
+	}
+	if s := h.snapshot().Status; s.QueueMode != pb.QueueMode_QUEUE_MODE_ENABLED || s.QueueState != pb.QueueState_QUEUE_STATE_IDLE {
+		t.Fatalf("initial %+v", s)
+	}
+	check(pb.QueueMode_QUEUE_MODE_PAUSED, pb.QueueState_QUEUE_STATE_PAUSED, true)
+	check(pb.QueueMode_QUEUE_MODE_PAUSED, 0, false)
+	check(pb.QueueMode_QUEUE_MODE_ENABLED, pb.QueueState_QUEUE_STATE_IDLE, true)
+	check(pb.QueueMode_QUEUE_MODE_ENABLED, 0, false)
+	if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_UNSPECIFIED); err == nil {
+		t.Fatal("unspecified mode accepted")
 	}
 }

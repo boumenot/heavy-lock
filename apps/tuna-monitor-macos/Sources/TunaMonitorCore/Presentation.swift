@@ -37,13 +37,12 @@ public enum Presentation {
         case notLive
     }
 
-    /// The Dock tile's stop light for normal admission.
+    /// The Dock tile's stop light, from the broker's explicit queue state.
     public enum QueueLight: Equatable, Sendable {
-        /// Admission is enabled.
+        /// Idle or running: nothing queued is waiting that could not start.
         case go
-        /// The broker holds every admission: not ready, recovering or
-        /// without durable storage. A blocked queue head alone is not a
-        /// stall, since followers may still be admitted beside it.
+        /// Blocked (queued work cannot be admitted now), recovering or in
+        /// error.
         case stalled
         /// The queue is paused.
         case stopped
@@ -78,6 +77,11 @@ public enum Presentation {
             return Banner(title: "Connecting to the tuna broker on 127.0.0.1:\(port)…", detail: nil, tone: .normal)
         case .incompatible(let message):
             return Banner(title: "Incompatible service on 127.0.0.1:\(port)", detail: message, tone: .error)
+        case .brokerError(let message):
+            return Banner(
+                title: "Broker error: durable state failed",
+                detail: "\(message)\nAdmissions are held until the broker is restarted. The state shown is not live.",
+                tone: .error)
         case .unavailable(let message):
             let shown =
                 state.lastUpdate.map {
@@ -116,7 +120,7 @@ public enum Presentation {
         if occupied > status.capacity { parts.append("over capacity (force-started work)") }
         parts.append("\(state.runningCount) running")
         parts.append("\(state.queuedCount) queued")
-        if status.paused { parts.append("queue paused") }
+        parts.append("queue \(Self.queueStateName(state.currentQueueState).lowercased())")
         if status.hasFreeMemoryBytes {
             parts.append("\(ByteCountFormatter.string(fromByteCount: status.freeMemoryBytes, countStyle: .memory)) free")
         }
@@ -134,21 +138,35 @@ public enum Presentation {
         let running = state.active.filter { $0.state == .running }
         let label = running.first.map { WorklogReference($0)?.label ?? "#?" }
         let badge = state.isLive && !state.queue.isEmpty ? String(state.queue.count) : nil
+        let light = Self.queueLight(state)
         guard state.isLive else {
             return DockTile(
                 style: .notLive, label: label ?? "!", otherRunning: max(0, running.count - 1), badge: nil,
-                light: .unknown)
+                light: light)
         }
-        let light = Self.queueLight(state)
         guard let label else { return DockTile(style: .idle, label: "—", otherRunning: 0, badge: badge, light: light) }
         return DockTile(style: .running, label: label, otherRunning: running.count - 1, badge: badge, light: light)
     }
 
     static func queueLight(_ state: MonitorState) -> QueueLight {
-        guard state.isLive, let status = state.status else { return .unknown }
-        if status.paused { return .stopped }
-        if state.health?.ready == false || status.recovering || status.storageUnavailable { return .stalled }
-        return .go
+        switch state.currentQueueState {
+        case .idle, .running: .go
+        case .blocked, .recovering, .error: .stalled
+        case .paused: .stopped
+        default: .unknown
+        }
+    }
+
+    public static func queueStateName(_ state: Heavylock_V2_QueueState) -> String {
+        switch state {
+        case .idle: "Idle"
+        case .running: "Running"
+        case .blocked: "Blocked"
+        case .paused: "Paused"
+        case .recovering: "Recovering"
+        case .error: "Error"
+        default: "Unknown"
+        }
     }
 
     /// `path` with the home directory replaced by `~`.

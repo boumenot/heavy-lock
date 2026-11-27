@@ -325,12 +325,10 @@ from either its blocked reason or weight versus capacity.
 After the user's UI review, the Dock tile matches v1: the longest-running
 job's worklog (`#N`, `#?` unattributed, `—` idle) and `+N` other running
 jobs in a state-coloured ring, with the queued count as a badge while live.
-A bordered tile adds a queue stop light: red from the independent `paused`
-flag (even with an empty queue), amber only for broker-wide holds (health
-not ready, `recovering`, `storage_unavailable`), green otherwise, and dark
-when not live, so stale state never looks like running. `head_blocked_reason`
-describes only the effective head and followers may backfill past it, so a
-blocked head is not shown as a stall.
+A bordered tile adds a queue stop light, since #32 driven by the broker's
+explicit `QueueState` (see "v2 explicit queue mode and state"): green for
+idle or running, amber for blocked, recovering or error, red for paused, and
+dark when unknown or not live, so stale state never looks like running.
 Sections are Running, Queued and Recently finished; each available row action
 has its own labelled icon button with a 1-second default tooltip delay;
 paths under home display as `~`. A worklog
@@ -356,3 +354,45 @@ a smoke test showed a runner orphaned by a broker restart staying in
 returned. The API is unauthenticated loopback, exposing commands and
 history to any local process. A manual UI review by the user is required.
 Only this Mac (macOS 26.7.3/arm64, Xcode 27.2, Swift 6.4.2) was exercised.
+
+## v2 explicit queue mode and state
+
+**Decision.** The user asked for "an explicit state instead of a boolean"
+(#32). `BrokerStatus` gains a durable `QueueMode` (`ENABLED`, `PAUSED`) and
+a derived operational `QueueState` (`IDLE`, `RUNNING`, `BLOCKED`, `PAUSED`,
+`RECOVERING`, `ERROR`, `UNKNOWN`/unspecified); `Queue` carries the same
+state. `head_blocked_reason` stays as the head's diagnostic. This is API
+2.1; the monitor requires it.
+
+- **Precedence.** `ERROR > RECOVERING > PAUSED > BLOCKED > RUNNING > IDLE`,
+  so the most actionable broker-wide condition wins and a pause stays
+  visible during recovery through `queue_mode`.
+- **Blocked.** `BLOCKED` means queued work exists and the normal-admission
+  decision admits nothing now, including bounded backfill, even while other
+  jobs run. A blocked head with an admissible follower is `RUNNING`. This
+  deliberately turns the Dock light amber for a stalled queue, which the
+  earlier monitor did not show, because the worklog's manual check lists
+  "blocked" as a distinct case.
+- **Compatibility.** The deprecated `paused` field (3) is still set from
+  the mode for older clients. Events from before the upgrade replay with
+  unspecified mode and state; the monitor shows unknown until a fresh event
+  or snapshot arrives.
+- **Storage.** Schema v2 stores `broker_state.queue_mode` text instead of
+  the `paused` integer. The first migration framework
+  (`apps/tuna/storage/migrate.go`) upgrades one version per step in one
+  immediate transaction and commits only when every object's SQL matches
+  `schema.sql` exactly. Migration is one-way; a v1 broker refuses a v2
+  database, and v1 has no installed users yet.
+- **Degraded status.** With durable storage failed, `GetStatus` still
+  answers with `ERROR`, unspecified mode, `storage_unavailable` and the
+  configured capacity instead of failing, so clients can show why
+  admissions stopped. The monitor shows an error banner from the health
+  `storage_detail` and does not watch events until storage recovers.
+- **CLI.** `tuna status` prints `Mode: …; state: …` instead of `paused:`;
+  `tuna queue` prints the state. JSON and REST output both fields.
+
+**Alternatives.** Keeping the boolean and deriving state in each client
+would duplicate scheduling policy and could not tell blocked from running.
+A single enum that merged mode and state would lose a pause during recovery
+or storage failure. The TLA+ model keeps its boolean `paused` abstraction,
+which is equivalent to the mode.

@@ -501,7 +501,7 @@ func TestQueuePauseReorderGraceAndForcedOccupancy(t *testing.T) {
 		if err := tx.SetQueueConnection(first.JobId, a.Runner, true, f.run); err != nil {
 			return err
 		}
-		if err := tx.Pause(true); err != nil {
+		if err := tx.SetQueueMode(pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 			return err
 		}
 		if err := tx.ReadyService(f.run); err != nil {
@@ -522,7 +522,7 @@ func TestQueuePauseReorderGraceAndForcedOccupancy(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if !status.Paused || status.Occupied != 1 || status.QueuedJobs != 1 {
+		if status.QueueMode != pb.QueueMode_QUEUE_MODE_PAUSED || status.Occupied != 1 || status.QueuedJobs != 1 {
 			t.Fatalf("durable status: %v", status)
 		}
 		runs, err := r.ServiceRuns()

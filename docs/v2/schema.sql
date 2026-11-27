@@ -1,4 +1,8 @@
--- heavy-lock v2 SQLite schema (schema version 1).
+-- heavy-lock v2 SQLite schema (schema version 2).
+--
+-- A new database is created at the current version and records every
+-- migration version it includes. Older databases are migrated in place by
+-- the broker (apps/tuna/storage/migrate.go) to exactly this schema.
 --
 -- Requirements: SQLite 3.38.0 or later (STRICT tables and built-in JSON).
 -- Conventions:
@@ -36,14 +40,15 @@ CREATE TABLE schema_migrations (
 -- Single-row broker state.
 CREATE TABLE broker_state (
   id                INTEGER PRIMARY KEY CHECK (id = 1),
-  -- Committed pause survives broker restarts until an explicit resume.
-  paused            INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
-  paused_at_ns      INTEGER,              -- NULL when not paused
+  -- Durable admission mode (QueueMode). A committed pause survives broker
+  -- restarts, recovery and storage failure until an explicit resume.
+  queue_mode        TEXT    NOT NULL DEFAULT 'enabled' CHECK (queue_mode IN ('enabled', 'paused')),
+  paused_at_ns      INTEGER,              -- NULL unless queue_mode = 'paused'
   next_queue_seq    INTEGER NOT NULL DEFAULT 1, -- next back-of-queue sequence
   last_event_seq    INTEGER NOT NULL DEFAULT 0, -- last issued events.seq; never decreases
   event_floor_seq   INTEGER NOT NULL DEFAULT 0, -- resume after a lower seq is refused
   CHECK (event_floor_seq BETWEEN 0 AND last_event_seq),
-  CHECK ((paused = 0 AND paused_at_ns IS NULL) OR (paused = 1 AND paused_at_ns IS NOT NULL))
+  CHECK ((queue_mode = 'enabled' AND paused_at_ns IS NULL) OR (queue_mode = 'paused' AND paused_at_ns IS NOT NULL))
 ) STRICT;
 
 -- One row per broker process lifetime; used to exclude downtime from grace
@@ -444,10 +449,13 @@ INSERT INTO broker_state (id) VALUES (1);
 -- SQLite's bootstrap clock has millisecond precision. Integer arithmetic
 -- encodes it as nanoseconds without floating-point rounding; normal broker
 -- writes bind Go time.Time.UnixNano() values at their available source precision.
+-- One row per schema version; a new database includes every migration.
 INSERT INTO schema_migrations (version, applied_at_ns, description)
-  VALUES (1, CAST(strftime('%s', 'now') AS INTEGER) * 1000000000
+  SELECT version, CAST(strftime('%s', 'now') AS INTEGER) * 1000000000
              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) * 1000000,
-          'initial v2 schema');
-PRAGMA user_version = 1;
+         description
+  FROM (SELECT 1 AS version, 'initial v2 schema' AS description
+        UNION ALL SELECT 2, 'explicit queue mode');
+PRAGMA user_version = 2;
 
 COMMIT;

@@ -117,6 +117,46 @@ import Testing
 
         state.connection = .incompatible("the service on this port is not a heavy-lock v2 broker")
         #expect(Presentation.banner(state, port: 1234, now: self.now).title == "Incompatible service on 127.0.0.1:1234")
+
+        state.connection = .brokerError("disk I/O error")
+        let error = Presentation.banner(state, port: 1234, now: self.now)
+        #expect(error.tone == .error)
+        #expect(error.detail?.hasPrefix("disk I/O error") == true)
+    }
+
+    @Test func queueStateFollowsLatestStatusOrQueueEvent() {
+        var state = MonitorState()
+        state.connection = .live
+        var initial = status()
+        initial.queueState = .idle
+        var queue = Heavylock_V2_Queue()
+        queue.queueState = .idle
+        var snapshot = snapshotEvent(seq: 1, status: initial)
+        snapshot.snapshot.queue.queueState = .idle
+        _ = state.apply(snapshot, at: self.now)
+        #expect(state.queueState == .idle)
+        #expect(Presentation.statusLine(state)?.contains("queue idle") == true)
+
+        var blocked = queue
+        blocked.queueState = .blocked
+        blocked.headBlockedReason = .insufficientSlots
+        var queueEvent = Heavylock_V2_BrokerEvent()
+        queueEvent.eventSeq = 2
+        queueEvent.queueChanged = blocked
+        _ = state.apply(queueEvent, at: self.now)
+        #expect(state.queueState == .blocked)
+        #expect(Presentation.statusLine(state)?.contains("queue blocked") == true)
+
+        var paused = status(paused: true)
+        paused.queueMode = .paused
+        paused.queueState = .paused
+        paused.headBlockedReason = .paused
+        var statusEvent = Heavylock_V2_BrokerEvent()
+        statusEvent.eventSeq = 3
+        statusEvent.statusChanged = paused
+        _ = state.apply(statusEvent, at: self.now)
+        #expect(state.queueState == .paused)
+        #expect(state.headBlockedReason == .paused)
     }
 
     @Test func controlsConfirmOnlyCancelAndForceStart() {
@@ -218,6 +258,36 @@ import Testing
         #expect(await eventually { broker.snapshot.watches == [0, 3] })
         resumed.yield(heartbeatEvent(seq: 3))
         #expect(await eventually { session.state.isLive })
+    }
+
+    @Test func brokerWithoutExplicitQueueStateIsIncompatible() async {
+        var health = FakeBroker.liveHealth()
+        health.apiMinor = 0
+        let broker = FakeBroker(health: health)
+        let session = MonitorSession(client: broker, reconnectDelay: .milliseconds(20))
+        session.start()
+        defer { session.stop() }
+        #expect(await eventually {
+            if case .incompatible = session.state.connection { return true }
+            return false
+        })
+        #expect(broker.snapshot.watches.isEmpty)
+    }
+
+    @Test func failedBrokerStorageIsAnErrorAndNotWatched() async {
+        var health = FakeBroker.liveHealth()
+        health.ready = false
+        health.storageDetail = "disk I/O error"
+        let broker = FakeBroker(health: health)
+        let session = MonitorSession(client: broker, reconnectDelay: .milliseconds(20))
+        session.start()
+        defer { session.stop() }
+        #expect(await eventually { session.state.connection == .brokerError("disk I/O error") })
+        #expect(session.state.currentQueueState == .error)
+        #expect(Presentation.dockTile(session.state).light == .stalled)
+        #expect(broker.snapshot.watches.isEmpty)
+        broker.setHealth(.success(FakeBroker.liveHealth()))
+        #expect(await eventually { broker.snapshot.watches == [0] })
     }
 
     @Test func incompatibleServiceIsReportedAndNotWatched() async {
@@ -360,28 +430,30 @@ private func attributed(
         #expect(Presentation.dockTile(state).label == "!")
     }
 
-    @Test func stopLightShowsPausedStalledAndAdmitting() {
+    @Test func stopLightFollowsExplicitQueueState() {
         var state = MonitorState()
         state.connection = .live
         state.status = Heavylock_V2_BrokerStatus()
+        let cases: [(Heavylock_V2_QueueState, Presentation.QueueLight)] = [
+            (.idle, .go), (.running, .go), (.blocked, .stalled), (.paused, .stopped),
+            (.recovering, .stalled), (.error, .stalled), (.unspecified, .unknown),
+        ]
+        for (queueState, light) in cases {
+            state.queueState = queueState
+            #expect(Presentation.dockTile(state).light == light)
+        }
+        // A blocked head alone is diagnostic; the explicit state decides.
+        state.queueState = .running
+        state.headBlockedReason = .insufficientSlots
         #expect(Presentation.dockTile(state).light == .go)
-        state.headBlockedReason = .runnerDisconnected
-        #expect(Presentation.dockTile(state).light == .go)
-        state.status?.recovering = true
-        #expect(Presentation.dockTile(state).light == .stalled)
-        state.status?.paused = true
-        #expect(Presentation.dockTile(state).light == .stopped)
-        state.status = Heavylock_V2_BrokerStatus()
-        state.status?.storageUnavailable = true
-        #expect(Presentation.dockTile(state).light == .stalled)
-        state.status?.storageUnavailable = false
-        var health = Heavylock_V2_Health()
-        health.ready = false
-        state.health = health
-        #expect(Presentation.dockTile(state).light == .stalled)
+
+        state.queueState = .paused
         state.connection = .unavailable("refused")
-        state.status?.paused = true
         #expect(Presentation.dockTile(state).light == .unknown)
+        state.connection = .brokerError("disk I/O error")
+        #expect(state.currentQueueState == .error)
+        #expect(Presentation.dockTile(state).light == .stalled)
+        #expect(Presentation.dockTile(state).style == .notLive)
     }
 
     @Test func pathsUnderHomeUseTilde() {

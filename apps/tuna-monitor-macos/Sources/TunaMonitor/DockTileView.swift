@@ -51,9 +51,9 @@ final class DockTileView: NSView {
         }
     }
 
-    /// A vertical stop light at the left: red when paused, amber when the
-    /// broker holds all admissions, green when admitting, all dark when the
-    /// queue state is unknown.
+    /// A vertical stop light at the left from the broker's queue state: red
+    /// when paused, amber when blocked, recovering or in error, green when
+    /// idle or running, all dark when the state is unknown.
     private func drawStopLight(in bounds: NSRect) {
         let width = bounds.width * 0.17
         let height = bounds.height * 0.5

@@ -27,7 +27,7 @@ type State struct {
 	Capacity      uint32
 	BackfillLimit uint32
 	Ready         bool
-	Paused        bool
+	Paused        bool // queue mode is PAUSED
 	// Occupied includes forced and unreconciled reservations and may exceed
 	// Capacity.
 	Occupied uint32
@@ -119,6 +119,24 @@ func Decide(s State) Decision {
 		return d
 	}
 	return d
+}
+
+// QueueState derives the operational queue state from s and its decision d,
+// with the contract's precedence after ERROR, which the broker reports only
+// when durable state cannot be read: RECOVERING, PAUSED, BLOCKED, RUNNING,
+// IDLE. A blocked head is not BLOCKED while backfill admits a follower.
+func QueueState(s State, d Decision) pb.QueueState {
+	switch {
+	case !s.Ready:
+		return pb.QueueState_QUEUE_STATE_RECOVERING
+	case s.Paused:
+		return pb.QueueState_QUEUE_STATE_PAUSED
+	case len(s.Queue) > 0 && d.Admit == "":
+		return pb.QueueState_QUEUE_STATE_BLOCKED
+	case s.Occupied > 0 || d.Admit != "":
+		return pb.QueueState_QUEUE_STATE_RUNNING
+	}
+	return pb.QueueState_QUEUE_STATE_IDLE
 }
 
 // Oversized reports a queued job that normal admission skips because a

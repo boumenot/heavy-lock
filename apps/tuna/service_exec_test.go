@@ -164,19 +164,19 @@ func TestExecutableServiceAndControls(t *testing.T) {
 	ps := fmt.Sprint(port)
 
 	code, out, errOut := tuna(t, "status", "--port", ps, "--json")
-	if code != 0 || !strings.Contains(out, `"capacity"`) || !strings.Contains(out, `"paused": false`) && !strings.Contains(out, `"paused":false`) {
+	if code != 0 || !strings.Contains(out, `"capacity"`) || !strings.Contains(out, `"QUEUE_MODE_ENABLED"`) || !strings.Contains(out, `"QUEUE_STATE_IDLE"`) {
 		t.Fatalf("status = %d %q %q", code, out, errOut)
 	}
-	if code, out, errOut = tuna(t, "pause", "--port", ps); code != 0 || !strings.Contains(out, "paused: true") {
+	if code, out, errOut = tuna(t, "pause", "--port", ps); code != 0 || !strings.Contains(out, "Mode: paused; state: paused;") {
 		t.Fatalf("pause = %d %q %q", code, out, errOut)
 	}
-	if status, _, body := restCall(t, port, http.MethodGet, "/v1/status", nil); status != 200 || !strings.Contains(body, `"paused":true`) {
+	if status, _, body := restCall(t, port, http.MethodGet, "/v1/status", nil); status != 200 || !strings.Contains(body, `"queueMode":"QUEUE_MODE_PAUSED"`) || !strings.Contains(body, `"paused":true`) {
 		t.Fatalf("REST after CLI pause = %d %s", status, body)
 	}
-	if status, _, body := restCall(t, port, http.MethodPost, "/v1/queue/resume", nil); status != 200 || strings.Contains(body, `"paused":true`) {
+	if status, _, body := restCall(t, port, http.MethodPost, "/v1/queue/resume", nil); status != 200 || !strings.Contains(body, `"queueMode":"QUEUE_MODE_ENABLED"`) || strings.Contains(body, `"paused":true`) {
 		t.Fatalf("REST resume = %d %s", status, body)
 	}
-	if code, out, errOut = tuna(t, "status", "--port", ps); code != 0 || !strings.Contains(out, "paused: false") {
+	if code, out, errOut = tuna(t, "status", "--port", ps); code != 0 || !strings.Contains(out, "Mode: enabled; state: idle;") {
 		t.Fatalf("CLI after REST resume = %d %q %q", code, out, errOut)
 	}
 	for _, args := range [][]string{{"queue"}, {"jobs"}} {
@@ -229,7 +229,7 @@ func TestExecutableServiceAndControls(t *testing.T) {
 	}
 
 	startService(t, port, dir)
-	if code, out, errOut = tuna(t, "status", "--port", ps); code != 0 || !strings.Contains(out, "paused: true") {
+	if code, out, errOut = tuna(t, "status", "--port", ps); code != 0 || !strings.Contains(out, "Mode: paused; state: paused;") {
 		t.Fatalf("restarted status = %d %q %q", code, out, errOut)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "broker.db")); err != nil {

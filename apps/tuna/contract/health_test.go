@@ -28,7 +28,7 @@ func TestCheckServiceIdentityAndVersion(t *testing.T) {
 		{name: "missing identity", health: proto.Clone(health).(*heavylockv2.Health)},
 		{name: "unrelated identity", health: proto.Clone(health).(*heavylockv2.Health)},
 		{name: "different major", health: proto.Clone(health).(*heavylockv2.Health)},
-		{name: "older minor", health: proto.Clone(health).(*heavylockv2.Health), minor: 1},
+		{name: "older minor", health: proto.Clone(health).(*heavylockv2.Health), minor: APIMinor + 1},
 		{name: "missing service version", health: proto.Clone(health).(*heavylockv2.Health)},
 		{name: "not live", health: proto.Clone(health).(*heavylockv2.Health)},
 	}
