@@ -511,10 +511,34 @@ class TunaApp extends App {
   }
 
   @override
-  Future<int> test(DevContext context) => context.shell.run('go', [
-    'test',
-    './...',
-  ], workingDirectory: this._package(context));
+  Future<int> test(DevContext context) async {
+    final code = await context.shell.run('go', [
+      'test',
+      './...',
+    ], workingDirectory: this._package(context));
+    if (code != 0) return code;
+    return context.shell.run(
+      'python3',
+      [
+        '${context.root}/docs/v2/model/check.py',
+        'DescendantScanSafety',
+        'DescendantScanNoBarrier',
+        'DescendantScanUnstable',
+        'DescendantScanStable',
+        'DescendantScanRestart',
+        'DescendantScanFailure',
+        'RunnerFinishSafety',
+        'RunnerFinishBlocking',
+        'RunnerFinishDropped',
+        'RunnerFinishEarlyAck',
+        'RunnerFinishEarlyFinal',
+        '--logs',
+        '${context.buildRoot}/tuna-model',
+      ],
+      workingDirectory: context.root,
+      environment: {'JAVA_TOOL_OPTIONS': '-Xmx256m'},
+    );
+  }
 
   @override
   Future<int> install(DevContext context, String? destination) async =>

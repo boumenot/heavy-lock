@@ -186,13 +186,41 @@ void main() {
         'dart test',
         'swift test',
         'go test',
+        'python3 $root/docs/v2/model/check.py',
         'swift test',
         'swift test',
       ]);
-      expect(shell.calls[3].last, '$root/packages/heavylock-v2-swift');
-      expect(shell.calls[3], contains(SwiftContractApp.resolvedOnly));
+      expect(shell.calls[4].last, '$root/packages/heavylock-v2-swift');
+      expect(shell.calls[4], contains(SwiftContractApp.resolvedOnly));
       expect(shell.calls.last.last, '$root/apps/tuna-monitor-macos');
     });
+
+    test(
+      'tuna test runs the bounded lifecycle models and surfaces failure',
+      () async {
+        expect(await dev(['test', 'tuna']), 0);
+        expect(shell.steps, [
+          'go test',
+          'python3 $root/docs/v2/model/check.py',
+        ]);
+        expect(shell.calls.last, contains('DescendantScanSafety'));
+        expect(shell.calls.last, contains('DescendantScanNoBarrier'));
+        expect(shell.calls.last, contains('DescendantScanUnstable'));
+        expect(shell.calls.last, contains('RunnerFinishSafety'));
+        expect(shell.calls.last, contains('RunnerFinishBlocking'));
+        expect(shell.calls.last, contains('RunnerFinishDropped'));
+
+        shell.calls.clear();
+        shell.failing.add('python3 $root/docs/v2/model/check.py');
+        expect(await dev(['test', 'tuna']), 1);
+        expect('$err', contains('Failed: test tuna (exit 3)'));
+
+        shell.calls.clear();
+        shell.failing.add('go test');
+        expect(await dev(['test', 'tuna']), 1);
+        expect(shell.steps, ['go test']);
+      },
+    );
 
     test('tuna builds atomically and is never installed', () async {
       expect(await dev(['build', 'tuna']), 0, reason: '$err');

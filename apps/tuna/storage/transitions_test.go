@@ -337,6 +337,66 @@ func TestClaimSealOutcomeAndReleaseEvidence(t *testing.T) {
 	f.expect(ErrIdentity, func(tx *Tx) error { return tx.ReportFinished(j.JobId, j.Grant.GrantId, req.Runner, root, outcome) })
 }
 
+func TestRediscoveredProcessInvalidatesExitEvidence(t *testing.T) {
+	f := setup(t)
+	req := f.request()
+	j := f.submit(req, contract.AdmissionNoWait, &Admission{}).Job
+	root := &pb.ProcessIdentity{Pid: 2, StartTime: contract.Timestamp(3)}
+	descendant := &pb.ProcessIdentity{Pid: 3, StartTime: contract.Timestamp(4)}
+	f.write(func(tx *Tx) error {
+		if _, err := tx.Claim(j.JobId, j.Grant.GrantId, req.Runner); err != nil {
+			return err
+		}
+		if err := tx.Seal(j.JobId, j.Grant.GrantId, req.Runner, false); err != nil {
+			return err
+		}
+		if err := tx.ReportStarted(j.JobId, j.Grant.GrantId, req.Runner, root); err != nil {
+			return err
+		}
+		if err := tx.TrackProcess(j.JobId, descendant, "descendant"); err != nil {
+			return err
+		}
+		return tx.VerifyProcessExited(j.JobId, descendant)
+	})
+	f.write(func(tx *Tx) error {
+		if err := tx.TrackProcess(j.JobId, descendant, "descendant"); err != nil {
+			return err
+		}
+		if err := tx.VerifyProcessExited(j.JobId, root); err != nil {
+			return err
+		}
+		code := int64(0)
+		return tx.ReportFinished(j.JobId, j.Grant.GrantId, req.Runner, root,
+			&pb.Outcome{Kind: pb.OutcomeKind_OUTCOME_KIND_EXITED, ExitCode: &code})
+	})
+	f.expect(ErrUnreconciled, func(tx *Tx) error { return tx.Release(j.JobId, "processes_exited") })
+}
+
+func TestProcessEvidenceRequiresStartIdentity(t *testing.T) {
+	f := setup(t)
+	for _, start := range []int64{0, -1} {
+		req := f.request()
+		req.Runner.Process.StartTime = contract.Timestamp(start)
+		if _, err := f.store.Write(f.ctx, func(tx *Tx) error {
+			_, err := tx.Submit(req, Submission{Mode: contract.AdmissionNoWait, ServiceVersion: "test", ServiceRunID: f.run, Admission: &Admission{}})
+			return err
+		}); err == nil {
+			t.Fatalf("accepted runner start time %d", start)
+		}
+	}
+	req := f.request()
+	j := f.submit(req, contract.AdmissionNoWait, &Admission{}).Job
+	f.write(func(tx *Tx) error {
+		_, err := tx.Claim(j.JobId, j.Grant.GrantId, req.Runner)
+		return err
+	})
+	for _, start := range []int64{0, -1} {
+		f.expect(ErrIdentity, func(tx *Tx) error {
+			return tx.ReportStarted(j.JobId, j.Grant.GrantId, req.Runner, &pb.ProcessIdentity{Pid: 2, StartTime: contract.Timestamp(start)})
+		})
+	}
+}
+
 func TestCancellationAndLaunchFailureNeverReleaseClaimedWork(t *testing.T) {
 	f := setup(t)
 	req := f.request()
@@ -418,15 +478,22 @@ func TestLateOutcomeReplacesUnknownWithoutChangingRelease(t *testing.T) {
 	f := setup(t)
 	req := f.request()
 	j := f.submit(req, contract.AdmissionNoWait, &Admission{}).Job
+	root := &pb.ProcessIdentity{Pid: 2, StartTime: contract.Timestamp(3)}
 	var releaseAt int64
 	f.write(func(tx *Tx) error {
 		if _, err := tx.Claim(j.JobId, j.Grant.GrantId, req.Runner); err != nil {
+			return err
+		}
+		if err := tx.ReportStarted(j.JobId, j.Grant.GrantId, req.Runner, root); err != nil {
 			return err
 		}
 		if err := tx.MarkUnknown(j.JobId, proto.String("recovery")); err != nil {
 			return err
 		}
 		if err := tx.FenceRunnerTerminated(j.JobId, req.Runner); err != nil {
+			return err
+		}
+		if err := tx.VerifyProcessExited(j.JobId, root); err != nil {
 			return err
 		}
 		if err := tx.Release(j.JobId, "recovery_verified_gone"); err != nil {
@@ -439,8 +506,7 @@ func TestLateOutcomeReplacesUnknownWithoutChangingRelease(t *testing.T) {
 		return err
 	})
 	f.write(func(tx *Tx) error {
-		if err := tx.ReportFinished(j.JobId, j.Grant.GrantId, req.Runner,
-			&pb.ProcessIdentity{Pid: 2, StartTime: contract.Timestamp(3)},
+		if err := tx.ReportFinished(j.JobId, j.Grant.GrantId, req.Runner, root,
 			&pb.Outcome{Kind: pb.OutcomeKind_OUTCOME_KIND_EXITED, ExitCode: proto.Int64(1)}); err != nil {
 			return err
 		}
@@ -454,7 +520,30 @@ func TestLateOutcomeReplacesUnknownWithoutChangingRelease(t *testing.T) {
 	if result.State != pb.JobState_JOB_STATE_FINISHED || result.Outcome.Kind != pb.OutcomeKind_OUTCOME_KIND_EXITED {
 		t.Fatalf("late report: %v", result)
 	}
-	f.expect(ErrUnreconciled, func(tx *Tx) error { return tx.DeleteJob(j.JobId) })
+	f.write(func(tx *Tx) error { return tx.DeleteJob(j.JobId) })
+	f.expect(ErrNotFound, func(tx *Tx) error {
+		return tx.ReportFinished(j.JobId, j.Grant.GrantId, req.Runner, root,
+			&pb.Outcome{Kind: pb.OutcomeKind_OUTCOME_KIND_EXITED, ExitCode: proto.Int64(1)})
+	})
+}
+
+func TestRecoveryCannotReleaseUnknownRootWithoutNoLaunchProof(t *testing.T) {
+	f := setup(t)
+	req := f.request()
+	j := f.submit(req, contract.AdmissionNoWait, &Admission{}).Job
+	f.write(func(tx *Tx) error {
+		if _, err := tx.Claim(j.JobId, j.Grant.GrantId, req.Runner); err != nil {
+			return err
+		}
+		if err := tx.MarkUnknown(j.JobId, proto.String("runner died before reporting a root")); err != nil {
+			return err
+		}
+		return tx.FenceRunnerTerminated(j.JobId, req.Runner)
+	})
+	f.expect(ErrUnreconciled, func(tx *Tx) error { return tx.Release(j.JobId, "recovery_verified_gone") })
+	if got := f.job(j.JobId); got.Grant == nil || got.State == pb.JobState_JOB_STATE_FINISHED {
+		t.Fatal("unknown root was released")
+	}
 }
 
 func TestUnclaimedCancelFencesAndQueuedCancelIsTerminal(t *testing.T) {

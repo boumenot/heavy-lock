@@ -58,6 +58,18 @@ CASES = {
     "NoWaitBackfill": "NeverNoWaitBackfill",
     "NoWaitOrder": "NeverNoWaitCandidateBusy",
     "NoWaitLaunch": "NeverNoWaitLaunched",
+    "DescendantScanQuick": None,
+    "DescendantScanSafety": None,
+    "DescendantScanNoBarrier": "NoCapturedLiveUnreserved",
+    "DescendantScanUnstable": "NoUnstableDescendants",
+    "DescendantScanStable": "NeverStableCaptured",
+    "DescendantScanRestart": "NeverRestartWithKnown",
+    "DescendantScanFailure": "NeverScanFailed",
+    "RunnerFinishSafety": None,
+    "RunnerFinishBlocking": "temporal",
+    "RunnerFinishDropped": "NoDroppedEarlyFinal",
+    "RunnerFinishEarlyAck": "NeverEarlyAck",
+    "RunnerFinishEarlyFinal": "NeverEarlyFinal",
 }
 
 
@@ -76,7 +88,12 @@ def main():
                     [
                         "tlc", "-workers", "1", "-fpmem", "0.05",
                         "-noGenerateSpecTE", "-metadir", tmp,
-                        "-config", f"{case}.cfg", "BrokerRunner.tla",
+                        "-config", f"{case}.cfg",
+                        (
+                            "DescendantScan.tla" if case.startswith("DescendantScan")
+                            else "RunnerFinish.tla" if case.startswith("RunnerFinish")
+                            else "BrokerRunner.tla"
+                        ),
                     ],
                     cwd=Path(__file__).resolve().parent,
                     stdout=output,
@@ -89,6 +106,10 @@ def main():
         if expected is None:
             ok = result.returncode == 0 and (
                 "Model checking completed. No error has been found." in text
+            )
+        elif expected == "temporal":
+            ok = result.returncode == 13 and (
+                "Error: Temporal properties were violated." in text
             )
         else:
             ok = (

@@ -10,16 +10,22 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 var submittedJob = regexp.MustCompile(`submitted job ([0-9a-f-]{36})`)
 
 type runnerProcess struct {
-	cmd    *exec.Cmd
+	fencedTestProcess
 	stderr *syncBuffer
 	done   chan error
+	exited bool
 }
 
 func startRunner(t *testing.T, args ...string) *runnerProcess {
@@ -28,18 +34,38 @@ func startRunner(t *testing.T, args ...string) *runnerProcess {
 	t.Cleanup(cancel)
 	p := &runnerProcess{stderr: &syncBuffer{}, done: make(chan error, 1)}
 	p.cmd = tunaCommand(ctx, args...)
+	p.cmd.Cancel = func() error { return p.signal(syscall.SIGTERM) }
 	var env []string
 	for _, kv := range p.cmd.Env {
 		if !strings.HasPrefix(kv, "TUNA_JOB_ID=") {
 			env = append(env, kv)
 		}
 	}
+
 	p.cmd.Env, p.cmd.Stderr = env, p.stderr
 	if err := p.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	go func() { p.done <- p.cmd.Wait() }()
+	p.signalable = true
+	go func() { p.done <- p.wait() }()
+	t.Cleanup(func() { p.stop(t) })
 	return p
+}
+
+func (p *runnerProcess) stop(t *testing.T) {
+	t.Helper()
+	if p.exited {
+		return
+	}
+	if err := p.signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Errorf("stop runner: %v", err)
+	}
+	select {
+	case <-p.done:
+		p.exited = true
+	case <-time.After(10 * time.Second):
+		t.Errorf("runner did not stop; stderr=%s", p.stderr.String())
+	}
 }
 
 func (p *runnerProcess) jobID(t *testing.T) string {
@@ -59,6 +85,7 @@ func (p *runnerProcess) exitCode(t *testing.T) int {
 	t.Helper()
 	select {
 	case err := <-p.done:
+		p.exited = true
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return exit.ExitCode()
@@ -140,5 +167,61 @@ func TestExecutableRunnerWithControls(t *testing.T) {
 	waitJobState(t, ps, bID, "JOB_STATE_FINISHED")
 	if status, _, body := restCall(t, port, http.MethodGet, "/v1/jobs/"+aID, nil); status != 200 || !strings.Contains(body, "JOB_STATE_FINISHED") {
 		t.Fatalf("REST job = %d %s", status, body)
+	}
+}
+
+func TestBrokerRestartPreservesLiveRunnerAndReservation(t *testing.T) {
+	port, dir := freePort(t), t.TempDir()
+	service := startService(t, port, dir)
+	ps := fmt.Sprint(port)
+	marker := filepath.Join(t.TempDir(), "launches")
+	r := startRunner(t, "--port", ps, "--", "/bin/sh", "-c",
+		`printf x >> "$0"; exec /bin/sleep 60`, marker)
+	id := r.jobID(t)
+	waitJobState(t, ps, id, "JOB_STATE_RUNNING")
+
+	readJob := func() *pb.Job {
+		t.Helper()
+		status, _, body := restCall(t, port, http.MethodGet, "/v1/jobs/"+id, nil)
+		if status != 200 {
+			t.Fatalf("read job = %d %s", status, body)
+		}
+		var job pb.Job
+		if err := protojson.Unmarshal([]byte(body), &job); err != nil {
+			t.Fatal(err)
+		}
+		return &job
+	}
+	before := readJob()
+	if before.Process == nil || before.Grant == nil {
+		t.Fatalf("live job has no process or grant: %v", before)
+	}
+	service.stop(t)
+	startService(t, port, dir)
+	t.Cleanup(func() { r.stop(t) })
+	after := readJob()
+	if !proto.Equal(after.Process, before.Process) || !proto.Equal(after.Grant.Runner, before.Grant.Runner) {
+		t.Fatalf("restart changed live identities: before=%v after=%v", before, after)
+	}
+	status, _, body := restCall(t, port, http.MethodGet, "/v1/status", nil)
+	var brokerStatus pb.BrokerStatus
+	if status != 200 {
+		t.Fatalf("status after restart = %d %s", status, body)
+	}
+	if err := protojson.Unmarshal([]byte(body), &brokerStatus); err != nil {
+		t.Fatal(err)
+	}
+	if brokerStatus.Occupied != 2 || brokerStatus.UnreconciledReservations != 1 {
+		t.Fatalf("recovered accounting = %v", &brokerStatus)
+	}
+	if status, _, body = restCall(t, port, http.MethodPost, "/v1/jobs/"+id+"/cancel", nil); status != 200 {
+		t.Fatalf("cancel after restart = %d %s", status, body)
+	}
+	if code := r.exitCode(t); code != 137 {
+		t.Fatalf("cancelled runner = %d; stderr=%s", code, r.stderr.String())
+	}
+	waitJobState(t, ps, id, "JOB_STATE_FINISHED")
+	if contents, err := os.ReadFile(marker); err != nil || string(contents) != "x" {
+		t.Fatalf("restart launched command more than once: %q, %v", contents, err)
 	}
 }

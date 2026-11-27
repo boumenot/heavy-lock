@@ -367,6 +367,10 @@ func (s *Store) transaction(ctx context.Context, write bool, action func(*Reader
 	}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
+		if failure := nonContextFailures(err); failure != nil {
+			s.fail(failure)
+			return errors.Join(ErrUnavailable, err)
+		}
 		return err
 	}
 	defer func() { err = errors.Join(err, conn.Close()) }()
@@ -380,6 +384,7 @@ func (s *Store) transaction(ctx context.Context, write bool, action func(*Reader
 	if _, err = conn.ExecContext(ctx, begin); err != nil {
 		if failure := nonContextFailures(err); failure != nil {
 			s.fail(failure)
+			return errors.Join(ErrUnavailable, err)
 		}
 		return err
 	}
@@ -390,6 +395,7 @@ func (s *Store) transaction(ctx context.Context, write bool, action func(*Reader
 			_, rollbackErr := conn.ExecContext(context.Background(), "ROLLBACK")
 			if rollbackErr != nil {
 				s.fail(rollbackErr)
+				err = errors.Join(err, ErrUnavailable)
 			}
 			err = errors.Join(err, rollbackErr)
 		}
@@ -398,13 +404,14 @@ func (s *Store) transaction(ctx context.Context, write bool, action func(*Reader
 	err = action(r)
 	if failure := nonContextFailures(r.err); failure != nil {
 		s.fail(failure)
+		err = errors.Join(err, ErrUnavailable)
 	}
 	if err = errors.Join(err, r.err); err != nil {
 		return err
 	}
 	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
 		s.fail(err)
-		return fmt.Errorf("commit storage: %w", err)
+		return errors.Join(ErrUnavailable, fmt.Errorf("commit storage: %w", err))
 	}
 	committed = true
 	return nil

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/boumenot/heavy-lock/apps/tuna/broker"
+	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/jobmetrics"
 	"github.com/boumenot/heavy-lock/apps/tuna/procid"
 	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
@@ -46,6 +47,11 @@ type Options struct {
 	// the initial 24-hour/100,000-event limits. Job history is unaffected.
 	EventMaxAge   time.Duration
 	EventMaxCount int64
+	// LaunchTimeout defaults to scheduler.LaunchTimeout.
+	LaunchTimeout time.Duration
+	// Cancellation timeouts default to the scheduler's initial deadlines.
+	CancelAckTimeout        time.Duration
+	CancelCompletionTimeout time.Duration
 	// Ready, when set, is called once the transport listens and admission
 	// is open.
 	Ready func(port int)
@@ -89,13 +95,16 @@ func (l *Lock) Release() error { return l.file.Close() }
 // Run serves until ctx is cancelled or the transport fails, then closes the
 // transport and records a clean scheduler stop. A listener conflict is
 // returned (wrapping transport.ErrPortInUse); another port is never chosen.
-// Reservations left by an earlier run stay held as occupied capacity; this
-// does not verify or take them over.
+// Reservations left by an earlier run stay held as occupied capacity until
+// reconciliation establishes the required release evidence.
 func Run(ctx context.Context, o Options) (err error) {
 	if runtime.GOOS != "darwin" {
 		return errors.New("the v2 broker is implemented only on macOS")
 	}
+	var logMu sync.Mutex
 	logf := func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
 		if o.Log != nil {
 			_, _ = fmt.Fprintf(o.Log, "tuna service: "+format+"\n", args...)
 		}
@@ -128,13 +137,24 @@ func Run(ctx context.Context, o Options) (err error) {
 	defer func() { err = errors.Join(err, store.Close()) }()
 
 	hub := broker.NewHub()
+	cfg := scheduler.DefaultConfig(o.Capacity)
+	if o.LaunchTimeout != 0 {
+		cfg.LaunchTimeout = o.LaunchTimeout
+	}
+	if o.CancelAckTimeout != 0 {
+		cfg.CancelAckTimeout = o.CancelAckTimeout
+	}
+	if o.CancelCompletionTimeout != 0 {
+		cfg.CancelCompletionTimeout = o.CancelCompletionTimeout
+	}
 	sched, _, err := scheduler.Start(ctx, store, scheduler.Options{
-		Config:         scheduler.DefaultConfig(o.Capacity),
+		Config:         cfg,
 		ServiceVersion: o.ServiceVersion,
 		PID:            int64(os.Getpid()),
 		Sampler:        o.Sampler,
 		Publish:        hub.Publish,
 		Processes:      procid.Probe{},
+		Warnf:          logf,
 	})
 	if err != nil {
 		return err
@@ -193,6 +213,29 @@ func Run(ctx context.Context, o Options) (err error) {
 func maintain(ctx context.Context, sched *scheduler.Scheduler, b *composite, logf func(string, ...any)) {
 	ticker := time.NewTicker(MaintenanceInterval)
 	defer ticker.Stop()
+	warned := map[string]bool{}
+	warnTakeovers := func() {
+		snapshot, err := sched.Snapshot(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				logf("inspect pending takeovers: %v", err)
+			}
+			return
+		}
+		active := map[string]bool{}
+		for _, j := range snapshot.ActiveJobs {
+			if j.BrokerTermination == nil || j.State == pb.JobState_JOB_STATE_FINISHED {
+				continue
+			}
+			active[j.JobId] = true
+			if !warned[j.JobId] {
+				logf("job %s: takeover %s cannot signal without verified identity-bound signaling and coordination; reservation remains held",
+					j.JobId, j.BrokerTermination.Reason)
+			}
+		}
+		warned = active
+	}
+	warnTakeovers()
 	for {
 		select {
 		case <-ctx.Done():
@@ -202,9 +245,16 @@ func maintain(ctx context.Context, sched *scheduler.Scheduler, b *composite, log
 		if _, err := sched.Tick(ctx); err != nil && ctx.Err() == nil {
 			logf("grace maintenance: %v", err)
 		}
+		discovery, cancel := context.WithTimeout(ctx, jobSampleTimeout)
+		err := sched.Discover(discovery, b.discovery)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			logf("process discovery: %v", err)
+		}
 		if _, err := sched.Reconcile(ctx); err != nil && ctx.Err() == nil {
 			logf("release reconciliation: %v", err)
 		}
+		warnTakeovers()
 		if err := b.maintain(ctx); err != nil && ctx.Err() == nil {
 			logf("event retention: %v", err)
 		}

@@ -31,7 +31,7 @@ func (s *Scheduler) projectJob(r *storage.Reader, j *pb.Job) error {
 	j.GraceRemaining = nil
 	j.BlockedReason = pb.BlockedReason_BLOCKED_REASON_UNSPECIFIED
 	if j.Grant != nil {
-		j.Grant.LaunchTimeout = durationpb.New(LaunchTimeout)
+		j.Grant.LaunchTimeout = durationpb.New(s.cfg.LaunchTimeout)
 	}
 	if j.State != pb.JobState_JOB_STATE_QUEUED {
 		return nil
@@ -92,6 +92,9 @@ func (s *Scheduler) projectStatus(r *storage.Reader, st *pb.BrokerStatus, ready 
 	st.Capacity = s.cfg.Capacity
 	st.BackfillLimit = s.cfg.BackfillLimit
 	st.Recovering = !ready
+	if st.UnreconciledReservations, err = r.UnreconciledReservations(s.run); err != nil {
+		return err
+	}
 	st.HeadBlockedReason, st.QueueState = s.queueView(st, queue, ready)
 	st.FreeMemoryBytes, st.LoadAverage_1M, st.LoadAverage_5M, st.LoadAverage_15M = nil, nil, nil, nil
 	if sample := s.lastSample; sample != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
@@ -14,6 +15,15 @@ import (
 // LaunchTimeout is the investigation threshold from reservation commit to an
 // accepted claim and start report. Expiry is never release evidence.
 const LaunchTimeout = 30 * time.Second
+
+const (
+	CancelAckTimeout        = 5 * time.Second
+	CancelCompletionTimeout = 30 * time.Second
+)
+
+const launchInvestigationDetail = "launch investigation expired without a reported root or no-launch proof"
+
+const takeoverBlockedDetail = "broker takeover is blocked: verified identity-bound signaling and coordination are unavailable"
 
 // probeTimeout bounds one OS process check inside a release transaction.
 const probeTimeout = 2 * time.Second
@@ -28,6 +38,118 @@ var ErrGrantFenced = errors.New("grant is fenced and cannot be claimed")
 // reservation held.
 type ProcessProbe interface {
 	Exited(ctx context.Context, p *pb.ProcessIdentity) (bool, error)
+}
+
+type probeIdentity struct {
+	role       string
+	pid, start int64
+}
+
+type probeWarning struct {
+	jobID    string
+	identity probeIdentity
+	err      error
+}
+
+func (s *Scheduler) probeExited(ctx context.Context, jobID, role string, p *pb.ProcessIdentity, warnings *[]probeWarning) (bool, error) {
+	key := probeIdentity{role: role, pid: p.GetPid(), start: startNanos(p)}
+	var exited bool
+	var err error
+	if s.processes == nil {
+		err = errors.New("process probe is unavailable")
+	} else {
+		probeCtx, cancel := context.WithTimeout(durable(ctx), probeTimeout)
+		exited, err = s.processes.Exited(probeCtx, p)
+		cancel()
+	}
+	failures := s.probeFailures[jobID]
+	if err == nil {
+		delete(failures, key)
+		if len(failures) == 0 {
+			delete(s.probeFailures, jobID)
+		}
+		return exited, nil
+	}
+	if failures == nil {
+		failures = map[probeIdentity]string{}
+		s.probeFailures[jobID] = failures
+	}
+	if previous, ok := failures[key]; !ok || previous != err.Error() {
+		*warnings = append(*warnings, probeWarning{jobID: jobID, identity: key, err: err})
+	}
+	failures[key] = err.Error()
+	return false, err
+}
+
+func (s *Scheduler) unlockAndWarn(warnings *[]probeWarning) {
+	s.mu.Unlock()
+	for _, warning := range *warnings {
+		s.warnf("job %s: %s process state unverifiable (PID %d, start %d): %v",
+			warning.jobID, warning.identity.role, warning.identity.pid, warning.identity.start, warning.err)
+	}
+}
+
+type cancelClock struct {
+	acknowledged bool
+	since        time.Duration
+}
+
+func (s *Scheduler) updateCancelClock(job *pb.Job, now time.Duration) {
+	if job.State == pb.JobState_JOB_STATE_FINISHED || job.Grant == nil ||
+		job.CancelRequestedAt == nil || job.BrokerTermination != nil {
+		delete(s.cancellation, job.JobId)
+		return
+	}
+	acknowledged := job.CancelAcknowledgedAt != nil
+	if clock, ok := s.cancellation[job.JobId]; !ok || clock.acknowledged != acknowledged {
+		s.cancellation[job.JobId] = cancelClock{acknowledged: acknowledged, since: now}
+	}
+}
+
+func (s *Scheduler) takeoverReason(job *pb.Job, runnerDead bool, now time.Duration) pb.BrokerTermination_Reason {
+	if runnerDead {
+		return pb.BrokerTermination_REASON_RUNNER_DEAD
+	}
+	if job.CancelRequestedAt == nil {
+		return pb.BrokerTermination_REASON_UNSPECIFIED
+	}
+	if job.CancelFailureDetail != nil {
+		return pb.BrokerTermination_REASON_CANCEL_RUNNER_FAILED
+	}
+	clock, ok := s.cancellation[job.JobId]
+	if !ok || clock.acknowledged != (job.CancelAcknowledgedAt != nil) {
+		return pb.BrokerTermination_REASON_UNSPECIFIED
+	}
+	if clock.acknowledged && now-clock.since >= s.cfg.CancelCompletionTimeout {
+		return pb.BrokerTermination_REASON_CANCEL_COMPLETION_DEADLINE
+	}
+	if !clock.acknowledged && now-clock.since >= s.cfg.CancelAckTimeout {
+		return pb.BrokerTermination_REASON_CANCEL_ACK_DEADLINE
+	}
+	return pb.BrokerTermination_REASON_UNSPECIFIED
+}
+
+func needsLaunchInvestigation(job *pb.Job) bool {
+	if job.State != pb.JobState_JOB_STATE_RESERVED || job.Grant == nil || job.Process != nil {
+		return false
+	}
+	if job.Outcome == nil {
+		return true
+	}
+	return job.Outcome.Kind == pb.OutcomeKind_OUTCOME_KIND_UNKNOWN &&
+		!strings.Contains(job.Outcome.GetDetail(), launchInvestigationDetail)
+}
+
+func markUnknown(tx *storage.Tx, job *pb.Job, detail string) error {
+	if job.Outcome != nil {
+		if job.Outcome.Kind != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN || strings.Contains(job.Outcome.GetDetail(), detail) {
+			return nil
+		}
+		if previous := job.Outcome.GetDetail(); previous != "" {
+			detail = previous + "; " + detail
+		}
+	}
+	return tx.MarkUnknown(job.JobId, &detail)
 }
 
 // Cancel records a cancellation request. A queued job finishes at once; a
@@ -152,8 +274,9 @@ func (s *Scheduler) Rejoin(ctx context.Context, id string, runner *pb.RunnerInca
 // runnerOp applies one runner lifecycle transition and, in the same
 // transaction, any release it makes provable. A release runs admission.
 func (s *Scheduler) runnerOp(ctx context.Context, id string, needReady bool, op func(*storage.Tx) error) (*pb.Job, []*pb.BrokerEvent, error) {
+	var warnings []probeWarning
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndWarn(&warnings)
 	if err := s.usable(needReady); err != nil {
 		return nil, nil, err
 	}
@@ -165,7 +288,7 @@ func (s *Scheduler) runnerOp(ctx context.Context, id string, needReady bool, op 
 			return err
 		}
 		var err error
-		if released, err = s.reconcile(ctx, tx, id); err != nil {
+		if released, err = s.reconcile(ctx, tx, id, &warnings); err != nil {
 			return err
 		}
 		if job, err = tx.Job(id); err != nil {
@@ -187,30 +310,99 @@ func (s *Scheduler) runnerOp(ctx context.Context, id string, needReady bool, op 
 // periodic tick after a process probe was inconclusive, and then runs
 // admission if anything was released.
 func (s *Scheduler) Reconcile(ctx context.Context) ([]*pb.BrokerEvent, error) {
+	var warnings []probeWarning
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndWarn(&warnings)
 	if err := s.usable(false); err != nil {
 		return nil, err
 	}
 	released := false
+	var investigated []string
+	now := s.clock()
 	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(s.ready)
 		released = false
+		investigated = investigated[:0]
 		jobs, err := tx.ActiveJobs()
 		if err != nil {
 			return err
 		}
 		for _, j := range jobs {
-			ok, err := s.reconcile(ctx, tx, j.JobId)
+			dead := false
+			if s.ready {
+				res, err := tx.Reservation(j.JobId)
+				if err != nil {
+					return err
+				}
+				dead, err = s.probeExited(ctx, j.JobId, "runner", res.Runner.Process, &warnings)
+				if err != nil && s.processes != nil {
+					detail := fmt.Sprintf("runner process state unverifiable: %v", err)
+					if err := markUnknown(tx, j, detail); err != nil {
+						return err
+					}
+				} else if dead {
+					if err := tx.TrackProcess(j.JobId, res.Runner.Process, "runner"); err != nil {
+						return err
+					}
+					if err := tx.VerifyProcessExited(j.JobId, res.Runner.Process); err != nil {
+						return err
+					}
+					if err := tx.FenceRunnerTerminated(j.JobId, res.Runner); err != nil {
+						return err
+					}
+					if err := markUnknown(tx, j, "assigned runner death verified; native outcome is unknown"); err != nil {
+						return err
+					}
+				}
+				j, err = tx.Job(j.JobId)
+				if err != nil {
+					return err
+				}
+			}
+			if since, ok := s.launch[j.JobId]; s.ready && ok && now-since >= s.cfg.LaunchTimeout {
+				res, err := tx.Reservation(j.JobId)
+				if err != nil {
+					return err
+				}
+				if j.Process == nil && res.NoLaunchProof == nil {
+					if err := markUnknown(tx, j, launchInvestigationDetail+"; reservation remains held"); err != nil {
+						return err
+					}
+				}
+				investigated = append(investigated, j.JobId)
+			}
+			ok, err := s.reconcile(ctx, tx, j.JobId, &warnings)
 			if err != nil {
 				return err
+			}
+			if s.ready && !ok {
+				current, err := tx.Job(j.JobId)
+				if err != nil {
+					return err
+				}
+				if current.BrokerTermination == nil {
+					if reason := s.takeoverReason(current, dead, now); reason != pb.BrokerTermination_REASON_UNSPECIFIED {
+						if err := tx.RecordTermination(j.JobId, reason); err != nil {
+							return err
+						}
+						if err := markUnknown(tx, current, takeoverBlockedDetail); err != nil {
+							return err
+						}
+					}
+				}
 			}
 			released = released || ok
 		}
 		return nil
 	})
-	if err != nil || !released {
+	if err != nil {
 		return events, err
+	}
+	for _, id := range investigated {
+		delete(s.launch, id)
+	}
+	if !released {
+		return events, nil
 	}
 	more, err := s.admitLocked(ctx)
 	return append(events, more...), err
@@ -219,10 +411,9 @@ func (s *Scheduler) Reconcile(ctx context.Context) ([]*pb.BrokerEvent, error) {
 // reconcile releases a fenced reservation once its evidence is complete:
 // every tracked non-runner process verified exited by the OS probe, and an
 // outcome that matches the release reason. Anything short of that, including
-// a missing probe, keeps the reservation held. Only the command root is
-// tracked; descendant discovery is not implemented, so known-process
-// verification covers the root alone.
-func (s *Scheduler) reconcile(ctx context.Context, tx *storage.Tx, id string) (bool, error) {
+// a missing probe or incomplete/in-flight discovery, keeps the reservation
+// held. Discovery is best effort; never-observed descendants may be missed.
+func (s *Scheduler) reconcile(ctx context.Context, tx *storage.Tx, id string, warnings *[]probeWarning) (bool, error) {
 	res, err := tx.Reservation(id)
 	if errors.Is(err, storage.ErrNotFound) {
 		return false, nil
@@ -234,6 +425,12 @@ func (s *Scheduler) reconcile(ctx context.Context, tx *storage.Tx, id string) (b
 	if err != nil {
 		return false, err
 	}
+	if job.Process != nil {
+		state, ok := s.discovery[id]
+		if !ok || state.root != processIdentity(job.Process) || !state.ready || state.inFlight {
+			return false, nil
+		}
+	}
 	processes, err := tx.Processes(id)
 	if err != nil {
 		return false, err
@@ -243,13 +440,7 @@ func (s *Scheduler) reconcile(ctx context.Context, tx *storage.Tx, id string) (b
 		if p.Role == "runner" || p.ExitedVerifiedAt != nil {
 			continue
 		}
-		if s.processes == nil {
-			verified = false
-			continue
-		}
-		probeCtx, cancel := context.WithTimeout(durable(ctx), probeTimeout)
-		exited, err := s.processes.Exited(probeCtx, p.Identity)
-		cancel()
+		exited, err := s.probeExited(ctx, id, p.Role, p.Identity, warnings)
 		if err != nil || !exited {
 			verified = false
 			continue
@@ -269,6 +460,8 @@ func (s *Scheduler) reconcile(ctx context.Context, tx *storage.Tx, id string) (b
 		reason = "cancelled_before_start"
 	case job.Process != nil && (kind == pb.OutcomeKind_OUTCOME_KIND_EXITED || kind == pb.OutcomeKind_OUTCOME_KIND_SIGNALED):
 		reason = "processes_exited"
+	case kind == pb.OutcomeKind_OUTCOME_KIND_UNKNOWN && (job.Process != nil || res.NoLaunchProof != nil):
+		reason = "recovery_verified_gone"
 	default:
 		return false, nil
 	}

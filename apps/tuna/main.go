@@ -17,6 +17,7 @@ import (
 	"github.com/boumenot/heavy-lock/apps/tuna/cli"
 	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	"github.com/boumenot/heavy-lock/apps/tuna/runner"
+	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
 	"github.com/boumenot/heavy-lock/apps/tuna/service"
 	"github.com/boumenot/heavy-lock/apps/tuna/transport"
 )
@@ -29,6 +30,9 @@ const (
 	softwareExitCode = runner.ExitSoftware
 	serviceUsage     = "Service: tuna service [--port PORT (default 49783)] [--data-dir DIR]\n" +
 		"  [--event-max-age DURATION (default 24h)] [--event-max-count N (default 100000)]\n" +
+		"  [--launch-timeout DURATION (default 30s)]\n" +
+		"  [--cancel-ack-timeout DURATION (default 5s)]\n" +
+		"  [--cancel-completion-timeout DURATION (default 30s)]\n" +
 		"  Serves unauthenticated control gRPC/REST and the runner service on\n" +
 		"  127.0.0.1 only; a port conflict is an error, never a different port.\n" +
 		"  A second broker for the same user exits 75.\n"
@@ -180,22 +184,31 @@ func dispatchService(args []string, stdout, stderr io.Writer, l launcher) int {
 	dataDir := fs.String("data-dir", "", "broker state directory")
 	maxAge := fs.Duration("event-max-age", 24*time.Hour, "event replay age limit")
 	maxCount := fs.Int64("event-max-count", 100000, "event replay count limit")
+	launchTimeout := fs.Duration("launch-timeout", scheduler.LaunchTimeout, "launch investigation timeout")
+	cancelAckTimeout := fs.Duration("cancel-ack-timeout", scheduler.CancelAckTimeout, "cancellation acknowledgment timeout")
+	cancelCompletionTimeout := fs.Duration("cancel-completion-timeout", scheduler.CancelCompletionTimeout, "cancellation completion timeout")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return writeResult(stdout, serviceUsage, 0)
 		}
 		return writeResult(stderr, fmt.Sprintf("tuna: %v\n%s", err, serviceUsage), usageExitCode)
 	}
-	if fs.NArg() != 0 || *port < 1 || *port > 65535 || *maxAge <= 0 || *maxCount < 1 {
+	if fs.NArg() != 0 || *port < 1 || *port > 65535 || *maxAge <= 0 || *maxCount < 1 ||
+		*launchTimeout < time.Millisecond || *launchTimeout%time.Millisecond != 0 ||
+		*cancelAckTimeout < time.Millisecond || *cancelAckTimeout%time.Millisecond != 0 ||
+		*cancelCompletionTimeout < time.Millisecond || *cancelCompletionTimeout%time.Millisecond != 0 {
 		return writeResult(stderr, "tuna: invalid service arguments\n"+serviceUsage, usageExitCode)
 	}
 	return l.service(service.Options{
-		Port:           *port,
-		DataDir:        *dataDir,
-		ServiceVersion: version,
-		Log:            stderr,
-		EventMaxAge:    *maxAge,
-		EventMaxCount:  *maxCount,
+		Port:                    *port,
+		DataDir:                 *dataDir,
+		ServiceVersion:          version,
+		Log:                     stderr,
+		EventMaxAge:             *maxAge,
+		EventMaxCount:           *maxCount,
+		LaunchTimeout:           *launchTimeout,
+		CancelAckTimeout:        *cancelAckTimeout,
+		CancelCompletionTimeout: *cancelCompletionTimeout,
 	})
 }
 

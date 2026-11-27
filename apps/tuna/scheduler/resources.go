@@ -24,6 +24,11 @@ type Config struct {
 	Settle time.Duration
 	// Grace is the queued-runner registration/disconnect grace period.
 	Grace time.Duration
+	// LaunchTimeout starts at reservation commit and triggers investigation.
+	LaunchTimeout time.Duration
+	// Cancellation deadlines trigger investigation, never release.
+	CancelAckTimeout        time.Duration
+	CancelCompletionTimeout time.Duration
 }
 
 // DefaultCapacity is v1's min(processors/3, totalMemoryGiB/4), clamped to 2..8.
@@ -35,12 +40,15 @@ func DefaultCapacity(processors int, totalMemoryBytes uint64) uint32 {
 // DefaultConfig carries the design's initial, unmeasured defaults.
 func DefaultConfig(capacity uint32) Config {
 	return Config{
-		Capacity:             capacity,
-		BackfillLimit:        1,
-		MinFreeMemoryPercent: 25,
-		MaxCPULoadPercent:    50,
-		Settle:               60 * time.Second,
-		Grace:                30 * time.Second,
+		Capacity:                capacity,
+		BackfillLimit:           1,
+		MinFreeMemoryPercent:    25,
+		MaxCPULoadPercent:       50,
+		Settle:                  60 * time.Second,
+		Grace:                   30 * time.Second,
+		LaunchTimeout:           LaunchTimeout,
+		CancelAckTimeout:        CancelAckTimeout,
+		CancelCompletionTimeout: CancelCompletionTimeout,
 	}
 }
 
@@ -50,6 +58,13 @@ func (c Config) validate() error {
 	}
 	if c.Grace <= 0 || c.Settle < 0 {
 		return errors.New("grace must be positive and settle non-negative")
+	}
+	if c.LaunchTimeout < time.Millisecond || c.LaunchTimeout%time.Millisecond != 0 {
+		return errors.New("launch timeout must be a positive whole number of milliseconds")
+	}
+	if c.CancelAckTimeout < time.Millisecond || c.CancelAckTimeout%time.Millisecond != 0 ||
+		c.CancelCompletionTimeout < time.Millisecond || c.CancelCompletionTimeout%time.Millisecond != 0 {
+		return errors.New("cancellation timeouts must be positive whole numbers of milliseconds")
 	}
 	if c.MinFreeMemoryPercent < 0 || c.MinFreeMemoryPercent > 100 || c.MaxCPULoadPercent < 0 {
 		return errors.New("invalid sharing thresholds")

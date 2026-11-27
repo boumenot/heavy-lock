@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"sync"
 	"time"
@@ -52,6 +53,10 @@ type Options struct {
 	// release. Without it no process is ever verified, so capacity held by
 	// a launched command stays held (fail closed).
 	Processes ProcessProbe
+	// Warnf receives process-observation failures without changing lifecycle
+	// RPC results or native outcomes. It runs outside the scheduler lock, must
+	// be safe for concurrent calls, and defaults to the standard logger.
+	Warnf func(string, ...any)
 }
 
 // Registration is one accepted job stream. Only the latest registration of
@@ -77,6 +82,7 @@ type disconnected struct {
 // are returned even when a later step of the same call fails.
 type Scheduler struct {
 	mu            sync.Mutex
+	discoveryMu   sync.Mutex
 	store         *storage.Store
 	cfg           Config
 	version       string
@@ -89,10 +95,15 @@ type Scheduler struct {
 	streams       map[string]*Registration
 	tokens        uint64
 	grace         map[string]disconnected
+	launch        map[string]time.Duration
+	cancellation  map[string]cancelClock
 	lastSample    *Sample
 	lastSharing   *Sharing
 	publish       func([]*pb.BrokerEvent)
 	processes     ProcessProbe
+	warnf         func(string, ...any)
+	probeFailures map[string]map[probeIdentity]string
+	discovery     map[string]discoveryState
 	lastSeq       int64
 }
 
@@ -112,9 +123,13 @@ func Start(ctx context.Context, store *storage.Store, o Options) (*Scheduler, []
 	if o.Clock == nil {
 		o.Clock = MonotonicClock()
 	}
+	if o.Warnf == nil {
+		o.Warnf = func(format string, args ...any) { log.Printf("tuna scheduler: "+format, args...) }
+	}
 	s := &Scheduler{store: store, cfg: o.Config, version: o.ServiceVersion, clock: o.Clock,
 		sampler: o.Sampler, streams: map[string]*Registration{}, grace: map[string]disconnected{},
-		publish: o.Publish, processes: o.Processes}
+		launch: map[string]time.Duration{}, cancellation: map[string]cancelClock{}, publish: o.Publish, processes: o.Processes,
+		warnf: o.Warnf, probeFailures: map[string]map[probeIdentity]string{}, discovery: map[string]discoveryState{}}
 	now := s.clock()
 	// The previous admission time is unknown after a restart; settle from now.
 	s.lastAdmission = now
@@ -162,14 +177,28 @@ func (s *Scheduler) MarkReady(ctx context.Context) ([]*pb.BrokerEvent, error) {
 	if s.stopped {
 		return nil, ErrStopped
 	}
+	var recovered []*pb.Job
 	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(true)
+		if !s.ready {
+			var err error
+			if recovered, err = tx.ActiveJobs(); err != nil {
+				return err
+			}
+		}
 		return tx.ReadyService(s.run)
 	})
 	if err != nil {
 		return nil, err
 	}
 	s.ready = true
+	now := s.clock()
+	for _, job := range recovered {
+		if needsLaunchInvestigation(job) {
+			s.launch[job.JobId] = now
+		}
+		s.updateCancelClock(job, now)
+	}
 	more, err := s.admitLocked(ctx)
 	return append(events, more...), err
 }
@@ -177,6 +206,8 @@ func (s *Scheduler) MarkReady(ctx context.Context) ([]*pb.BrokerEvent, error) {
 // Stop checkpoints grace so downtime is not charged, then records a clean
 // shutdown. Reservations and queue entries are preserved.
 func (s *Scheduler) Stop(ctx context.Context) error {
+	s.discoveryMu.Lock()
+	defer s.discoveryMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stopped {
@@ -218,7 +249,7 @@ func (s *Scheduler) Config() Config { return s.cfg }
 func (s *Scheduler) Ready() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ready && !s.stopped
+	return s.ready && !s.stopped && s.store.Failure() == nil
 }
 
 // write is the only path to a storage write: it detaches the commit from
@@ -228,6 +259,31 @@ func (s *Scheduler) write(ctx context.Context, mutate func(*storage.Tx) error) (
 	events, err := s.store.Write(durable(ctx), mutate)
 	if err == nil && len(events) > 0 {
 		s.lastSeq = events[len(events)-1].EventSeq
+	}
+	if err == nil {
+		for _, event := range events {
+			if job := event.GetJobChanged(); job != nil && job.State == pb.JobState_JOB_STATE_FINISHED {
+				delete(s.probeFailures, job.JobId)
+				delete(s.discovery, job.JobId)
+			}
+		}
+	}
+	if err == nil && s.ready {
+		now := s.clock()
+		for _, event := range events {
+			job := event.GetJobChanged()
+			if job == nil {
+				continue
+			}
+			if needsLaunchInvestigation(job) {
+				if _, exists := s.launch[job.JobId]; !exists {
+					s.launch[job.JobId] = now
+				}
+			} else {
+				delete(s.launch, job.JobId)
+			}
+			s.updateCancelClock(job, now)
+		}
 	}
 	if err == nil && s.publish != nil {
 		s.publish(events)
@@ -246,6 +302,9 @@ func (s *Scheduler) EventSeq() int64 {
 func (s *Scheduler) usable(needReady bool) error {
 	if s.stopped {
 		return ErrStopped
+	}
+	if failure := s.store.Failure(); failure != nil {
+		return errors.Join(storage.ErrUnavailable, failure)
 	}
 	if needReady && !s.ready {
 		return ErrNotReady
@@ -660,7 +719,10 @@ func (s *Scheduler) ForceStart(ctx context.Context, id string) (*pb.Job, []*pb.B
 			return err
 		}
 		job, err = tx.Job(id)
-		return err
+		if err != nil {
+			return err
+		}
+		return s.projectJob(&tx.Reader, job)
 	})
 	if err != nil {
 		return nil, nil, err

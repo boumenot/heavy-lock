@@ -75,9 +75,35 @@ func TestDarwinSnapshotReportsRacesAndPartialFailures(t *testing.T) {
 	}
 	snapshot, err = source.Snapshot(context.Background())
 	if err != nil || !strings.Contains(snapshot.IncompletenessReason, "permission denied") ||
+		snapshot.IdentityFailure != "" ||
 		len(snapshot.Processes) != 2 || snapshot.Processes[0].CPUTimeNs != nil ||
 		snapshot.Processes[0].RSSBytes != nil {
 		t.Fatalf("permission failure = %+v, %v", snapshot, err)
+	}
+
+	calls := 0
+	source.table = func() ([]tableProcess, error) {
+		calls++
+		if calls == 1 {
+			return before, nil
+		}
+		return nil, errors.New("verification denied")
+	}
+	snapshot, err = source.Snapshot(context.Background())
+	if err != nil || !strings.Contains(snapshot.IdentityFailure, "verification denied") ||
+		len(snapshot.Processes) != 2 || !snapshot.Processes[0].Unstable ||
+		!snapshot.Processes[1].Unstable {
+		t.Fatalf("identity verification failure = %+v, %v", snapshot, err)
+	}
+
+	source.table = tableSequence(before, nil)
+	snapshot, err = source.Snapshot(context.Background())
+	if err != nil || snapshot.IdentityFailure == "" {
+		t.Fatalf("empty verification table = %+v, %v", snapshot, err)
+	}
+	source.table = tableSequence(nil)
+	if _, err := source.Snapshot(context.Background()); err == nil {
+		t.Fatal("empty initial process table was accepted")
 	}
 
 	source.table = func() ([]tableProcess, error) { return nil, errors.New("enumeration denied") }

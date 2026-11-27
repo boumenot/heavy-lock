@@ -3,9 +3,12 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
@@ -33,6 +36,12 @@ func (p *fakeProbe) exit(pid int64) {
 		p.exited = map[int64]bool{}
 	}
 	p.exited[pid] = true
+}
+
+func (p *fakeProbe) setError(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.err = err
 }
 
 func launchHarness(t *testing.T, capacity uint32, probe ProcessProbe) (*harness, *[][]*pb.BrokerEvent) {
@@ -73,6 +82,9 @@ func (h *harness) start1(l *launched, pid int64) {
 	l.proc = &pb.ProcessIdentity{Pid: pid, StartTime: contract.Timestamp(1000 + pid)}
 	if _, _, err := h.s.ReportStarted(h.ctx, l.id, l.grant, l.req.Runner, l.proc); err != nil {
 		h.t.Fatalf("started: %v", err)
+	}
+	if err := h.s.Discover(h.ctx, discoverySnapshot()); err != nil {
+		h.t.Fatalf("initial discovery: %v", err)
 	}
 }
 
@@ -168,6 +180,8 @@ func TestFinishSummaryIsAtomicAndConflictsDoNotOverwrite(t *testing.T) {
 
 func TestMissingProbeFailsClosed(t *testing.T) {
 	h, _ := launchHarness(t, 2, nil)
+	var warnings []string
+	h.s.warnf = func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
 	l := h.granted(2)
 	h.start1(&l, 77)
 	if _, _, err := h.s.ReportFinished(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(0)); err != nil {
@@ -178,6 +192,10 @@ func TestMissingProbeFailsClosed(t *testing.T) {
 	}
 	if j := h.job(l.id); j.State == pb.JobState_JOB_STATE_FINISHED {
 		t.Fatal("released without a process probe")
+	}
+	if got := strings.Join(warnings, "\n"); !strings.Contains(got, "process probe is unavailable") ||
+		!strings.Contains(got, "runner") || !strings.Contains(got, "command") {
+		t.Fatalf("missing process probe was not reported: %s", got)
 	}
 }
 
@@ -192,6 +210,91 @@ func TestProbeErrorKeepsReservationHeld(t *testing.T) {
 	}
 	if j := h.job(l.id); j.State == pb.JobState_JOB_STATE_FINISHED {
 		t.Fatal("an inconclusive probe released the reservation")
+	}
+}
+
+func TestProbeErrorsAreReportedWithoutChangingNativeOutcome(t *testing.T) {
+	probe := &fakeProbe{}
+	var warnings []string
+	cfg := DefaultConfig(2)
+	cfg.Settle = 0
+	var h *harness
+	callbackUnderLock := false
+	h = &harness{
+		t: t, ctx: context.Background(), path: filepath.Join(t.TempDir(), "state.db"),
+		cfg: cfg, sampler: &fakeSampler{sample: idle}, probe: probe,
+		warnf: func(format string, args ...any) {
+			if h.s.mu.TryLock() {
+				h.s.mu.Unlock()
+			} else {
+				callbackUnderLock = true
+			}
+			warnings = append(warnings, fmt.Sprintf(format, args...))
+		},
+	}
+	h.start()
+	t.Cleanup(func() { h.store.Close() })
+
+	l := h.granted(2)
+	h.start1(&l, 4242)
+	descendant := &pb.ProcessIdentity{Pid: 4243, StartTime: contract.Timestamp(5243)}
+	if _, err := h.store.Write(h.ctx, func(tx *storage.Tx) error {
+		return tx.TrackProcess(l.id, descendant, "descendant")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	probe.setError(errors.New("process observation denied"))
+	outcome := exited(7)
+	j, _, err := h.s.ReportFinished(h.ctx, l.id, l.grant, l.req.Runner, l.proc, outcome)
+	if err != nil || !proto.Equal(j.GetOutcome(), outcome) || j.State == pb.JobState_JOB_STATE_FINISHED {
+		t.Fatalf("failed probe changed finish report or released capacity: job=%v err=%v", j, err)
+	}
+	for _, want := range []string{"command", "4242", "descendant", "4243", l.id, "process observation denied"} {
+		if !strings.Contains(strings.Join(warnings, "\n"), want) {
+			t.Fatalf("probe warning missing %q: %v", want, warnings)
+		}
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("expected one warning per tracked process: %v", warnings)
+	}
+	if callbackUnderLock {
+		t.Fatal("probe warning callback ran under the scheduler lock")
+	}
+	if _, _, err := h.s.ReportFinished(h.ctx, l.id, l.grant, l.req.Runner, l.proc, outcome); err != nil {
+		t.Fatalf("duplicate native report after a probe error: %v", err)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("unchanged errors produced duplicate warnings: %v", warnings)
+	}
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 3 || !strings.Contains(warnings[2], "runner") {
+		t.Fatalf("runner probe error was not separately reported: %v", warnings)
+	}
+	if j := h.job(l.id); !proto.Equal(j.GetOutcome(), outcome) || j.State == pb.JobState_JOB_STATE_FINISHED {
+		t.Fatalf("runner probe error changed outcome or released capacity: %v", j)
+	}
+
+	probe.setError(nil)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	probe.setError(errors.New("process observation denied"))
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 6 {
+		t.Fatalf("recurring errors after recovery were not reported: %v", warnings)
+	}
+	probe.setError(nil)
+	probe.exit(l.proc.Pid)
+	probe.exit(descendant.Pid)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.expectState(l.id, pb.JobState_JOB_STATE_FINISHED); !proto.Equal(j.GetOutcome(), outcome) {
+		t.Fatalf("verified release changed the native outcome: %v", j.Outcome)
 	}
 }
 
@@ -305,6 +408,146 @@ func TestClaimRefusedUntilReady(t *testing.T) {
 	}
 }
 
+func TestRecoveryAcceptsLifecycleReportsBeforeAdmission(t *testing.T) {
+	h, _ := launchHarness(t, 2, &fakeProbe{})
+	l := h.granted(1)
+	if _, _, _, err := h.s.Claim(h.ctx, l.id, l.grant, l.req.Runner); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.s.Stop(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	if h.store, err = storage.Open(h.ctx, h.path); err != nil {
+		t.Fatal(err)
+	}
+	h.clock = &fakeClock{}
+	if h.s, _, err = Start(h.ctx, h.store, Options{Config: h.cfg, ServiceVersion: "test", PID: 2,
+		Clock: h.clock.read, Sampler: h.sampler, Processes: h.probe}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.s.Submit(h.ctx, request(t, 1)); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("submission during recovery = %v", err)
+	}
+	if _, _, _, err := h.s.Claim(h.ctx, l.id, l.grant, l.req.Runner); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("claim during recovery = %v", err)
+	}
+	if _, err := h.s.Rejoin(h.ctx, l.id, l.req.Runner); err != nil {
+		t.Fatalf("rejoin during recovery: %v", err)
+	}
+	if _, _, err := h.s.Seal(h.ctx, l.id, l.grant, l.req.Runner, false); err != nil {
+		t.Fatalf("seal during recovery: %v", err)
+	}
+	root := &pb.ProcessIdentity{Pid: 4242, StartTime: contract.Timestamp(5242)}
+	if _, _, err := h.s.ReportFinished(h.ctx, l.id, l.grant, l.req.Runner, root, exited(1)); err != nil {
+		t.Fatalf("finish during recovery: %v", err)
+	}
+	if _, err := h.s.MarkReady(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, other, _ := h.queued(1)
+	h.expectState(other, pb.JobState_JOB_STATE_RESERVED)
+	if occupied := h.snapshot().Status.Occupied; occupied != 2 {
+		t.Fatalf("recovered reservation not counted: %d", occupied)
+	}
+}
+
+func TestRecoveredUncertainReservationsRemainVisibleAndCounted(t *testing.T) {
+	h, _ := launchHarness(t, 2, &fakeProbe{})
+	l := h.granted(1)
+	h.restart(2)
+	if status := h.snapshot().Status; status.UnreconciledReservations != 1 || status.Occupied != 1 {
+		t.Fatalf("recovered status = %v", status)
+	}
+	_, other, _ := h.queued(1)
+	h.expectState(other, pb.JobState_JOB_STATE_RESERVED)
+	if status := h.snapshot().Status; status.UnreconciledReservations != 1 || status.Occupied != 2 {
+		t.Fatalf("spare-capacity status = %v", status)
+	}
+	if _, err := h.s.Cancel(h.ctx, l.id, nil); err != nil {
+		t.Fatal(err)
+	}
+	if status := h.snapshot().Status; status.UnreconciledReservations != 0 || status.Occupied != 1 {
+		t.Fatalf("released recovery status = %v", status)
+	}
+}
+
+func TestUnreconciledCountChangesArePublished(t *testing.T) {
+	for _, scenario := range []string{"launch timeout", "cancellation", "finish", "launch failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			probe := &fakeProbe{}
+			h, _ := launchHarness(t, 2, probe)
+			l := h.granted(2)
+			var events []*pb.BrokerEvent
+			var err error
+			switch scenario {
+			case "launch timeout":
+				h.clock.advance(30 * time.Second)
+				events, err = h.s.Reconcile(h.ctx)
+			case "cancellation":
+				h.start1(&l, 4242)
+				events, err = h.s.Cancel(h.ctx, l.id, nil)
+			case "finish":
+				h.start1(&l, 4242)
+				_, events, err = h.s.ReportFinished(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(1))
+			case "launch failure":
+				if _, _, _, err := h.s.Claim(h.ctx, l.id, l.grant, l.req.Runner); err != nil {
+					t.Fatal(err)
+				}
+				_, events, err = h.s.ReportLaunchFailed(h.ctx, l.id, l.grant, l.req.Runner, "start failed", false)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range events {
+				if status := event.GetStatusChanged(); status != nil && status.UnreconciledReservations == 1 {
+					return
+				}
+			}
+			t.Fatalf("no status event published the unreconciled reservation: %v", events)
+		})
+	}
+}
+
+func TestStorageFailureClosesAdmissionUntilReopen(t *testing.T) {
+	h, _ := launchHarness(t, 2, &fakeProbe{})
+	l := h.granted(2)
+	if err := h.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.Reconcile(h.ctx); !errors.Is(err, storage.ErrUnavailable) {
+		t.Fatalf("storage failure = %v", err)
+	}
+	if h.s.Ready() {
+		t.Fatal("scheduler remained ready after storage failure")
+	}
+	if _, _, _, err := h.s.Claim(h.ctx, l.id, l.grant, l.req.Runner); !errors.Is(err, storage.ErrUnavailable) {
+		t.Fatalf("claim after storage failure = %v", err)
+	}
+
+	var err error
+	if h.store, err = storage.Open(h.ctx, h.path); err != nil {
+		t.Fatal(err)
+	}
+	h.clock = &fakeClock{}
+	if h.s, _, err = Start(h.ctx, h.store, Options{Config: h.cfg, ServiceVersion: "test", PID: 2,
+		Clock: h.clock.read, Sampler: h.sampler, Processes: h.probe}); err != nil {
+		t.Fatal(err)
+	}
+	if h.s.Ready() {
+		t.Fatal("reopened storage skipped recovery")
+	}
+	if _, err := h.s.MarkReady(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if occupied := h.snapshot().Status.Occupied; occupied != 2 {
+		t.Fatalf("reopen lost the held reservation: %d", occupied)
+	}
+}
+
 func TestSnapshotsProjectLaunchTimeout(t *testing.T) {
 	h := newHarness(t, 2, nil)
 	req := request(t, 2)
@@ -330,6 +573,243 @@ func TestSnapshotsProjectLaunchTimeout(t *testing.T) {
 				t.Fatalf("grant = %v, want the 30-second launch investigation timeout", job.Grant)
 			}
 		})
+	}
+}
+
+func TestLaunchInvestigationStartsAtReservationAndRetainsCapacity(t *testing.T) {
+	h := newHarness(t, 2, nil)
+	l := h.granted(1)
+
+	h.clock.advance(20 * time.Second)
+	if _, _, _, err := h.s.Claim(h.ctx, l.id, l.grant, l.req.Runner); err != nil {
+		t.Fatal(err)
+	}
+	h.watch(l.req, l.id)
+	h.clock.advance(9 * time.Second)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.job(l.id); j.Outcome != nil {
+		t.Fatalf("investigation began before the reservation deadline: %v", j.Outcome)
+	}
+
+	h.clock.advance(time.Second)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	j := h.expectState(l.id, pb.JobState_JOB_STATE_RESERVED)
+	if j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN || j.Outcome.Detail == nil {
+		t.Fatalf("expired launch investigation not visible: %v", j.Outcome)
+	}
+	if occupied := h.snapshot().Status.Occupied; occupied != 1 {
+		t.Fatalf("investigation changed occupied capacity: %d", occupied)
+	}
+	_, other, _ := h.queued(1)
+	h.expectState(other, pb.JobState_JOB_STATE_RESERVED)
+	if occupied := h.snapshot().Status.Occupied; occupied != 2 {
+		t.Fatalf("uncertain reservation was not counted: %d", occupied)
+	}
+}
+
+func TestLaunchInvestigationRestartsAfterBrokerRecovery(t *testing.T) {
+	h := newHarness(t, 2, nil)
+	l := h.granted(2)
+	h.clock.advance(20 * time.Second)
+	h.restart(2)
+
+	h.clock.advance(29 * time.Second)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.job(l.id); j.Outcome != nil {
+		t.Fatalf("broker restart charged the old clock or downtime: %v", j.Outcome)
+	}
+	h.clock.advance(time.Second)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.expectState(l.id, pb.JobState_JOB_STATE_RESERVED); j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN {
+		t.Fatalf("reconstructed investigation did not expire: %v", j.Outcome)
+	}
+}
+
+func TestConfiguredLaunchInvestigationForEachAdmissionMode(t *testing.T) {
+	for _, mode := range []string{"queued", "no-wait", "forced"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newHarness(t, 2, func(c *Config) { c.LaunchTimeout = 7 * time.Second })
+			var j *pb.Job
+			switch mode {
+			case "queued":
+				l := h.granted(1)
+				j = h.job(l.id)
+			case "no-wait":
+				var err error
+				_, j, _, err = h.s.TrySubmitAndWatch(h.ctx, request(t, 1))
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "forced":
+				if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
+					t.Fatal(err)
+				}
+				_, id, _ := h.queued(1)
+				var err error
+				j, _, err = h.s.ForceStart(h.ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if j.Grant.GetLaunchTimeout().AsDuration() != 7*time.Second {
+				t.Fatalf("advertised launch timeout = %v", j.Grant.GetLaunchTimeout().AsDuration())
+			}
+			h.clock.advance(7 * time.Second)
+			if _, err := h.s.Reconcile(h.ctx); err != nil {
+				t.Fatal(err)
+			}
+			j = h.expectState(j.JobId, pb.JobState_JOB_STATE_RESERVED)
+			if j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN {
+				t.Fatalf("configured deadline did not trigger investigation: %v", j.Outcome)
+			}
+			if _, _, _, err := h.s.Claim(h.ctx, j.JobId, j.Grant.GrantId, j.Grant.Runner); err != nil {
+				t.Fatalf("timeout incorrectly fenced the grant: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunnerDeathFencesUnknownRootIndependentlyOfDisconnect(t *testing.T) {
+	probe := &fakeProbe{}
+	h, _ := launchHarness(t, 2, probe)
+	l := h.granted(1)
+	if _, _, _, err := h.s.Claim(h.ctx, l.id, l.grant, l.req.Runner); err != nil {
+		t.Fatal(err)
+	}
+	reg := h.watch(l.req, l.id)
+	if _, err := h.s.Disconnect(h.ctx, reg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.job(l.id); j.BrokerTermination != nil {
+		t.Fatalf("disconnect triggered takeover: %v", j.BrokerTermination)
+	}
+
+	probe.exit(l.req.Runner.Process.Pid)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	j := h.expectState(l.id, pb.JobState_JOB_STATE_RESERVED)
+	if j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN ||
+		j.BrokerTermination.GetReason() != pb.BrokerTermination_REASON_RUNNER_DEAD {
+		t.Fatalf("verified runner death not surfaced: outcome=%v termination=%v", j.Outcome, j.BrokerTermination)
+	}
+	if err := h.store.View(h.ctx, func(r *storage.Reader) error {
+		res, err := r.Reservation(l.id)
+		if err == nil && (res.FenceReason == nil || *res.FenceReason != "runner_terminated" || res.ReleasedAt != nil) {
+			t.Fatalf("unknown-root reservation = %+v", res)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, other, _ := h.queued(1)
+	h.expectState(other, pb.JobState_JOB_STATE_RESERVED)
+	if occupied := h.snapshot().Status.Occupied; occupied != 2 {
+		t.Fatalf("unknown-root reservation was not counted: %d", occupied)
+	}
+}
+
+func TestRunnerDeathClosesAnUnclaimedGrantWithoutLaunching(t *testing.T) {
+	probe := &fakeProbe{}
+	h, _ := launchHarness(t, 2, probe)
+	l := h.granted(2)
+	probe.exit(l.req.Runner.Process.Pid)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	j := h.expectState(l.id, pb.JobState_JOB_STATE_FINISHED)
+	if j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN {
+		t.Fatalf("outcome = %v", j.Outcome)
+	}
+	if err := h.store.View(h.ctx, func(r *storage.Reader) error {
+		res, err := r.Reservation(l.id)
+		if err == nil && (res.ClaimedAt != nil || res.NoLaunchProof == nil ||
+			*res.NoLaunchProof != "claim_prevented" || res.ReleasedAt == nil) {
+			t.Fatalf("unclaimed grant was not atomically closed: %+v", res)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := h.s.Claim(h.ctx, l.id, l.grant, l.req.Runner); !errors.Is(err, ErrGrantFenced) {
+		t.Fatalf("closed grant claim = %v", err)
+	}
+}
+
+func TestRunnerDeathReleaseRequiresRootAndKnownDescendantExit(t *testing.T) {
+	probe := &fakeProbe{}
+	h, _ := launchHarness(t, 2, probe)
+	l := h.granted(2)
+	h.start1(&l, 4242)
+	descendant := &pb.ProcessIdentity{Pid: 4243, StartTime: contract.Timestamp(5243)}
+	if _, err := h.store.Write(h.ctx, func(tx *storage.Tx) error {
+		return tx.TrackProcess(l.id, descendant, "descendant")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	probe.exit(l.req.Runner.Process.Pid)
+	probe.exit(l.proc.Pid)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.job(l.id); j.State == pb.JobState_JOB_STATE_FINISHED ||
+		j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN ||
+		j.BrokerTermination.GetReason() != pb.BrokerTermination_REASON_RUNNER_DEAD {
+		t.Fatalf("known live descendant was not retained: %v", j)
+	}
+	probe.exit(descendant.Pid)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	j := h.expectState(l.id, pb.JobState_JOB_STATE_FINISHED)
+	if j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN || j.Outcome.ExitCode != nil {
+		t.Fatalf("recovery invented a native outcome: %v", j.Outcome)
+	}
+	late, _, err := h.s.ReportFinished(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(3))
+	if err != nil || late.State != pb.JobState_JOB_STATE_FINISHED || late.Outcome.GetExitCode() != 3 ||
+		late.BrokerTermination.GetReason() != pb.BrokerTermination_REASON_RUNNER_DEAD {
+		t.Fatalf("late report lost recovery evidence: job=%v err=%v", late, err)
+	}
+}
+
+func TestUnverifiableRunnerIsVisibleAndHeld(t *testing.T) {
+	probe := &fakeProbe{err: errors.New("process observation denied")}
+	h, _ := launchHarness(t, 2, probe)
+	l := h.granted(2)
+	if _, _, _, err := h.s.Claim(h.ctx, l.id, l.grant, l.req.Runner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	j := h.expectState(l.id, pb.JobState_JOB_STATE_RESERVED)
+	if j.BrokerTermination != nil || j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN ||
+		!strings.Contains(j.Outcome.GetDetail(), "unverifiable") {
+		t.Fatalf("unverifiable runner not surfaced safely: %v", j)
+	}
+}
+
+func TestLaunchInvestigationStopsWhenRootIsReported(t *testing.T) {
+	h, _ := launchHarness(t, 2, &fakeProbe{})
+	l := h.granted(2)
+	h.start1(&l, 4242)
+	h.clock.advance(LaunchTimeout)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.job(l.id); j.Outcome != nil {
+		t.Fatalf("reported root was treated as an unresolved launch: %v", j.Outcome)
 	}
 }
 

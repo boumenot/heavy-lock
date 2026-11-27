@@ -31,7 +31,7 @@ func TestFailedCommitReturnsNoEventsAndPoisonsStore(t *testing.T) {
 		return tx.exec(`INSERT INTO job_processes(job_id,pid,start_time_ns,role,first_seen_at_ns)
 			VALUES ('11111111-1111-4111-8111-111111111111',1,1,'command',1)`)
 	})
-	if err == nil || !strings.Contains(err.Error(), "commit storage") || len(events) != 0 || f.store.Failure() == nil {
+	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "commit storage") || len(events) != 0 || f.store.Failure() == nil {
 		t.Fatalf("commit failure returned events=%v error=%v failure=%v", events, err, f.store.Failure())
 	}
 	if err := f.store.View(f.ctx, func(*Reader) error { return nil }); !errors.Is(err, ErrUnavailable) {

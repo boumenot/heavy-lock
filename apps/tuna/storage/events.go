@@ -60,6 +60,13 @@ func (tx *Tx) jobChanged(id string) error {
 	return tx.event(&pb.BrokerEvent{Event: &pb.BrokerEvent_JobChanged{JobChanged: j}}, "job_changed", id)
 }
 
+func (tx *Tx) jobAndStatusChanged(id string) error {
+	if err := tx.jobChanged(id); err != nil {
+		return err
+	}
+	return tx.statusChanged()
+}
+
 func (tx *Tx) queueChanged() error {
 	q, err := tx.Queue()
 	if err != nil {
