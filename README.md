@@ -670,6 +670,37 @@ prints `Mode: <enabled|paused>; state: <state>` and `tuna queue` the state. A Co
 [#33](https://github.com/boumenot/heavy-lock/issues/33); jobs carry no
 Project reference yet.
 
+For integration tests the monitor can serve what it presents over an
+opt-in, read-only HTTP endpoint. It is off unless `--diagnostics-port N`
+or `TUNA_MONITOR_DIAGNOSTICS_PORT` is set, and binds only to
+`127.0.0.1:N`:
+
+```bash
+open -n "build/tuna-monitor-macos/Tuna Monitor.app" --args --port 49917 --diagnostics-port 49918
+curl -s http://127.0.0.1:49918/diagnostics | jq '{connection, header, queue, dock}'
+```
+
+`GET /diagnostics` returns JSON identifying the instance (pid, bundle
+path, start time) and its broker (address, service version and start
+time from the last `Health`); the connection state; the header's title,
+detail, status line, notice and control error; queue mode, state and
+counts; and the Dock tile. `dock.expected` is what `Presentation.dockTile`
+gives for the monitor's current state, the same function the Dock uses;
+`dock.shown` and `dock.badgeLabel` are read back from the installed Dock
+tile view and `NSDockTile`, and `dock.matchesExpected` compares them. The
+stop light is `go` (green), `stalled` (amber), `stopped` (red) or
+`unknown` (dark); the ring is `idle`, `running` or `notLive`. Window
+visibility and occlusion come from AppKit. Absent fields have no value.
+This verifies presentation state, not pixels: it cannot show that the
+Dock or window actually rendered as expected, so visual checks still
+need a person or a screenshot. It exposes no job commands, arguments,
+working directories or history, and has no controls: other paths get
+404, other methods 405, and a `Host` other than `127.0.0.1:N` or
+`localhost:N` 421, so a browser page cannot read it through DNS
+rebinding. An invalid port or a port already in use is reported in the
+window header and on stderr; the monitor keeps running without the
+endpoint.
+
 The API is unauthenticated loopback gRPC: any local process or user can see
 full commands, arguments, working directories and history, and can control
 the queue. The v1 monitor and `heavy-lock-status` are not views of v2 jobs.

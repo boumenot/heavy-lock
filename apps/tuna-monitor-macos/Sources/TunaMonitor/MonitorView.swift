@@ -5,6 +5,7 @@ import TunaMonitorCore
 struct MonitorView: View {
     let session: MonitorSession
     let port: Int
+    let diagnostics: DiagnosticsHost.Status
     @State private var metadata = JobMetadata()
     @State private var dockTile = DockTileView(frame: NSRect(x: 0, y: 0, width: 128, height: 128))
 
@@ -75,6 +76,16 @@ struct MonitorView: View {
             }
             if let notice = state.notice {
                 Text(notice).font(.callout).foregroundStyle(.orange)
+            }
+            switch self.diagnostics {
+            case .off: EmptyView()
+            case .starting(let port):
+                Text("Diagnostics starting on 127.0.0.1:\(port)…").font(.caption).foregroundStyle(.secondary)
+            case .listening(let port):
+                Text("Diagnostics: http://127.0.0.1:\(port)\(DiagnosticsServer.path)")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .failed(let message):
+                Text("Diagnostics unavailable: \(message)").font(.caption).foregroundStyle(.red)
             }
         }
         .padding(10)
