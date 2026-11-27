@@ -25,7 +25,7 @@ func (r *recorded) launcher() launcher {
 		service: func(o service.Options) int { r.service = &o; return 0 },
 		runner:  func(o runner.Options) int { r.runner = &o; return 0 },
 		control: func(args []string, stdout, stderr io.Writer) (int, bool) {
-			return cli.Run(context.Background(), args, stdout, stderr)
+			return cli.Run(context.Background(), args, stdout, stderr, version)
 		},
 	}
 }

@@ -1530,14 +1530,18 @@ preflight. Native HTTP preflight tests passed; a real browser check was
 Host checks are **not authentication** and do not block the intentionally
 permitted cross-origin access.
 
-**Delegated decision: service compatibility.** The `GetHealth` contract reports
-`service_identity = "heavylock.v2"`, API major/minor `2.2`, and a nonempty
-service version. Minor 1 added explicit queue mode and state (#32); minor 2 added
-`ClientInfo.os_version` (#33). Runners require a
-broker of at least their own minor, because older brokers reject unknown
-submission fields. Go and Swift compatibility helpers require the identity,
-major 2, at least the minor they need, a nonblank service version and
-`live = true`.
+**Delegated decision: service compatibility.** `GetHealth` reports
+`service_identity = "heavylock.v2"` and a SemVer `service_version`; major
+versions change for incompatible releases, minor versions for additive
+changes, and patch versions for fixes. Minor 1 added explicit queue mode and
+state (#32); minor 2 added `ClientInfo.os_version` (#33). Stable Go and Swift
+clients require the same major and at least the minor they need; the CLI and
+monitor require minor 1 for explicit queue state, and runners require minor 2
+because older brokers reject unknown submission fields.
+If either peer is a prerelease, their complete version strings must match.
+The unreleased timestamp/duration contract is `2.2.0-dev.34`, distinct from
+the previous `2.0.0-dev`, so mixed versions fail compatibility checks.
+Clients also require `live = true`.
 `ready = false` is a recognized but not-ready service, not an identity
 failure. The check detects some unrelated or incompatible services; it is
 neither authentication nor port discovery.
@@ -1855,8 +1859,8 @@ delegated starting defaults, not user-selected values.
 
 | Area | User decision |
 |---|---|
-| Timestamps | Every persisted and wire timestamp is UTC Unix nanoseconds: SQLite `INTEGER` (`*_at_ns`, `start_time_ns`, `at_ns`) and protobuf `int64` (`*_unix_ns`); replaces the earlier microsecond encoding |
-| Durations | Measured with the broker's monotonic clock (`*_us`, `*_ms`), never by subtracting wall-clock timestamps |
+| Timestamps | SQLite `INTEGER` stores UTC Unix nanoseconds (`*_at_ns`, `start_time_ns`, `at_ns`); protobuf uses nanosecond-precision `Timestamp`, rendered as RFC 3339 JSON |
+| Durations | Protobuf `Duration`; measured with monotonic clocks, never by subtracting wall-clock timestamps. Existing SQLite duration columns retain millisecond precision |
 | Queue order | Explicit `queue_entries.queue_seq`, never timestamp order |
 | Metadata | Dedicated columns for known fields plus a validated `metadata_json` object for extras; replaces the earlier `job_tags` table |
 | `ClientInfo` | Name, version, OS and architecture; explicitly reported only |
@@ -1868,9 +1872,8 @@ delegated starting defaults, not user-selected values.
 | SQLite journal | WAL with `synchronous = FULL` on all platforms and `fullfsync` on macOS; measure commit latency |
 | SQLite driver | Start with `modernc.org/sqlite`; validation and version pinning remain pending |
 
-**Timestamp decision and tradeoffs.** The user chose UTC Unix nanoseconds
-for all persisted and wire timestamps, replacing the earlier approved
-microsecond recommendation. Go uses `time.Time.UnixNano()` (for example,
+**Timestamp decision and tradeoffs.** The user chose UTC Unix nanosecond
+precision for persisted and wire timestamps. Go uses `time.Time.UnixNano()` (for example,
 `time.Now().UTC().UnixNano()`); `1764121200000000000` represents
 `2025-11-26T01:40:00Z`. This preserves Windows 100 ns FILETIME ticks and
 nanosecond values supplied by macOS/Linux without microsecond truncation.
@@ -1881,11 +1884,14 @@ Converting FILETIME also requires its 1601-to-1970 epoch offset.
 Signed `int64` nanoseconds span approximately 1677 through
 `2262-04-11T23:47:16.854775807Z`, a shorter range than microseconds. Reject
 out-of-range inputs or conversions rather than overflowing. Storage cost
-is negligible: contemporary timestamps in either unit use eight-byte
-SQLite integers; protobuf `int64` varints grow from eight to nine bytes.
-Protojson continues to encode them as strings, avoiding JavaScript number
-precision loss.
-Duration fields keep their existing units and monotonic-clock semantics.
+is negligible: contemporary timestamps use eight-byte SQLite integers.
+The API boundary converts losslessly to protobuf `Timestamp`; protojson emits
+RFC 3339 strings, and human CLI/monitor times use the local time zone.
+Protobuf durations render as duration strings. Existing elapsed and CPU
+columns remain integer milliseconds: sub-millisecond input is rejected rather
+than rounded, and absent measurements remain distinct from explicit zero.
+Already-persisted events in the previous wire shape are converted on replay;
+they are neither rewritten nor discarded.
 
 ### 11.1 gRPC contract
 
@@ -1955,7 +1961,7 @@ The runner treats the snapshot as level-triggered:
 - A present `grant` is not permission to spawn: the assigned incarnation
   must first obtain the durable one-shot claim. A replacement must not act
   on a stale grant or claim response.
-- A present `cancel_requested_at_unix_ns` means cancel; a runner holding a
+- A present `cancel_requested_at` means cancel; a runner holding a
   claim acknowledges it with `AcknowledgeCancel`.
 
 Missed transitions are recovered from current state rather than replayed.
@@ -2037,7 +2043,7 @@ submission can still commit after an absent lookup, so absence does not
 authorize an automatic new-key retry.
 
 **Delegated decision: listing size.** `ListJobs` covers queued, running
-and finished jobs, newest first by `(queued_at_unix_ns, job_id)`. It filters
+and finished jobs, newest first by `(queued_at, job_id)`. It filters
 by state, repository, client name and a queue-time range. It uses keyset
 pagination with opaque tokens; the initial default page size is 50 and the
 maximum is 500. These follow the assistant's proposed defaults: smaller
@@ -2056,11 +2062,12 @@ and loopback is not user isolation.
 // heavy-lock v2 broker API.
 //
 // Conventions:
-// - Every timestamp is UTC Unix nanoseconds in an int64 field ending in
-//   "_unix_ns". Every duration ends in "_us" or "_ms" and is measured by the
-//   broker's monotonic clock; durations are never derived from wall-clock
-//   subtraction. Wall-clock timestamps are informational: the system clock
-//   can move backwards, so they never order events or validate transitions.
+// - Timestamps are UTC protobuf Timestamps with nanosecond precision. SQLite
+//   stores them as integer Unix nanoseconds. Durations use protobuf Duration;
+//   measurements use monotonic clocks, never wall-clock subtraction. Stored
+//   resource durations retain their existing millisecond precision.
+//   Wall-clock timestamps are informational: the system clock can move
+//   backwards, so they never order events or validate transitions.
 // - IDs are lowercase canonical UUIDv4 strings.
 // - Errors use standard gRPC status codes. Each non-OK status carries a
 //   google.rpc.ErrorInfo detail with domain "heavylock.v2" and reason set to
@@ -2069,6 +2076,9 @@ and loopback is not user isolation.
 syntax = "proto3";
 
 package heavylock.v2;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/boumenot/heavy-lock/gen/heavylock/v2;heavylockv2";
 
@@ -2142,13 +2152,13 @@ service RunnerService {
   // changes: queue position, grant, cancellation and terminal state. The
   // runner treats the snapshot as level-triggered: a present grant calls for
   // a durable ClaimLaunch, not a spawn by itself. A present
-  // cancel_requested_at_unix_ns means cancel; a claimed runner then calls
+  // cancel_requested_at means cancel; a claimed runner then calls
   // AcknowledgeCancel. The first call by the submitting incarnation
   // registers the queue entry, like a reconnect. Newer registrations
   // supersede older ones; an older stream's disconnect cannot unregister
   // the newer one. An open current stream is the
   // runner's connection signal for the queued-runner grace period, and the
-  // broker sends a heartbeat at least every heartbeat_interval_ms so the
+  // broker sends a heartbeat at least every heartbeat_interval so the
   // runner can detect a silent broker. Grace begins when the broker detects
   // the queued stream's disconnection, not when a heartbeat is missed; a
   // successful queued reconnect resets it. It never releases a
@@ -2479,11 +2489,11 @@ message Attribution {
 
 message ProcessIdentity {
   int64 pid = 1;
-  // Platform process start time in UTC Unix nanoseconds; with pid it
+  // Platform process start time; with pid it
   // helps distinguish PID reuse. Precision is platform-dependent; ambiguous
   // identity is not proof of death. Compare only values derived by the same
   // platform method.
-  int64 start_time_unix_ns = 2;
+  google.protobuf.Timestamp start_time = 2;
 }
 
 // Each runner process generates a fresh UUIDv4 and pairs it with its OS
@@ -2498,11 +2508,11 @@ message Grant {
   string grant_id = 1;
   uint32 weight = 2;
   bool forced = 3;
-  int64 granted_at_unix_ns = 4;
+  google.protobuf.Timestamp granted_at = 4;
   // Investigation timeout duration, measured by the broker from the durable
   // reservation commit. Expiry alone never establishes fencing, no launch
   // or process exit.
-  int64 launch_timeout_ms = 5;
+  google.protobuf.Duration launch_timeout = 5;
   RunnerIncarnation runner = 6;
 }
 
@@ -2517,8 +2527,9 @@ message Outcome {
 
 message ResourceSummary {
   // Root-command runtime from process start to exit; unknown if unrecoverable.
-  optional int64 elapsed_ms = 1;
-  optional int64 cpu_time_ms = 2;
+  google.protobuf.Duration elapsed = 1;
+  // Observed process-tree CPU time; distinct from the root wait CPU time.
+  google.protobuf.Duration cpu_time = 2;
   // Peak interval CPU: 100% per logical CPU; may exceed 100%.
   optional double peak_cpu_percent = 3;
   // Maximum per-sample sum of observed process RSS in bytes.
@@ -2541,16 +2552,16 @@ message Job {
   string service_version = 10;
 
   // Submission commit; a no-wait job may have no durable queue entry.
-  int64 queued_at_unix_ns = 11;
-  optional int64 admitted_at_unix_ns = 12;
-  optional int64 started_at_unix_ns = 13;  // root process start, once recorded
-  optional int64 finished_at_unix_ns = 14;
-  optional int64 cancel_requested_at_unix_ns = 15;
+  google.protobuf.Timestamp queued_at = 11;
+  google.protobuf.Timestamp admitted_at = 12;
+  google.protobuf.Timestamp started_at = 13;  // root process start, once recorded
+  google.protobuf.Timestamp finished_at = 14;
+  google.protobuf.Timestamp cancel_requested_at = 15;
 
   // Present only while QUEUED; 0 is the head.
   optional uint32 queue_position = 16;
   bool runner_connected = 17;
-  optional int64 grace_remaining_ms = 18;
+  google.protobuf.Duration grace_remaining = 18;
 
   optional Grant grant = 19;
   optional ProcessIdentity process = 20;
@@ -2570,7 +2581,7 @@ message Job {
   uint32 attempt = 28;
 
   // Cancellation progress for a claimed grant; see ControlService.CancelJob.
-  optional int64 cancel_acknowledged_at_unix_ns = 29;
+  google.protobuf.Timestamp cancel_acknowledged_at = 29;
   optional string cancel_failure_detail = 30;
   optional BrokerTermination broker_termination = 31;
   // Set while QUEUED and skipped by normal admission, e.g. oversized.
@@ -2587,7 +2598,7 @@ message BrokerTermination {
     REASON_CANCEL_RUNNER_FAILED = 3;
     REASON_RUNNER_DEAD = 4;        // verified assigned runner death
   }
-  int64 started_at_unix_ns = 1;    // committed before the first signal
+  google.protobuf.Timestamp started_at = 1; // committed before the first signal
   Reason reason = 2;               // first committed trigger; never rewritten
 }
 
@@ -2644,7 +2655,7 @@ message JobEvent {
   // message. Per-job streams are filtered, so values are not contiguous.
   // Snapshots and heartbeats reuse the current value rather than allocating.
   int64 event_seq = 1;
-  int64 at_unix_ns = 2;
+  google.protobuf.Timestamp at = 2;
   oneof event {
     Job snapshot = 10;             // always first on every call
     QueuePositionChanged queue_position_changed = 11;
@@ -2669,7 +2680,7 @@ message CancelRequested {
 }
 
 message Heartbeat {
-  int64 heartbeat_interval_ms = 1;
+  google.protobuf.Duration heartbeat_interval = 1;
 }
 
 message AcknowledgeCancelRequest {
@@ -2709,9 +2720,9 @@ message ReportFinishedRequest {
   RunnerIncarnation runner = 4;
   ProcessIdentity process = 5;     // root, even if ReportStarted was lost
   // Runner-observed monotonic start-to-exit duration; absent when unknown.
-  optional int64 elapsed_ms = 6;
+  google.protobuf.Duration elapsed = 6;
   // CPU time returned by the root's wait operation; absent when unknown.
-  optional int64 root_cpu_time_ms = 7;
+  google.protobuf.Duration root_cpu_time = 7;
 }
 
 // ---------------------------------------------------------------- control
@@ -2721,14 +2732,16 @@ message GetHealthRequest {}
 message Health {
   bool live = 1;
   bool ready = 2;                  // false during recovery or storage failure
+  // SemVer: stable clients require the same major and their minimum minor;
+  // if either peer is a prerelease, their complete versions must match.
   string service_version = 3;
-  int64 started_at_unix_ns = 4;
+  google.protobuf.Timestamp started_at = 4;
   int64 schema_version = 5;
   optional string recovery_detail = 6;
   optional string storage_detail = 7; // untrusted/unavailable durable state
   string service_identity = 8;     // "heavylock.v2"; not authentication
-  uint32 api_major = 9;            // 2; incompatible changes require a new major
-  uint32 api_minor = 10;           // additive, backwards-compatible changes
+  reserved 9, 10;
+  reserved "api_major", "api_minor";
 }
 
 message GetStatusRequest {}
@@ -2739,13 +2752,13 @@ message BrokerStatus {
   // Deprecated since API 2.1: use queue_mode. Still set, to queue_mode ==
   // QUEUE_MODE_PAUSED, for older clients.
   bool paused = 3 [deprecated = true];
-  optional int64 paused_at_unix_ns = 4; // set while queue_mode is PAUSED
+  google.protobuf.Timestamp paused_at = 4; // set while queue_mode is PAUSED
   bool recovering = 5;
   uint32 queued_jobs = 6;
   uint32 running_jobs = 7;
   BlockedReason head_blocked_reason = 8;
   optional int64 free_memory_bytes = 9;
-  optional double load_average_1m = 10;
+  optional double load_average_1m = 10; // only this interval controls admission
   bool storage_unavailable = 11;
   // Held reservations not yet reconciled since the last broker restart.
   // They count toward occupied but do not block unrelated admissions.
@@ -2753,6 +2766,8 @@ message BrokerStatus {
   uint32 backfill_limit = 13;      // per-head bypass limit; 0 is strict FIFO
   QueueMode queue_mode = 14;       // since API 2.1
   QueueState queue_state = 15;     // since API 2.1
+  optional double load_average_5m = 16;  // informational
+  optional double load_average_15m = 17; // informational
 }
 
 message GetQueueRequest {}
@@ -2770,14 +2785,14 @@ message ListJobsRequest {
   repeated JobState states = 1;            // empty means all
   optional string repository = 2;
   optional string client_name = 3;
-  optional int64 queued_after_unix_ns = 4; // inclusive
-  optional int64 queued_before_unix_ns = 5; // exclusive
+  google.protobuf.Timestamp queued_after = 4; // inclusive
+  google.protobuf.Timestamp queued_before = 5; // exclusive
   uint32 page_size = 6;                    // 0 means 50; maximum 500
   string page_token = 7;
 }
 
 message ListJobsResponse {
-  // Newest first by (queued_at_unix_ns, job_id). Keyset pagination: the
+  // Newest first by (queued_at, job_id). Keyset pagination: the
   // token encodes the last key and filters, avoiding offset shifts. It is
   // not a snapshot: concurrent inserts, updates or deletes may affect
   // later pages.
@@ -2822,7 +2837,7 @@ message DeleteJobRequest {
 message DeleteJobResponse {}
 
 message DeleteHistoryRequest {
-  int64 finished_before_unix_ns = 1;
+  google.protobuf.Timestamp finished_before = 1;
 }
 
 message DeleteHistoryResponse {
@@ -2845,7 +2860,7 @@ message BrokerEvent {
   // Equals the stored event's sequence; snapshots and heartbeats carry the
   // last committed sequence they reflect.
   int64 event_seq = 1;
-  int64 at_unix_ns = 2;
+  google.protobuf.Timestamp at = 2;
   oneof event {
     BrokerSnapshot snapshot = 10;
     Job job_changed = 11;
@@ -2877,8 +2892,10 @@ Request and response bodies are the RPC messages encoded with
 [protojson](https://protobuf.dev/programming-guides/json/):
 - Field names are lowerCamelCase.
 - Enums are encoded by name.
-- `int64` values, including every timestamp, are JSON strings.
-- Unset optional fields are omitted, which keeps unknown distinct from zero.
+- `int64` values are JSON strings; timestamps use RFC 3339 strings and
+  durations use protobuf duration strings.
+- Non-optional scalars and collections include their default values. Unset
+  optional fields are omitted, which keeps unknown distinct from zero.
 
 Path parameters fill the matching request field, for example `{job_id}`
 fills `job_id`; that field cannot also appear in a body. GET and DELETE
@@ -2886,7 +2903,9 @@ requests reject bodies. POST accepts an empty body or a JSON object with
 only the fields shown; a nonempty body requires `application/json`.
 Bodies are limited to 1 MiB. Unknown or duplicate scalar query parameters,
 unknown body fields and conflicting oneof fields are rejected. `states`
-accepts repeated protobuf enum names, and integer query values use decimal.
+accepts repeated protobuf enum names, integer query values use decimal, and
+time query values use RFC 3339 with at most nanosecond precision. Encode a
+positive offset's `+` as `%2B`.
 For multiple unknown or duplicated query keys, or unknown body keys, the
 lexically first such key is reported.
 
@@ -2895,7 +2914,7 @@ lexically first such key is reported.
 | `GET` | `/v1/health` | `GetHealth` | Liveness, readiness, versions, recovery detail |
 | `GET` | `/v1/status` | `GetStatus` | Capacity, occupancy (may exceed capacity after force-start), pause, blocked-head reason, live readings |
 | `GET` | `/v1/queue` | `GetQueue` | Waiting jobs in queue order, head first |
-| `GET` | `/v1/jobs` | `ListJobs` | Query: `states` (repeatable), `repository`, `clientName`, `queuedAfterUnixNs`, `queuedBeforeUnixNs`, `pageSize`, `pageToken` |
+| `GET` | `/v1/jobs` | `ListJobs` | Query: `states` (repeatable), `repository`, `clientName`, `queuedAfter`, `queuedBefore`, `pageSize`, `pageToken` |
 | `GET` | `/v1/jobs/{job_id}` | `GetJob` | Full job record |
 | `GET` | `/v1/submissions/{idempotency_key}` | `GetSubmission` | Diagnose a job or durable no-wait/deleted key; absent is only point-in-time |
 | `POST` | `/v1/jobs/{job_id}/cancel` | `CancelJob` | Body: optional `reason`. Monitor confirmation is a UI step, not enforced by the API |
@@ -2904,7 +2923,7 @@ lexically first such key is reported.
 | `POST` | `/v1/queue/pause` | `PauseQueue` | Stops new normal admissions only |
 | `POST` | `/v1/queue/resume` | `ResumeQueue` | Resumes normal admissions |
 | `DELETE` | `/v1/jobs/{job_id}` | `DeleteJob` | Terminal, reconciled jobs only |
-| `DELETE` | `/v1/history?finishedBeforeUnixNs=…` | `DeleteHistory` | Skips and counts ineligible jobs |
+| `DELETE` | `/v1/history?finishedBefore=…` | `DeleteHistory` | Skips and counts ineligible jobs |
 
 **Errors.** A non-OK RPC status becomes the standard HTTP equivalent, for
 example:

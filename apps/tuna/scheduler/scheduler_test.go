@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
 	"google.golang.org/grpc/status"
@@ -120,7 +121,35 @@ func uuid4(t testing.TB) string {
 
 func request(t testing.TB, weight uint32) *pb.SubmitJobRequest {
 	return &pb.SubmitJobRequest{IdempotencyKey: uuid4(t), Command: "example", Weight: weight,
-		Runner: &pb.RunnerIncarnation{IncarnationId: uuid4(t), Process: &pb.ProcessIdentity{Pid: 1, StartTimeUnixNs: 1}}}
+		Runner: &pb.RunnerIncarnation{IncarnationId: uuid4(t), Process: &pb.ProcessIdentity{Pid: 1, StartTime: contract.Timestamp(1)}}}
+}
+
+func TestStatusLoadPresenceTracksLatestSample(t *testing.T) {
+	h := newHarness(t, 2, nil)
+	h.s.lastSample = nil
+	readStatus := func() *pb.BrokerStatus {
+		t.Helper()
+		snapshot, err := h.s.Snapshot(h.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return snapshot.Status
+	}
+	if status := readStatus(); status.LoadAverage_1M != nil || status.LoadAverage_5M != nil || status.LoadAverage_15M != nil {
+		t.Fatalf("no sample should have no load averages: %v", status)
+	}
+	h.sampler.set(Sample{TotalMemoryBytes: 100, AvailableMemoryBytes: 90, LoadAverage1m: 0, LoadAverage5m: 2, LoadAverage15m: 3}, nil)
+	(&probe{s: h.s, ctx: h.ctx}).read()
+	if status := readStatus(); status.LoadAverage_1M == nil || status.GetLoadAverage_1M() != 0 ||
+		status.LoadAverage_5M == nil || status.GetLoadAverage_5M() != 2 ||
+		status.LoadAverage_15M == nil || status.GetLoadAverage_15M() != 3 {
+		t.Fatalf("sampled loads lost values or presence: %v", status)
+	}
+	h.sampler.set(Sample{}, errors.New("sampling unavailable"))
+	(&probe{s: h.s, ctx: h.ctx}).read()
+	if status := readStatus(); status.LoadAverage_1M != nil || status.LoadAverage_5M != nil || status.LoadAverage_15M != nil {
+		t.Fatalf("failed sampling reported stale loads: %v", status)
+	}
 }
 
 func (h *harness) submit(weight uint32) (*pb.SubmitJobRequest, string) {
@@ -241,7 +270,7 @@ func TestDisconnectedHeadBlocksAndUnregisteredFollowerKeepsPlace(t *testing.T) {
 	_, unregistered := h2.submit(1)
 	_, later, _ := h2.queued(1)
 	h2.expectState(later, pb.JobState_JOB_STATE_RESERVED)
-	if j := h2.expectState(unregistered, pb.JobState_JOB_STATE_QUEUED); *j.QueuePosition != 1 || j.GraceRemainingMs == nil {
+	if j := h2.expectState(unregistered, pb.JobState_JOB_STATE_QUEUED); *j.QueuePosition != 1 || j.GraceRemaining == nil {
 		t.Fatalf("unregistered follower = %+v", j)
 	}
 	h2.expectState(blocked, pb.JobState_JOB_STATE_QUEUED)
@@ -290,7 +319,7 @@ func TestPausePersistsAndForceStartBypassesPauseAndCapacity(t *testing.T) {
 		snap.Status.HeadBlockedReason != pb.BlockedReason_BLOCKED_REASON_PAUSED {
 		t.Fatalf("after restart: %+v", snap.Status)
 	}
-	if j := h.job(a); j.RunnerConnected || j.GraceRemainingMs == nil || *j.GraceRemainingMs != 30000 {
+	if j := h.job(a); j.RunnerConnected || j.GraceRemaining == nil || j.GraceRemaining.AsDuration().Milliseconds() != 30000 {
 		t.Fatalf("connected job not disconnected with fresh grace: %+v", j)
 	}
 	if _, _, err := h.s.ForceStart(h.ctx, a); !errors.Is(err, ErrNotWaiting) {
@@ -409,8 +438,8 @@ func TestGraceExpiryReconnectAndDowntime(t *testing.T) {
 	h.tick(20 * time.Second)
 	h.restart(1)
 	h.tick(9 * time.Second)
-	if j := h.expectState(unregistered, pb.JobState_JOB_STATE_QUEUED); *j.GraceRemainingMs != 1000 {
-		t.Fatalf("grace remaining %d", *j.GraceRemainingMs)
+	if j := h.expectState(unregistered, pb.JobState_JOB_STATE_QUEUED); j.GraceRemaining == nil || j.GraceRemaining.AsDuration().Milliseconds() != 1000 {
+		t.Fatalf("grace remaining %v", j.GraceRemaining)
 	}
 	h.tick(time.Second)
 	if j := h.expectState(unregistered, pb.JobState_JOB_STATE_FINISHED); j.Outcome.Kind != pb.OutcomeKind_OUTCOME_KIND_REMOVED_DISCONNECTED {
@@ -457,7 +486,7 @@ func TestLatestRegistrationIsAuthoritative(t *testing.T) {
 	if !h.job(id).RunnerConnected || h.s.Current(old) || !h.s.Current(current) {
 		t.Fatal("superseded disconnect unregistered the current stream")
 	}
-	other := &pb.RunnerIncarnation{IncarnationId: uuid4(t), Process: &pb.ProcessIdentity{Pid: 2, StartTimeUnixNs: 2}}
+	other := &pb.RunnerIncarnation{IncarnationId: uuid4(t), Process: &pb.ProcessIdentity{Pid: 2, StartTime: contract.Timestamp(2)}}
 	if _, _, _, err := h.s.Watch(h.ctx, id, other); !errors.Is(err, storage.ErrIdentity) || !h.s.Current(current) {
 		t.Fatalf("other incarnation watch: %v", err)
 	}
@@ -482,7 +511,7 @@ func TestTickDisconnectsDurablyConnectedJobWithoutStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.tick(time.Second)
-	if j := h.job(id); j.RunnerConnected || *j.GraceRemainingMs != 30000 {
+	if j := h.job(id); j.RunnerConnected || j.GraceRemaining == nil || j.GraceRemaining.AsDuration().Milliseconds() != 30000 {
 		t.Fatalf("stale connection not reconciled: %+v", j)
 	}
 	if deadline, ok := h.s.NextGraceDeadline(); !ok || deadline != h.clock.read()+30*time.Second {
@@ -503,7 +532,7 @@ func TestNoWaitAdmissionBusyAndBackfill(t *testing.T) {
 		t.Fatalf("same-incarnation recovery: %v", err)
 	}
 	stranger := proto.Clone(req).(*pb.SubmitJobRequest)
-	stranger.Runner = &pb.RunnerIncarnation{IncarnationId: uuid4(t), Process: &pb.ProcessIdentity{Pid: 9, StartTimeUnixNs: 9}}
+	stranger.Runner = &pb.RunnerIncarnation{IncarnationId: uuid4(t), Process: &pb.ProcessIdentity{Pid: 9, StartTime: contract.Timestamp(9)}}
 	if _, _, _, err := h.s.TrySubmitAndWatch(h.ctx, stranger); !errors.Is(err, storage.ErrKeyReused) {
 		t.Fatalf("other incarnation recovery: %v", err)
 	}
@@ -652,7 +681,7 @@ func TestEventsCarryPolicyProjection(t *testing.T) {
 	var sawJob, sawQueue bool
 	for _, e := range events {
 		if j := e.GetJobChanged(); j != nil {
-			sawJob = j.GraceRemainingMs != nil && *j.GraceRemainingMs == 30000
+			sawJob = j.GraceRemaining != nil && j.GraceRemaining.AsDuration().Milliseconds() == 30000
 		}
 		if q := e.GetQueueChanged(); q != nil {
 			sawQueue = q.HeadBlockedReason == pb.BlockedReason_BLOCKED_REASON_RUNNER_DISCONNECTED &&

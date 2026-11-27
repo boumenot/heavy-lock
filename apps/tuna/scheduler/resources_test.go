@@ -15,9 +15,42 @@ func TestParseDarwinSample(t *testing.T) {
 		s.LoadAverage1m != 2.5 || s.CPULoadPercent != 25 {
 		t.Fatalf("sample = %+v", s)
 	}
-	for _, bad := range []string{"", "0\n{ 1 }\n40", "1\n{ x }\n40", "1\n{ 1 }\n101", "1\n{ 1 }"} {
+	for _, bad := range []string{
+		"", "0\n{ 1 1 1 }\n40", "1\n{ x 1 1 }\n40", "1\n{ 1 1 1 }\n101",
+		"1\n{ 1 1 }\n40", "1\n{ 1 NaN 1 }\n40", "1\n{ 1 1 +Inf }\n40", "1\n{ 1 1 1 }",
+	} {
 		if _, err := ParseDarwinSample(bad, 10); err == nil {
 			t.Errorf("parsed %q", bad)
+		}
+	}
+}
+
+func TestDarwinSampleRetainsAllLoadAverages(t *testing.T) {
+	sample, err := ParseDarwinSample("34359738368\n{ 2.50 2.00 1.50 }\n40\n", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sample.LoadAverage1m != 2.5 || sample.LoadAverage5m != 2 || sample.LoadAverage15m != 1.5 ||
+		sample.CPULoadPercent != 25 {
+		t.Fatalf("sample = %+v", sample)
+	}
+}
+
+func TestSharingUsesOnlyOneMinuteLoad(t *testing.T) {
+	c := DefaultConfig(2)
+	for _, tt := range []struct {
+		loads string
+		allow bool
+	}{
+		{"{ 1 50 100 }", true},
+		{"{ 6 0 0 }", false},
+	} {
+		sample, err := ParseDarwinSample("1000\n"+tt.loads+"\n90\n", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if allowed := c.SharingRefusal(&sample, time.Minute) == ""; allowed != tt.allow {
+			t.Errorf("loads %s: allow = %t", tt.loads, allowed)
 		}
 	}
 }

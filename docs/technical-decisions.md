@@ -267,8 +267,9 @@ this Mac has been exercised.
 and cleartext HTTP/2. It routes gRPC to `grpc.Server.ServeHTTP` and REST to
 explicit handlers sharing one broker interface. The requested port must be
 1–65535 and an occupied port reports an error, not a replacement. Identity
-checks use `heavylock.v2`, API major/minor and liveness, not port discovery
-or authentication. The versioned SHA-256 submission encoding, POSIX-style
+checks use `heavylock.v2`, SemVer compatibility and liveness, not port discovery
+or authentication. Prerelease peers must match the complete version. The
+versioned SHA-256 submission encoding, POSIX-style
 argv display, REST mappings, errors and CORS are specified in
 [v2 design sections 6 and 11.2](v2-design.md#6-apis-port-and-local-access-risks).
 

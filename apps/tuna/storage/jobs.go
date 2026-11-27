@@ -30,7 +30,11 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89a
 var extraPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
 
 func validRunner(r *pb.RunnerIncarnation) bool {
-	return r != nil && uuidPattern.MatchString(r.IncarnationId) && r.Process != nil && r.Process.Pid > 0
+	if r == nil || !uuidPattern.MatchString(r.IncarnationId) {
+		return false
+	}
+	_, err := processStart(r.Process)
+	return err == nil
 }
 
 func validateSubmission(req *pb.SubmitJobRequest) error {
@@ -229,9 +233,13 @@ func (tx *Tx) Submit(req *pb.SubmitJobRequest, options Submission) (SubmissionRe
 		if err := tx.exec("UPDATE broker_state SET next_queue_seq=next_queue_seq+1 WHERE id=1"); err != nil {
 			return result, err
 		}
+		start, err := processStart(req.Runner.Process)
+		if err != nil {
+			return result, err
+		}
 		if err := tx.exec(`INSERT INTO queue_entries(job_id,queue_seq,runner_incarnation_id,runner_pid,
 			runner_start_time_ns,grace_started_at_ns,grace_service_run_id) VALUES (?,?,?,?,?,?,?)`,
-			id, sequence, req.Runner.IncarnationId, req.Runner.Process.Pid, req.Runner.Process.StartTimeUnixNs, tx.at, options.ServiceRunID); err != nil {
+			id, sequence, req.Runner.IncarnationId, req.Runner.Process.Pid, start, tx.at, options.ServiceRunID); err != nil {
 			return result, err
 		}
 	}
@@ -288,7 +296,8 @@ func (r *Reader) Job(id string) (*pb.Job, error) {
 	j := &pb.Job{Client: &pb.ClientInfo{}, Attribution: &pb.Attribution{}}
 	var state, outcome, metadata string
 	var osName, archName, terminationReason *string
-	var terminationAt *int64
+	var queued int64
+	var admitted, started, finished, cancelled, acknowledged, terminationAt *int64
 	o := &pb.Outcome{}
 	err := r.scan(`SELECT id,idempotency_key,state,command,cwd,weight,forced,
 		service_version,queued_at_ns,admitted_at_ns,started_at_ns,finished_at_ns,
@@ -299,8 +308,8 @@ func (r *Reader) Job(id string) (*pb.Job, error) {
 		repository,branch,worklog,agent_session,purpose,commit_sha,build_target,build_configuration,metadata_json,
 		coalesce(outcome_kind,''),exit_code,signal_number,signal_name,outcome_detail FROM jobs WHERE id=?`,
 		[]any{id}, &j.JobId, &j.IdempotencyKey, &state, &j.Command, &j.Cwd, &j.Weight, &j.Forced,
-		&j.ServiceVersion, &j.QueuedAtUnixNs, &j.AdmittedAtUnixNs, &j.StartedAtUnixNs, &j.FinishedAtUnixNs,
-		&j.CancelRequestedAtUnixNs, &j.CancelReason, &j.CancelAcknowledgedAtUnixNs, &j.CancelFailureDetail,
+		&j.ServiceVersion, &queued, &admitted, &started, &finished,
+		&cancelled, &j.CancelReason, &acknowledged, &j.CancelFailureDetail,
 		&terminationAt, &terminationReason, &j.FreeMemoryAtAdmissionBytes,
 		&j.AdmittedByBackfill, &j.BackfillBypassCount, &j.RetryOfJobId, &j.Attempt,
 		&j.Client.Name, &j.Client.Version, &osName, &j.Client.OsVersion, &archName,
@@ -313,6 +322,9 @@ func (r *Reader) Job(id string) (*pb.Job, error) {
 	if err != nil {
 		return nil, err
 	}
+	j.QueuedAt = contract.Timestamp(queued)
+	j.AdmittedAt, j.StartedAt, j.FinishedAt = optionalTimestamp(admitted), optionalTimestamp(started), optionalTimestamp(finished)
+	j.CancelRequestedAt, j.CancelAcknowledgedAt = optionalTimestamp(cancelled), optionalTimestamp(acknowledged)
 	j.State = pb.JobState(pb.JobState_value["JOB_STATE_"+strings.ToUpper(state)])
 	if osName != nil {
 		j.Client.Os = pb.ClientOS(pb.ClientOS_value["CLIENT_OS_"+strings.ToUpper(*osName)])
@@ -329,7 +341,7 @@ func (r *Reader) Job(id string) (*pb.Job, error) {
 		j.Outcome = o
 	}
 	if terminationAt != nil {
-		j.BrokerTermination = &pb.BrokerTermination{StartedAtUnixNs: *terminationAt,
+		j.BrokerTermination = &pb.BrokerTermination{StartedAt: contract.Timestamp(*terminationAt),
 			Reason: pb.BrokerTermination_Reason(pb.BrokerTermination_Reason_value["REASON_"+strings.ToUpper(*terminationReason)])}
 	}
 	if j.State == pb.JobState_JOB_STATE_QUEUED {
@@ -344,33 +356,45 @@ func (r *Reader) Job(id string) (*pb.Job, error) {
 		}
 	}
 	g := &pb.Grant{Runner: &pb.RunnerIncarnation{Process: &pb.ProcessIdentity{}}}
+	var granted, runnerStart int64
 	err = r.scan(`SELECT grant_id,weight,forced,granted_at_ns,runner_incarnation_id,
 		runner_pid,runner_start_time_ns FROM reservations WHERE job_id=? AND released_at_ns IS NULL`,
-		[]any{id}, &g.GrantId, &g.Weight, &g.Forced, &g.GrantedAtUnixNs, &g.Runner.IncarnationId, &g.Runner.Process.Pid, &g.Runner.Process.StartTimeUnixNs)
+		[]any{id}, &g.GrantId, &g.Weight, &g.Forced, &granted, &g.Runner.IncarnationId, &g.Runner.Process.Pid, &runnerStart)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	if err == nil {
+		g.GrantedAt = contract.Timestamp(granted)
+		g.Runner.Process.StartTime = contract.Timestamp(runnerStart)
 		j.Grant = g
 	}
 	p := &pb.ProcessIdentity{}
-	err = r.scan("SELECT pid,start_time_ns FROM job_processes WHERE job_id=? AND role='command'", []any{id}, &p.Pid, &p.StartTimeUnixNs)
+	var processStartNs int64
+	err = r.scan("SELECT pid,start_time_ns FROM job_processes WHERE job_id=? AND role='command'", []any{id}, &p.Pid, &processStartNs)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	if err == nil {
+		p.StartTime = contract.Timestamp(processStartNs)
 		j.Process = p
 	}
 	summary := &pb.ResourceSummary{}
 	var completeness string
+	var elapsedMs, cpuMs *int64
 	err = r.scan(`SELECT elapsed_ms,cpu_time_ms,peak_cpu_percent,peak_combined_rss_bytes,
 		sample_count,measurement_completeness,incompleteness_reason FROM job_resource_summaries WHERE job_id=?`,
-		[]any{id}, &summary.ElapsedMs, &summary.CpuTimeMs, &summary.PeakCpuPercent, &summary.PeakCombinedRssBytes,
+		[]any{id}, &elapsedMs, &cpuMs, &summary.PeakCpuPercent, &summary.PeakCombinedRssBytes,
 		&summary.SampleCount, &completeness, &summary.IncompletenessReason)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	if err == nil {
+		if summary.Elapsed, err = r.storedDuration(elapsedMs); err != nil {
+			return nil, err
+		}
+		if summary.CpuTime, err = r.storedDuration(cpuMs); err != nil {
+			return nil, err
+		}
 		summary.Completeness = pb.MeasurementCompleteness(pb.MeasurementCompleteness_value["MEASUREMENT_COMPLETENESS_"+strings.ToUpper(completeness)])
 		j.Resources = summary
 	}
@@ -417,14 +441,16 @@ func (r *Reader) Queue() (*pb.Queue, error) {
 func (r *Reader) Status() (*pb.BrokerStatus, error) {
 	s := &pb.BrokerStatus{}
 	var mode string
+	var pausedAt *int64
 	err := r.scan(`SELECT queue_mode,paused_at_ns,
 		(SELECT coalesce(sum(weight),0) FROM reservations WHERE released_at_ns IS NULL),
 		(SELECT count(*) FROM queue_entries),
 		(SELECT count(*) FROM jobs WHERE state IN ('running','finishing')) FROM broker_state WHERE id=1`,
-		nil, &mode, &s.PausedAtUnixNs, &s.Occupied, &s.QueuedJobs, &s.RunningJobs)
+		nil, &mode, &pausedAt, &s.Occupied, &s.QueuedJobs, &s.RunningJobs)
 	if err != nil {
 		return s, err
 	}
+	s.PausedAt = optionalTimestamp(pausedAt)
 	switch mode {
 	case "enabled":
 		s.QueueMode = pb.QueueMode_QUEUE_MODE_ENABLED

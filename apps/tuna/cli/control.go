@@ -5,12 +5,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
 	"io"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
 	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/transport"
@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const Usage = "Controls: tuna <status|queue|jobs|job|pause|resume|reorder|cancel|force-start> [options]\n" +
@@ -30,7 +31,7 @@ const Usage = "Controls: tuna <status|queue|jobs|job|pause|resume|reorder|cancel
 	"Controls never prompt. Cancel and force-start execute immediately.\n"
 
 // Run recognizes only controls, leaving runner/service dispatch to main.
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (int, bool) {
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer, clientVersion string) (int, bool) {
 	if len(args) == 0 {
 		return 0, false
 	}
@@ -107,7 +108,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (int, boo
 	client := pb.NewControlServiceClient(conn)
 	health, err := client.GetHealth(ctx, &pb.GetHealthRequest{})
 	if err == nil {
-		err = contract.CheckService(health, 0)
+		// Status and queue output use the explicit state introduced in API 2.1.
+		err = contract.CheckService(health, clientVersion, 1)
 	}
 	if err != nil {
 		return fail(70, fmt.Errorf("broker unavailable or incompatible: %w", err))
@@ -163,7 +165,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (int, boo
 		return fail(70, fmt.Errorf("broker returned an empty response"))
 	}
 	if *jsonOutput {
-		data, err := (protojson.MarshalOptions{EmitUnpopulated: true}).Marshal(result)
+		data, err := (protojson.MarshalOptions{EmitDefaultValues: true}).Marshal(result)
 		if err != nil {
 			return fail(70, err)
 		}
@@ -210,6 +212,23 @@ func printJobDetails(w io.Writer, job *pb.Job) error {
 	}
 	add("Client", attribution.ClientText(job.Client))
 	add("Cwd", job.GetCwd())
+	for _, field := range []struct {
+		label string
+		time  *timestamppb.Timestamp
+	}{
+		{"Queued", job.QueuedAt},
+		{"Admitted", job.AdmittedAt},
+		{"Started", job.StartedAt},
+		{"Finished", job.FinishedAt},
+	} {
+		if field.time == nil {
+			continue
+		}
+		if err := field.time.CheckValid(); err != nil {
+			return fmt.Errorf("invalid %s timestamp: %w", field.label, err)
+		}
+		add(field.label, field.time.AsTime().Local().Format(time.RFC3339Nano))
+	}
 	for _, line := range lines {
 		if _, err := fmt.Fprintf(w, "  %s: %s\n", line[0], line[1]); err != nil {
 			return err
@@ -246,9 +265,28 @@ func printResult(w io.Writer, result proto.Message) error {
 			return err
 		}
 	case *pb.BrokerStatus:
-		_, err := fmt.Fprintf(w, "Mode: %s; state: %s; capacity: %d; occupied: %d; queued: %d; running: %d; recovering: %t; storage unavailable: %t\n",
+		if _, err := fmt.Fprintf(w, "Mode: %s; state: %s; capacity: %d; occupied: %d; queued: %d; running: %d; recovering: %t; storage unavailable: %t\n",
 			enumName(value.QueueMode.String(), "QUEUE_MODE_"), enumName(value.QueueState.String(), "QUEUE_STATE_"),
-			value.Capacity, value.Occupied, value.QueuedJobs, value.RunningJobs, value.Recovering, value.StorageUnavailable)
+			value.Capacity, value.Occupied, value.QueuedJobs, value.RunningJobs, value.Recovering, value.StorageUnavailable); err != nil {
+			return err
+		}
+		var loads []string
+		for _, field := range []struct {
+			label string
+			value *float64
+		}{
+			{"1m", value.LoadAverage_1M},
+			{"5m", value.LoadAverage_5M},
+			{"15m", value.LoadAverage_15M},
+		} {
+			if field.value != nil {
+				loads = append(loads, fmt.Sprintf("%s=%.2f", field.label, *field.value))
+			}
+		}
+		if len(loads) == 0 {
+			return nil
+		}
+		_, err := fmt.Fprintln(w, "Load averages:", strings.Join(loads, " "))
 		return err
 	default:
 		return fmt.Errorf("unsupported response %T", result)

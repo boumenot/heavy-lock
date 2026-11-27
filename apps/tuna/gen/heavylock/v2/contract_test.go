@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // submitJobHex is the wire encoding of sampleSubmitJob. The Swift bindings
@@ -44,12 +46,13 @@ func TestSubmitJobRoundTrip(t *testing.T) {
 
 func TestFinishMeasurementsMatchSwiftEncoding(t *testing.T) {
 	report := &ReportFinishedRequest{JobId: "job", GrantId: "grant",
-		ElapsedMs: proto.Int64(0), RootCpuTimeMs: proto.Int64(1234)}
+		Process: &ProcessIdentity{Pid: 42, StartTime: &timestamppb.Timestamp{Seconds: 1764121200, Nanos: 123456789}},
+		Elapsed: &durationpb.Duration{}, RootCpuTime: &durationpb.Duration{Seconds: 1, Nanos: 234000000}}
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const finishHex = "0a036a6f6212056772616e74300038d209"
+	const finishHex = "0a036a6f6212056772616e742a0f082a120b08f0b499c90610959aef3a32003a07080110809dca6f"
 	if got := hex.EncodeToString(encoded); got != finishHex {
 		t.Fatalf("encoding = %s, want %s", got, finishHex)
 	}
@@ -57,7 +60,7 @@ func TestFinishMeasurementsMatchSwiftEncoding(t *testing.T) {
 	if err := proto.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !proto.Equal(&decoded, report) || decoded.ElapsedMs == nil || *decoded.ElapsedMs != 0 {
+	if !proto.Equal(&decoded, report) || decoded.Elapsed == nil || decoded.Elapsed.AsDuration() != 0 {
 		t.Fatalf("explicit zero runtime lost presence: %v", &decoded)
 	}
 }

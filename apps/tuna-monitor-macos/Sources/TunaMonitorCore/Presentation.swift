@@ -126,7 +126,12 @@ public enum Presentation {
         if status.hasFreeMemoryBytes {
             parts.append("\(ByteCountFormatter.string(fromByteCount: status.freeMemoryBytes, countStyle: .memory)) free")
         }
-        if status.hasLoadAverage1M { parts.append(String(format: "load %.2f", status.loadAverage1M)) }
+        let loads = [
+            status.hasLoadAverage1M ? String(format: "1m %.2f", status.loadAverage1M) : nil,
+            status.hasLoadAverage5M ? String(format: "5m %.2f", status.loadAverage5M) : nil,
+            status.hasLoadAverage15M ? String(format: "15m %.2f", status.loadAverage15M) : nil,
+        ].compactMap { $0 }
+        if !loads.isEmpty { parts.append("load " + loads.joined(separator: " / ")) }
         var line = parts.joined(separator: " · ")
         if let head = Self.blockedText(state.headBlockedReason, job: nil, capacity: status.capacity) {
             line += "\nQueue head: \(head)"
@@ -203,8 +208,11 @@ public enum Presentation {
         ].compactMap { $0 }
         if !attribution.isEmpty { details.append(attribution.joined(separator: " · ")) }
         if let client = Self.clientText(job) { details.append(client) }
-        if job.state == .finished, job.hasResources, job.resources.hasElapsedMs {
-            details.append("Ran \(Self.duration(milliseconds: job.resources.elapsedMs))")
+        if let (label, date) = Self.eventTime(job) {
+            details.append("\(label) \(DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .medium))")
+        }
+        if job.state == .finished, job.hasResources, job.resources.hasElapsed {
+            details.append("Ran \(Self.duration(seconds: job.resources.elapsed.seconds))")
         }
         if job.admittedByBackfill { details.append("Admitted by backfill") }
 
@@ -215,11 +223,13 @@ public enum Presentation {
             if let blocked = Self.blockedText(reason, job: job, capacity: capacity) { warnings.append(blocked) }
         }
         if job.state != .finished, !job.runnerConnected {
-            warnings.append("Runner disconnected" + (job.hasGraceRemainingMs ? "; \(Self.duration(milliseconds: job.graceRemainingMs)) grace left" : ""))
+            warnings.append(
+                "Runner disconnected"
+                    + (job.hasGraceRemaining ? "; \(Self.duration(seconds: job.graceRemaining.seconds)) grace left" : ""))
         }
-        if job.hasCancelRequestedAtUnixNs, job.state != .finished {
+        if job.hasCancelRequestedAt, job.state != .finished {
             var text = "Cancellation requested"
-            if job.hasCancelAcknowledgedAtUnixNs { text += " and acknowledged" }
+            if job.hasCancelAcknowledgedAt { text += " and acknowledged" }
             warnings.append(text + "; not yet complete")
         }
         if job.hasCancelFailureDetail { warnings.append("Cancellation failed: \(job.cancelFailureDetail)") }
@@ -310,20 +320,29 @@ public enum Presentation {
     }
 
     public static func duration(milliseconds: Int64) -> String {
-        let seconds = max(0, milliseconds) / 1000
+        Self.duration(seconds: max(0, milliseconds) / 1000)
+    }
+
+    private static func duration(seconds: Int64) -> String {
+        let seconds = max(0, seconds)
         if seconds < 60 { return "\(seconds)s" }
         if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
         return "\(seconds / 3600)h \(seconds % 3600 / 60)m"
     }
 
     private static func since(_ job: Heavylock_V2_Job) -> Date? {
-        let nanoseconds: Int64
+        Self.eventTime(job)?.1
+    }
+
+    private static func eventTime(_ job: Heavylock_V2_Job) -> (String, Date)? {
         switch job.state {
-        case .queued: nanoseconds = job.queuedAtUnixNs
-        case .running where job.hasStartedAtUnixNs: nanoseconds = job.startedAtUnixNs
-        default: nanoseconds = job.hasAdmittedAtUnixNs ? job.admittedAtUnixNs : job.queuedAtUnixNs
+        case .queued where job.hasQueuedAt: return ("Queued", job.queuedAt.date)
+        case .running where job.hasStartedAt: return ("Started", job.startedAt.date)
+        case .finished where job.hasFinishedAt: return ("Finished", job.finishedAt.date)
+        default:
+            if job.hasAdmittedAt { return ("Admitted", job.admittedAt.date) }
+            if job.hasQueuedAt { return ("Queued", job.queuedAt.date) }
+            return nil
         }
-        guard nanoseconds > 0 else { return nil }
-        return Date(timeIntervalSince1970: Double(nanoseconds) / 1_000_000_000)
     }
 }

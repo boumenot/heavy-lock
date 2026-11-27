@@ -57,7 +57,7 @@ func (f *fixture) request() *pb.SubmitJobRequest {
 		f.t.Fatal(err)
 	}
 	return &pb.SubmitJobRequest{IdempotencyKey: key, Command: "example", Weight: 1,
-		Runner: &pb.RunnerIncarnation{IncarnationId: incarnation, Process: &pb.ProcessIdentity{Pid: 1, StartTimeUnixNs: 1}}}
+		Runner: &pb.RunnerIncarnation{IncarnationId: incarnation, Process: &pb.ProcessIdentity{Pid: 1, StartTime: contract.Timestamp(1)}}}
 }
 
 func (f *fixture) submit(req *pb.SubmitJobRequest, mode contract.AdmissionMode, admission *Admission) SubmissionResult {
@@ -91,7 +91,7 @@ func (f *fixture) expect(want error, fn func(*Tx) error) {
 
 func (f *fixture) finish(j *pb.Job, req *pb.SubmitJobRequest, code int64) {
 	f.t.Helper()
-	root := &pb.ProcessIdentity{Pid: 2, StartTimeUnixNs: 3}
+	root := &pb.ProcessIdentity{Pid: 2, StartTime: contract.Timestamp(3)}
 	f.write(func(tx *Tx) error {
 		if _, err := tx.Claim(j.JobId, j.Grant.GrantId, req.Runner); err != nil {
 			return err
@@ -123,7 +123,7 @@ func TestSubmissionMetadataAndResourceRoundTrip(t *testing.T) {
 	if !proto.Equal(j.Client, req.Client) || !proto.Equal(j.Attribution, req.Attribution) || j.GetCwd() != req.GetCwd() {
 		t.Fatalf("submission metadata was changed or lost: %v", j)
 	}
-	summary := &pb.ResourceSummary{ElapsedMs: proto.Int64(2), CpuTimeMs: proto.Int64(1), PeakCpuPercent: proto.Float64(125.5),
+	summary := &pb.ResourceSummary{Elapsed: contract.MillisecondDuration(2), CpuTime: contract.MillisecondDuration(1), PeakCpuPercent: proto.Float64(125.5),
 		PeakCombinedRssBytes: proto.Int64(100), SampleCount: 1, Completeness: pb.MeasurementCompleteness_MEASUREMENT_COMPLETENESS_PARTIAL,
 		IncompletenessReason: proto.String("sampling gap")}
 	f.write(func(tx *Tx) error { return tx.SaveResources(j.JobId, summary) })
@@ -303,7 +303,7 @@ func TestClaimSealOutcomeAndReleaseEvidence(t *testing.T) {
 	}); len(events) != 0 {
 		t.Fatal("duplicate claim emitted event")
 	}
-	root := &pb.ProcessIdentity{Pid: 2, StartTimeUnixNs: 3}
+	root := &pb.ProcessIdentity{Pid: 2, StartTime: contract.Timestamp(3)}
 	code := int64(1)
 	outcome := &pb.Outcome{Kind: pb.OutcomeKind_OUTCOME_KIND_EXITED, ExitCode: &code}
 	f.write(func(tx *Tx) error { return tx.ReportFinished(j.JobId, j.Grant.GrantId, req.Runner, root, outcome) })
@@ -315,17 +315,17 @@ func TestClaimSealOutcomeAndReleaseEvidence(t *testing.T) {
 	f.expect(ErrIdentity, func(tx *Tx) error { return tx.Seal(j.JobId, j.Grant.GrantId, req.Runner, true) })
 	f.expect(ErrUnreconciled, func(tx *Tx) error { return tx.Release(j.JobId, "processes_exited") })
 	f.expect(ErrIdentity, func(tx *Tx) error {
-		return tx.VerifyProcessExited(j.JobId, &pb.ProcessIdentity{Pid: 2, StartTimeUnixNs: 4})
+		return tx.VerifyProcessExited(j.JobId, &pb.ProcessIdentity{Pid: 2, StartTime: contract.Timestamp(4)})
 	})
 	f.write(func(tx *Tx) error {
-		if err := tx.TrackProcess(j.JobId, &pb.ProcessIdentity{Pid: 3, StartTimeUnixNs: 4}, "descendant"); err != nil {
+		if err := tx.TrackProcess(j.JobId, &pb.ProcessIdentity{Pid: 3, StartTime: contract.Timestamp(4)}, "descendant"); err != nil {
 			return err
 		}
 		return tx.VerifyProcessExited(j.JobId, root)
 	})
 	f.expect(ErrUnreconciled, func(tx *Tx) error { return tx.Release(j.JobId, "processes_exited") })
 	f.write(func(tx *Tx) error {
-		if err := tx.VerifyProcessExited(j.JobId, &pb.ProcessIdentity{Pid: 3, StartTimeUnixNs: 4}); err != nil {
+		if err := tx.VerifyProcessExited(j.JobId, &pb.ProcessIdentity{Pid: 3, StartTime: contract.Timestamp(4)}); err != nil {
 			return err
 		}
 		return tx.Release(j.JobId, "processes_exited")
@@ -343,7 +343,7 @@ func TestCancellationAndLaunchFailureNeverReleaseClaimedWork(t *testing.T) {
 	j := f.submit(req, contract.AdmissionNoWait, &Admission{}).Job
 	f.write(func(tx *Tx) error { _, err := tx.Claim(j.JobId, j.Grant.GrantId, req.Runner); return err })
 	f.write(func(tx *Tx) error { return tx.Cancel(j.JobId, proto.String("first")) })
-	at := f.job(j.JobId).GetCancelRequestedAtUnixNs()
+	at := f.job(j.JobId).GetCancelRequestedAt()
 	if events := f.write(func(tx *Tx) error { return tx.Cancel(j.JobId, proto.String("other")) }); len(events) != 0 {
 		t.Fatal("cancel repeat changed")
 	}
@@ -352,14 +352,14 @@ func TestCancellationAndLaunchFailureNeverReleaseClaimedWork(t *testing.T) {
 	f.write(func(tx *Tx) error {
 		return tx.RecordTermination(j.JobId, pb.BrokerTermination_REASON_CANCEL_RUNNER_FAILED)
 	})
-	termAt := f.job(j.JobId).GetBrokerTermination().GetStartedAtUnixNs()
+	termAt := f.job(j.JobId).GetBrokerTermination().GetStartedAt()
 	if events := f.write(func(tx *Tx) error {
 		return tx.RecordTermination(j.JobId, pb.BrokerTermination_REASON_CANCEL_RUNNER_FAILED)
 	}); len(events) != 0 {
 		t.Fatal("repeat termination changed history")
 	}
 	f.expect(ErrIdentity, func(tx *Tx) error { return tx.RecordTermination(j.JobId, pb.BrokerTermination_REASON_RUNNER_DEAD) })
-	if got := f.job(j.JobId).GetBrokerTermination(); got.GetStartedAtUnixNs() != termAt ||
+	if got := f.job(j.JobId).GetBrokerTermination(); !proto.Equal(got.GetStartedAt(), termAt) ||
 		got.GetReason() != pb.BrokerTermination_REASON_CANCEL_RUNNER_FAILED {
 		t.Fatalf("conflicting termination overwrote sticky record: %v", got)
 	}
@@ -367,8 +367,8 @@ func TestCancellationAndLaunchFailureNeverReleaseClaimedWork(t *testing.T) {
 		return tx.ReportLaunchFailed(j.JobId, j.Grant.GrantId, req.Runner, "no spawn", true)
 	})
 	j = f.job(j.JobId)
-	if j.Grant == nil || j.FinishedAtUnixNs != nil || j.Outcome.Kind != pb.OutcomeKind_OUTCOME_KIND_CANCELLED_BEFORE_START ||
-		j.GetCancelRequestedAtUnixNs() != at || j.BrokerTermination.Reason != pb.BrokerTermination_REASON_CANCEL_RUNNER_FAILED {
+	if j.Grant == nil || j.FinishedAt != nil || j.Outcome.Kind != pb.OutcomeKind_OUTCOME_KIND_CANCELLED_BEFORE_START ||
+		!proto.Equal(j.GetCancelRequestedAt(), at) || j.BrokerTermination.Reason != pb.BrokerTermination_REASON_CANCEL_RUNNER_FAILED {
 		t.Fatalf("cancel evidence lost: %v", j)
 	}
 	f.expect(ErrUnreconciled, func(tx *Tx) error { return tx.Release(j.JobId, "cancelled_before_start") })
@@ -396,7 +396,7 @@ func TestLaunchFailureNeedsSealAndRetainsDefiniteOutcome(t *testing.T) {
 		t.Fatalf("report: %v", reported)
 	}
 	f.expect(ErrIdentity, func(tx *Tx) error {
-		return tx.ReportStarted(j.JobId, j.Grant.GrantId, req.Runner, &pb.ProcessIdentity{Pid: 2, StartTimeUnixNs: 3})
+		return tx.ReportStarted(j.JobId, j.Grant.GrantId, req.Runner, &pb.ProcessIdentity{Pid: 2, StartTime: contract.Timestamp(3)})
 	})
 	f.expect(ErrIdentity, func(tx *Tx) error {
 		return tx.ReportLaunchFailed(j.JobId, j.Grant.GrantId, req.Runner, "different", false)
@@ -440,7 +440,7 @@ func TestLateOutcomeReplacesUnknownWithoutChangingRelease(t *testing.T) {
 	})
 	f.write(func(tx *Tx) error {
 		if err := tx.ReportFinished(j.JobId, j.Grant.GrantId, req.Runner,
-			&pb.ProcessIdentity{Pid: 2, StartTimeUnixNs: 3},
+			&pb.ProcessIdentity{Pid: 2, StartTime: contract.Timestamp(3)},
 			&pb.Outcome{Kind: pb.OutcomeKind_OUTCOME_KIND_EXITED, ExitCode: proto.Int64(1)}); err != nil {
 			return err
 		}

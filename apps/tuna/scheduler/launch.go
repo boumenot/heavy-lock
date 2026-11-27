@@ -8,6 +8,7 @@ import (
 
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
+	"google.golang.org/protobuf/proto"
 )
 
 // LaunchTimeout is the investigation threshold from reservation commit to an
@@ -94,7 +95,7 @@ func (s *Scheduler) ReportFinishedWithResources(ctx context.Context, id, grant s
 			return nil
 		}
 		if before.Outcome != nil && before.Outcome.Kind != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN && before.Resources != nil {
-			if before.Resources.ElapsedMs != nil && summary.ElapsedMs != nil && *before.Resources.ElapsedMs != *summary.ElapsedMs {
+			if before.Resources.Elapsed != nil && summary.Elapsed != nil && !proto.Equal(before.Resources.Elapsed, summary.Elapsed) {
 				return storage.ErrIdentity
 			}
 			return nil

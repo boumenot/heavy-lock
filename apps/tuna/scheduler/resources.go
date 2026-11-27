@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -61,6 +62,8 @@ type Sample struct {
 	TotalMemoryBytes     uint64
 	AvailableMemoryBytes uint64
 	LoadAverage1m        float64
+	LoadAverage5m        float64
+	LoadAverage15m       float64
 	// CPULoadPercent is runnable work relative to the processor count; it
 	// may exceed 100.
 	CPULoadPercent float64
@@ -122,12 +125,16 @@ func ParseDarwinSample(output string, processors int) (Sample, error) {
 		return Sample{}, errors.New("invalid hw.memsize")
 	}
 	fields := strings.Fields(strings.NewReplacer("{", " ", "}", " ").Replace(lines[1]))
-	if len(fields) == 0 {
+	if len(fields) != 3 {
 		return Sample{}, errors.New("invalid vm.loadavg")
 	}
-	load, err := strconv.ParseFloat(fields[0], 64)
-	if err != nil || load < 0 {
-		return Sample{}, errors.New("invalid vm.loadavg")
+	var loads [3]float64
+	for i, field := range fields {
+		load, err := strconv.ParseFloat(field, 64)
+		if err != nil || load < 0 || math.IsNaN(load) || math.IsInf(load, 0) {
+			return Sample{}, errors.New("invalid vm.loadavg")
+		}
+		loads[i] = load
 	}
 	free, err := strconv.ParseUint(strings.TrimSpace(lines[2]), 10, 64)
 	if err != nil || free > 100 {
@@ -136,7 +143,9 @@ func ParseDarwinSample(output string, processors int) (Sample, error) {
 	return Sample{
 		TotalMemoryBytes:     total,
 		AvailableMemoryBytes: total * free / 100,
-		LoadAverage1m:        load,
-		CPULoadPercent:       100 * load / float64(processors),
+		LoadAverage1m:        loads[0],
+		LoadAverage5m:        loads[1],
+		LoadAverage15m:       loads[2],
+		CPULoadPercent:       100 * loads[0] / float64(processors),
 	}, nil
 }

@@ -15,13 +15,14 @@ import (
 
 	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
 	"github.com/boumenot/heavy-lock/apps/tuna/cli"
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	"github.com/boumenot/heavy-lock/apps/tuna/runner"
 	"github.com/boumenot/heavy-lock/apps/tuna/service"
 	"github.com/boumenot/heavy-lock/apps/tuna/transport"
 )
 
 // version identifies this build to the broker and in client attribution.
-var version = "2.0.0-dev"
+var version = contract.ServiceVersion
 
 const (
 	usageExitCode    = runner.ExitUsage
@@ -91,7 +92,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		control: func(args []string, stdout, stderr io.Writer) (int, bool) {
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			return cli.Run(ctx, args, stdout, stderr)
+			return cli.Run(ctx, args, stdout, stderr, version)
 		},
 	})
 }

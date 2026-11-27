@@ -5,8 +5,10 @@ import (
 	"math"
 	"time"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // project fills policy-derived fields of committed events. It never samples
@@ -26,10 +28,10 @@ func (s *Scheduler) project(ready bool) func(*storage.Reader, *pb.BrokerEvent) e
 }
 
 func (s *Scheduler) projectJob(r *storage.Reader, j *pb.Job) error {
-	j.GraceRemainingMs = nil
+	j.GraceRemaining = nil
 	j.BlockedReason = pb.BlockedReason_BLOCKED_REASON_UNSPECIFIED
 	if j.Grant != nil {
-		j.Grant.LaunchTimeoutMs = LaunchTimeout.Milliseconds()
+		j.Grant.LaunchTimeout = durationpb.New(LaunchTimeout)
 	}
 	if j.State != pb.JobState_JOB_STATE_QUEUED {
 		return nil
@@ -51,7 +53,7 @@ func (s *Scheduler) projectJob(r *storage.Reader, j *pb.Job) error {
 		elapsed = g.ElapsedUS / 1000
 	}
 	remaining := max(s.cfg.Grace.Milliseconds()-elapsed, 0)
-	j.GraceRemainingMs = &remaining
+	j.GraceRemaining = contract.MillisecondDuration(remaining)
 	return nil
 }
 
@@ -91,11 +93,11 @@ func (s *Scheduler) projectStatus(r *storage.Reader, st *pb.BrokerStatus, ready 
 	st.BackfillLimit = s.cfg.BackfillLimit
 	st.Recovering = !ready
 	st.HeadBlockedReason, st.QueueState = s.queueView(st, queue, ready)
-	st.FreeMemoryBytes, st.LoadAverage_1M = nil, nil
+	st.FreeMemoryBytes, st.LoadAverage_1M, st.LoadAverage_5M, st.LoadAverage_15M = nil, nil, nil, nil
 	if sample := s.lastSample; sample != nil {
 		free := int64(min(sample.AvailableMemoryBytes, math.MaxInt64))
-		load := sample.LoadAverage1m
-		st.FreeMemoryBytes, st.LoadAverage_1M = &free, &load
+		load1, load5, load15 := sample.LoadAverage1m, sample.LoadAverage5m, sample.LoadAverage15m
+		st.FreeMemoryBytes, st.LoadAverage_1M, st.LoadAverage_5M, st.LoadAverage_15M = &free, &load1, &load5, &load15
 	}
 	return nil
 }
@@ -115,7 +117,7 @@ func (s *Scheduler) SnapshotEvent(ctx context.Context) (*pb.BrokerEvent, error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snapshot := &pb.BrokerSnapshot{}
-	event := &pb.BrokerEvent{AtUnixNs: time.Now().UnixNano(), Event: &pb.BrokerEvent_Snapshot{Snapshot: snapshot}}
+	event := &pb.BrokerEvent{At: contract.Timestamp(time.Now().UnixNano()), Event: &pb.BrokerEvent_Snapshot{Snapshot: snapshot}}
 	err := s.store.View(ctx, func(r *storage.Reader) error {
 		var err error
 		if event.EventSeq, err = r.EventSequence(); err != nil {

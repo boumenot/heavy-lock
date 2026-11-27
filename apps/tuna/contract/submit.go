@@ -85,9 +85,13 @@ func CanonicalSubmitHash(request *heavylockv2.SubmitJobRequest, mode AdmissionMo
 		if request.Runner.Process == nil {
 			encoded = append(encoded, 0)
 		} else {
+			start, err := UnixNano(request.Runner.Process.StartTime)
+			if err != nil {
+				return [32]byte{}, fmt.Errorf("invalid runner process start time: %w", err)
+			}
 			encoded = append(encoded, 1)
 			encoded = binary.BigEndian.AppendUint64(encoded, uint64(request.Runner.Process.Pid))
-			encoded = binary.BigEndian.AppendUint64(encoded, uint64(request.Runner.Process.StartTimeUnixNs))
+			encoded = binary.BigEndian.AppendUint64(encoded, uint64(start))
 		}
 	}
 	encoded = appendOptionalString(encoded, request.RetryOfJobId)
@@ -151,7 +155,7 @@ func hasUnknownFields(message protoreflect.Message) bool {
 		lastSupported = 5
 	case "heavylock.v2.Attribution":
 		lastSupported = 9
-	case "heavylock.v2.RunnerIncarnation", "heavylock.v2.ProcessIdentity":
+	case "heavylock.v2.RunnerIncarnation", "heavylock.v2.ProcessIdentity", "google.protobuf.Timestamp":
 		lastSupported = 2
 	default:
 		return true

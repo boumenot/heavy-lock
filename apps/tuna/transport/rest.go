@@ -8,9 +8,11 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
@@ -19,6 +21,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const maxRESTBodyBytes = 1 << 20
@@ -68,7 +71,7 @@ func newRESTHandler(broker Broker) http.Handler {
 					"broker returned an empty response", nil), 0)
 				return
 			}
-			data, err := protojson.Marshal(result)
+			data, err := (protojson.MarshalOptions{EmitDefaultValues: true}).Marshal(result)
 			if err != nil {
 				writeRESTError(w, contract.Error(codes.Internal, heavylockv2.ErrorReason_INTERNAL_ERROR,
 					"cannot encode broker response: "+err.Error(), nil), 0)
@@ -148,19 +151,19 @@ func newRESTHandler(broker Broker) http.Handler {
 		return broker.ResumeQueue(r.Context(), request)
 	}}})
 	register("/v1/history", map[string]endpoint{http.MethodDelete: {allowQuery: true, call: func(r *http.Request) (proto.Message, error) {
-		query, err := parseQuery(r, map[string]bool{"finishedBeforeUnixNs": false})
+		query, err := parseQuery(r, map[string]bool{"finishedBefore": false})
 		if err != nil {
 			return nil, err
 		}
-		value, ok := query["finishedBeforeUnixNs"]
+		value, ok := query["finishedBefore"]
 		if !ok {
-			return nil, invalidField("finishedBeforeUnixNs", "finishedBeforeUnixNs is required")
+			return nil, invalidField("finishedBefore", "finishedBefore is required")
 		}
-		cutoff, err := strconv.ParseInt(value[0], 10, 64)
+		cutoff, err := parseTimestamp("finishedBefore", value[0])
 		if err != nil {
-			return nil, invalidField("finishedBeforeUnixNs", "finishedBeforeUnixNs must be a signed 64-bit integer")
+			return nil, err
 		}
-		return broker.DeleteHistory(r.Context(), &heavylockv2.DeleteHistoryRequest{FinishedBeforeUnixNs: cutoff})
+		return broker.DeleteHistory(r.Context(), &heavylockv2.DeleteHistoryRequest{FinishedBefore: cutoff})
 	}}})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeRESTError(w, contract.Error(codes.NotFound, heavylockv2.ErrorReason_HTTP_ROUTE_NOT_FOUND,
@@ -208,8 +211,8 @@ func handlePreflight(w http.ResponseWriter, r *http.Request, methods map[string]
 
 func listJobsRequest(r *http.Request) (*heavylockv2.ListJobsRequest, error) {
 	query, err := parseQuery(r, map[string]bool{
-		"states": true, "repository": false, "clientName": false, "queuedAfterUnixNs": false,
-		"queuedBeforeUnixNs": false, "pageSize": false, "pageToken": false,
+		"states": true, "repository": false, "clientName": false, "queuedAfter": false,
+		"queuedBefore": false, "pageSize": false, "pageToken": false,
 	})
 	if err != nil {
 		return nil, err
@@ -228,19 +231,19 @@ func listJobsRequest(r *http.Request) (*heavylockv2.ListJobsRequest, error) {
 	if value, ok := query["clientName"]; ok {
 		request.ClientName = proto.String(value[0])
 	}
-	if value, ok := query["queuedAfterUnixNs"]; ok {
-		number, err := strconv.ParseInt(value[0], 10, 64)
+	if value, ok := query["queuedAfter"]; ok {
+		timestamp, err := parseTimestamp("queuedAfter", value[0])
 		if err != nil {
-			return nil, invalidField("queuedAfterUnixNs", "queuedAfterUnixNs must be a signed 64-bit integer")
+			return nil, err
 		}
-		request.QueuedAfterUnixNs = proto.Int64(number)
+		request.QueuedAfter = timestamp
 	}
-	if value, ok := query["queuedBeforeUnixNs"]; ok {
-		number, err := strconv.ParseInt(value[0], 10, 64)
+	if value, ok := query["queuedBefore"]; ok {
+		timestamp, err := parseTimestamp("queuedBefore", value[0])
 		if err != nil {
-			return nil, invalidField("queuedBeforeUnixNs", "queuedBeforeUnixNs must be a signed 64-bit integer")
+			return nil, err
 		}
-		request.QueuedBeforeUnixNs = proto.Int64(number)
+		request.QueuedBefore = timestamp
 	}
 	if value, ok := query["pageSize"]; ok {
 		number, err := strconv.ParseUint(value[0], 10, 32)
@@ -253,6 +256,23 @@ func listJobsRequest(r *http.Request) (*heavylockv2.ListJobsRequest, error) {
 		request.PageToken = value[0]
 	}
 	return request, nil
+}
+
+var rfc3339Timestamp = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$`)
+
+func parseTimestamp(field, value string) (*timestamppb.Timestamp, error) {
+	if !rfc3339Timestamp.MatchString(value) {
+		return nil, invalidField(field, field+" must be an RFC 3339 timestamp with at most nanosecond precision")
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return nil, invalidField(field, field+" must be a valid RFC 3339 timestamp")
+	}
+	timestamp := timestamppb.New(parsed)
+	if _, err := contract.UnixNano(timestamp); err != nil {
+		return nil, invalidField(field, field+" is outside the supported Unix-nanosecond range")
+	}
+	return timestamp, nil
 }
 
 func parseQuery(r *http.Request, allowed map[string]bool) (url.Values, error) {
@@ -348,7 +368,7 @@ func invalidField(field, message string) error {
 
 func writeRESTError(w http.ResponseWriter, err error, httpStatus int) {
 	result := status.Convert(contract.NormalizeError(err))
-	data, marshalErr := protojson.Marshal(result.Proto())
+	data, marshalErr := (protojson.MarshalOptions{EmitDefaultValues: true}).Marshal(result.Proto())
 	if marshalErr != nil {
 		http.Error(w, "could not encode REST error: "+marshalErr.Error(), http.StatusInternalServerError)
 		return

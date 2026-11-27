@@ -1,11 +1,12 @@
 // heavy-lock v2 broker API.
 //
 // Conventions:
-// - Every timestamp is UTC Unix nanoseconds in an int64 field ending in
-//   "_unix_ns". Every duration ends in "_us" or "_ms" and is measured by the
-//   broker's monotonic clock; durations are never derived from wall-clock
-//   subtraction. Wall-clock timestamps are informational: the system clock
-//   can move backwards, so they never order events or validate transitions.
+// - Timestamps are UTC protobuf Timestamps with nanosecond precision. SQLite
+//   stores them as integer Unix nanoseconds. Durations use protobuf Duration;
+//   measurements use monotonic clocks, never wall-clock subtraction. Stored
+//   resource durations retain their existing millisecond precision.
+//   Wall-clock timestamps are informational: the system clock can move
+//   backwards, so they never order events or validate transitions.
 // - IDs are lowercase canonical UUIDv4 strings.
 // - Errors use standard gRPC status codes. Each non-OK status carries a
 //   google.rpc.ErrorInfo detail with domain "heavylock.v2" and reason set to
@@ -118,13 +119,13 @@ type RunnerServiceClient interface {
 	// changes: queue position, grant, cancellation and terminal state. The
 	// runner treats the snapshot as level-triggered: a present grant calls for
 	// a durable ClaimLaunch, not a spawn by itself. A present
-	// cancel_requested_at_unix_ns means cancel; a claimed runner then calls
+	// cancel_requested_at means cancel; a claimed runner then calls
 	// AcknowledgeCancel. The first call by the submitting incarnation
 	// registers the queue entry, like a reconnect. Newer registrations
 	// supersede older ones; an older stream's disconnect cannot unregister
 	// the newer one. An open current stream is the
 	// runner's connection signal for the queued-runner grace period, and the
-	// broker sends a heartbeat at least every heartbeat_interval_ms so the
+	// broker sends a heartbeat at least every heartbeat_interval so the
 	// runner can detect a silent broker. Grace begins when the broker detects
 	// the queued stream's disconnection, not when a heartbeat is missed; a
 	// successful queued reconnect resets it. It never releases a
@@ -385,13 +386,13 @@ type RunnerServiceServer interface {
 	// changes: queue position, grant, cancellation and terminal state. The
 	// runner treats the snapshot as level-triggered: a present grant calls for
 	// a durable ClaimLaunch, not a spawn by itself. A present
-	// cancel_requested_at_unix_ns means cancel; a claimed runner then calls
+	// cancel_requested_at means cancel; a claimed runner then calls
 	// AcknowledgeCancel. The first call by the submitting incarnation
 	// registers the queue entry, like a reconnect. Newer registrations
 	// supersede older ones; an older stream's disconnect cannot unregister
 	// the newer one. An open current stream is the
 	// runner's connection signal for the queued-runner grace period, and the
-	// broker sends a heartbeat at least every heartbeat_interval_ms so the
+	// broker sends a heartbeat at least every heartbeat_interval so the
 	// runner can detect a silent broker. Grace begins when the broker detects
 	// the queued stream's disconnection, not when a heartbeat is missed; a
 	// successful queued reconnect resets it. It never releases a

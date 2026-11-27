@@ -10,9 +10,13 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestControlReadinessPauseAndSnapshot(t *testing.T) {
@@ -48,6 +52,24 @@ func TestControlReadinessPauseAndSnapshot(t *testing.T) {
 	st, err = c.ResumeQueue(ctx, &pb.ResumeQueueRequest{})
 	if err != nil || st.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED {
 		t.Fatalf("resume = %v, %v", st, err)
+	}
+}
+
+func TestControlRejectsInvalidTimestampBounds(t *testing.T) {
+	c := &Control{}
+	for _, request := range []*pb.ListJobsRequest{
+		{QueuedAfter: &timestamppb.Timestamp{Seconds: 9223372036, Nanos: 854775808}},
+		{QueuedBefore: &timestamppb.Timestamp{Seconds: 0, Nanos: -1}},
+		{QueuedAfter: contract.Timestamp(2), QueuedBefore: contract.Timestamp(1)},
+	} {
+		if _, err := c.ListJobs(context.Background(), request); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("ListJobs(%v): %v", request, err)
+		}
+	}
+	if _, err := c.DeleteHistory(context.Background(), &pb.DeleteHistoryRequest{
+		FinishedBefore: &timestamppb.Timestamp{Seconds: -9223372037, Nanos: 145224191},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("DeleteHistory: %v", err)
 	}
 }
 

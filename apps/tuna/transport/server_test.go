@@ -38,8 +38,8 @@ type fakeBroker struct {
 
 func (b *fakeBroker) GetHealth(context.Context, *heavylockv2.GetHealthRequest) (*heavylockv2.Health, error) {
 	return &heavylockv2.Health{
-		Live: true, Ready: false, ServiceVersion: "probe",
-		ServiceIdentity: contract.ServiceIdentity, ApiMajor: contract.APIMajor, ApiMinor: contract.APIMinor,
+		Live: true, Ready: false, ServiceVersion: contract.ServiceVersion,
+		ServiceIdentity: contract.ServiceIdentity,
 	}, nil
 }
 
@@ -214,7 +214,7 @@ func TestSharedPortGRPCAndREST(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := contract.CheckService(health, 0); err != nil {
+	if err := contract.CheckService(health, contract.ServiceVersion, 0); err != nil {
 		t.Fatal(err)
 	}
 

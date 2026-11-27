@@ -396,9 +396,13 @@ func (s *Scheduler) Current(r *Registration) bool {
 }
 
 func sameRunner(a, b *pb.RunnerIncarnation) bool {
-	return a != nil && b != nil && a.Process != nil && b.Process != nil &&
-		a.IncarnationId == b.IncarnationId && a.Process.Pid == b.Process.Pid &&
-		a.Process.StartTimeUnixNs == b.Process.StartTimeUnixNs
+	if a == nil || b == nil || a.Process == nil || b.Process == nil {
+		return false
+	}
+	aStart, aErr := contract.UnixNano(a.Process.StartTime)
+	bStart, bErr := contract.UnixNano(b.Process.StartTime)
+	return aErr == nil && bErr == nil && aStart > 0 && aStart == bStart &&
+		a.IncarnationId == b.IncarnationId && a.Process.Pid == b.Process.Pid
 }
 
 // Watch registers a job stream. For a queued job, the submitting
@@ -803,6 +807,7 @@ func (p *probe) read() *Sample {
 		p.sampled = true
 		ctx, cancel := context.WithTimeout(p.ctx, sampleTimeout)
 		defer cancel()
+		p.s.lastSample = nil
 		if sample, err := p.s.sampler.Sample(ctx); err == nil && sample.TotalMemoryBytes > 0 {
 			p.sample = &sample
 			p.s.lastSample = &sample

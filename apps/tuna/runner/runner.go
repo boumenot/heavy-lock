@@ -161,7 +161,8 @@ func Run(ctx context.Context, o Options) int {
 	health, err := pb.NewControlServiceClient(conn).GetHealth(hctx, &pb.GetHealthRequest{})
 	cancel()
 	if err == nil {
-		err = contract.CheckService(health, contract.APIMinor)
+		// Submissions include ClientInfo.os_version, introduced in API 2.2.
+		err = contract.CheckService(health, o.Version, 2)
 	}
 	if err == nil && !health.Ready {
 		err = errors.New("broker is recovering and not accepting submissions")

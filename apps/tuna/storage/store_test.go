@@ -31,7 +31,7 @@ func TestSubmissionCommitAndRollback(t *testing.T) {
 		Command:        "example", Weight: 1,
 		Runner: &pb.RunnerIncarnation{
 			IncarnationId: "22222222-2222-4222-8222-222222222222",
-			Process:       &pb.ProcessIdentity{Pid: 1, StartTimeUnixNs: 1},
+			Process:       &pb.ProcessIdentity{Pid: 1, StartTime: contract.Timestamp(1)},
 		},
 	}
 	options := Submission{Mode: contract.AdmissionQueued, ServiceVersion: "test", ServiceRunID: run}

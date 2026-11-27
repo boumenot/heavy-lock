@@ -38,14 +38,18 @@ private func hex(_ data: Data) -> String {
     var report = Heavylock_V2_ReportFinishedRequest()
     report.jobID = "job"
     report.grantID = "grant"
-    report.elapsedMs = 0
-    report.rootCpuTimeMs = 1234
+    report.process.pid = 42
+    report.process.startTime.seconds = 1_764_121_200
+    report.process.startTime.nanos = 123_456_789
+    report.elapsed = .init()
+    report.rootCpuTime.seconds = 1
+    report.rootCpuTime.nanos = 234_000_000
     let encoded: Data = try report.serializedBytes()
-    #expect(hex(encoded) == "0a036a6f6212056772616e74300038d209")
+    #expect(hex(encoded) == "0a036a6f6212056772616e742a0f082a120b08f0b499c90610959aef3a32003a07080110809dca6f")
     let decoded = try Heavylock_V2_ReportFinishedRequest(serializedBytes: encoded)
     #expect(decoded == report)
-    #expect(decoded.hasElapsedMs && decoded.elapsedMs == 0)
-    #expect(decoded.hasRootCpuTimeMs && decoded.rootCpuTimeMs == 1234)
+    #expect(decoded.hasElapsed && decoded.elapsed.seconds == 0 && decoded.elapsed.nanos == 0)
+    #expect(decoded.hasRootCpuTime && decoded.rootCpuTime.seconds == 1 && decoded.rootCpuTime.nanos == 234_000_000)
 }
 
 @Test func contractNames() {
@@ -60,10 +64,8 @@ private func hex(_ data: Data) -> String {
     health.live = true
     health.ready = false
     health.serviceIdentity = "heavylock.v2"
-    health.serviceVersion = "0.1.0"
-    health.apiMajor = 2
-    health.apiMinor = 0
-    try HeavyLockV2.checkService(health)
+    health.serviceVersion = HeavyLockV2.serviceVersion
+    try HeavyLockV2.checkService(health, minimumMinor: 2)
 
     var wrong = health
     wrong.serviceIdentity = "unrelated"
@@ -71,12 +73,12 @@ private func hex(_ data: Data) -> String {
         try HeavyLockV2.checkService(wrong)
     }
     wrong = health
-    wrong.apiMajor = 3
+    wrong.serviceVersion = "3.2.0"
     #expect(throws: HeavyLockV2.ServiceCompatibilityError.incompatibleVersion) {
         try HeavyLockV2.checkService(wrong)
     }
     #expect(throws: HeavyLockV2.ServiceCompatibilityError.incompatibleVersion) {
-        try HeavyLockV2.checkService(health, minimumMinor: 1)
+        try HeavyLockV2.checkService(health, minimumMinor: 3)
     }
     wrong = health
     wrong.serviceVersion = ""
@@ -87,5 +89,22 @@ private func hex(_ data: Data) -> String {
     wrong.live = false
     #expect(throws: HeavyLockV2.ServiceCompatibilityError.notLive) {
         try HeavyLockV2.checkService(wrong)
+    }
+
+    for (client, server, minimumMinor, compatible) in [
+        ("2.2.0-dev.34", "2.2.0-dev.34", 2, true),
+        ("2.2.0-dev.34", "2.2.0-dev.35", 0, false),
+        ("2.2.0-dev.34", "2.2.0", 0, false),
+        ("2.2.0", "2.2.0-dev.34", 0, false),
+        ("2.1.0", "2.3.5", 2, true),
+        ("2.1.0", "2.1.9", 2, false),
+        ("2.0.0+client", "2.1.0+server", 1, true),
+        ("02.0.0", "2.0.0", 0, false),
+        ("2.0.0-dev.01", "2.0.0-dev.01", 0, false),
+        ("2.0.0", "2.0.0+bad+metadata", 0, false),
+    ] as [(String, String, UInt32, Bool)] {
+        health.serviceVersion = server
+        let result = Result { try HeavyLockV2.checkService(health, clientVersion: client, minimumMinor: minimumMinor) }
+        #expect(((try? result.get()) != nil) == compatible)
     }
 }

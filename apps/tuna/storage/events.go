@@ -3,6 +3,7 @@ package storage
 import (
 	"errors"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -22,7 +23,7 @@ func (tx *Tx) event(event *pb.BrokerEvent, kind string, jobID any) error {
 	if err := tx.scan("SELECT last_event_seq FROM broker_state WHERE id=1", nil, &event.EventSeq); err != nil {
 		return err
 	}
-	event.AtUnixNs = tx.at
+	event.At = contract.Timestamp(tx.at)
 	payload, err := proto.Marshal(event)
 	if err != nil {
 		return err
@@ -112,11 +113,15 @@ func (r *Reader) Events(after int64, limit int) ([]*pb.BrokerEvent, error) {
 		if err = proto.Unmarshal(payload, event); err != nil {
 			break
 		}
+		if err = restoreLegacyEvent(event.ProtoReflect()); err != nil {
+			break
+		}
+		eventAt, timeErr := contract.UnixNano(event.At)
 		var subject any
 		if jobID != nil {
 			subject = *jobID
 		}
-		if event.EventSeq != seq || event.AtUnixNs != at || !matchesEvent(event, kind, subject) {
+		if timeErr != nil || event.EventSeq != seq || eventAt != at || !matchesEvent(event, kind, subject) {
 			err = errors.New("event payload disagrees with stored sequence, timestamp or subject")
 			break
 		}

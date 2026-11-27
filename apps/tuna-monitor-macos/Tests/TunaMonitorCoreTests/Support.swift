@@ -28,9 +28,7 @@ final class FakeBroker: BrokerClient {
     static func liveHealth() -> Heavylock_V2_Health {
         var health = Heavylock_V2_Health()
         health.serviceIdentity = HeavyLockV2.errorDomain
-        health.apiMajor = 2
-        health.apiMinor = 1
-        health.serviceVersion = "test"
+        health.serviceVersion = HeavyLockV2.serviceVersion
         health.live = true
         health.ready = true
         return health
@@ -130,7 +128,10 @@ func heartbeatEvent(seq: Int64, intervalMs: Int64 = 0) -> Heavylock_V2_BrokerEve
     var event = Heavylock_V2_BrokerEvent()
     event.eventSeq = seq
     var heartbeat = Heavylock_V2_Heartbeat()
-    heartbeat.heartbeatIntervalMs = intervalMs
+    if intervalMs > 0 {
+        heartbeat.heartbeatInterval.seconds = intervalMs / 1000
+        heartbeat.heartbeatInterval.nanos = Int32(intervalMs % 1000) * 1_000_000
+    }
     event.heartbeat = heartbeat
     return event
 }

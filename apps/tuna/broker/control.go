@@ -14,6 +14,7 @@ import (
 	"github.com/boumenot/heavy-lock/apps/tuna/storage"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 type Options struct {
@@ -78,8 +79,8 @@ func controlError(err error) error {
 }
 
 func (c *Control) GetHealth(ctx context.Context, _ *pb.GetHealthRequest) (*pb.Health, error) {
-	h := &pb.Health{Live: true, ServiceVersion: c.opts.ServiceVersion, StartedAtUnixNs: c.started,
-		SchemaVersion: storage.SchemaVersion, ServiceIdentity: contract.ServiceIdentity, ApiMajor: contract.APIMajor, ApiMinor: contract.APIMinor}
+	h := &pb.Health{Live: true, ServiceVersion: c.opts.ServiceVersion, StartedAt: contract.Timestamp(c.started),
+		SchemaVersion: storage.SchemaVersion, ServiceIdentity: contract.ServiceIdentity}
 	snapshot, err := c.s.Snapshot(ctx)
 	if errors.Is(err, storage.ErrUnavailable) {
 		detail := err.Error()
@@ -149,8 +150,20 @@ func (c *Control) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb.Li
 			return nil, invalid("states", "expected a nonzero JobState")
 		}
 	}
-	if req.QueuedAfterUnixNs != nil && req.QueuedBeforeUnixNs != nil && *req.QueuedAfterUnixNs >= *req.QueuedBeforeUnixNs {
-		return nil, invalid("queued_before_unix_ns", "end must be after start")
+	var after, before int64
+	var err error
+	if req.QueuedAfter != nil {
+		if after, err = contract.UnixNano(req.QueuedAfter); err != nil {
+			return nil, invalid("queued_after", err.Error())
+		}
+	}
+	if req.QueuedBefore != nil {
+		if before, err = contract.UnixNano(req.QueuedBefore); err != nil {
+			return nil, invalid("queued_before", err.Error())
+		}
+	}
+	if req.QueuedAfter != nil && req.QueuedBefore != nil && after >= before {
+		return nil, invalid("queued_before", "end must be after start")
 	}
 	result, err := c.s.ListJobs(ctx, req)
 	return result, controlError(err)
@@ -244,7 +257,11 @@ func (c *Control) DeleteHistory(ctx context.Context, req *pb.DeleteHistoryReques
 	if req == nil {
 		return nil, invalid("request", "request is required")
 	}
-	result, err := c.s.DeleteHistory(ctx, req.FinishedBeforeUnixNs)
+	cutoff, err := contract.UnixNano(req.FinishedBefore)
+	if err != nil {
+		return nil, invalid("finished_before", err.Error())
+	}
+	result, err := c.s.DeleteHistory(ctx, cutoff)
 	return result, controlError(err)
 }
 
@@ -322,8 +339,8 @@ func (c *Control) WatchEvents(req *pb.WatchEventsRequest, stream grpc.ServerStre
 			}
 			cursor = event.EventSeq
 		case <-heartbeat.C:
-			if err := stream.Send(&pb.BrokerEvent{EventSeq: cursor, AtUnixNs: time.Now().UnixNano(),
-				Event: &pb.BrokerEvent_Heartbeat{Heartbeat: &pb.Heartbeat{HeartbeatIntervalMs: c.opts.HeartbeatInterval.Milliseconds()}}}); err != nil {
+			if err := stream.Send(&pb.BrokerEvent{EventSeq: cursor, At: contract.Timestamp(time.Now().UnixNano()),
+				Event: &pb.BrokerEvent_Heartbeat{Heartbeat: &pb.Heartbeat{HeartbeatInterval: durationpb.New(c.opts.HeartbeatInterval)}}}); err != nil {
 				return err
 			}
 		}

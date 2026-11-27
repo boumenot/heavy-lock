@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/jobmetrics"
 	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
@@ -49,8 +50,15 @@ func newResourceManager(s resourceScheduler, source jobmetrics.Source) *resource
 	}
 }
 
-func resourceIdentity(p *pb.ProcessIdentity) jobmetrics.Identity {
-	return jobmetrics.Identity{PID: p.GetPid(), StartTimeUnixNs: p.GetStartTimeUnixNs()}
+func resourceIdentity(p *pb.ProcessIdentity) (jobmetrics.Identity, error) {
+	if p == nil || p.Pid <= 0 {
+		return jobmetrics.Identity{}, errors.New("invalid process identity")
+	}
+	start, err := contract.UnixNano(p.StartTime)
+	if err != nil || start <= 0 {
+		return jobmetrics.Identity{}, errors.Join(errors.New("invalid process start time"), err)
+	}
+	return jobmetrics.Identity{PID: p.Pid, StartTimeUnixNs: start}, nil
 }
 
 // restore runs before admission opens, making any lost checkpoint interval
@@ -65,7 +73,10 @@ func (m *resourceManager) restore(ctx context.Context) error {
 		if job.Process == nil {
 			continue
 		}
-		root := resourceIdentity(job.Process)
+		root, err := resourceIdentity(job.Process)
+		if err != nil {
+			return err
+		}
 		entry := &resourceEntry{root: root, aggregate: jobmetrics.New(root, job.Resources, true), checkpoint: now}
 		if err := m.scheduler.SaveResources(ctx, job.JobId, entry.aggregate.Summary(), false); err != nil {
 			return err
@@ -134,7 +145,11 @@ func (m *resourceManager) sample(ctx context.Context) error {
 			!proto.Equal(current.Process, job.Process) {
 			continue
 		}
-		root := resourceIdentity(current.Process)
+		root, err := resourceIdentity(current.Process)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("job %s: %w", job.JobId, err))
+			continue
+		}
 		entry := m.entries[job.JobId]
 		if entry == nil {
 			entry = &resourceEntry{root: root, aggregate: jobmetrics.New(root, current.Resources, current.Resources != nil), checkpoint: now}
@@ -175,7 +190,7 @@ func (m *resourceManager) sample(ctx context.Context) error {
 			continue
 		}
 		final := entry.aggregate.Clone()
-		if job.Resources == nil || job.Resources.ElapsedMs == nil {
+		if job.Resources == nil || job.Resources.Elapsed == nil {
 			final.Finish(nil, nil)
 		}
 		if err := m.scheduler.SaveResources(ctx, id, final.Summary(), true); err != nil && !errors.Is(err, storage.ErrNotFound) {
@@ -196,14 +211,25 @@ func (m *resourceManager) Finish(ctx context.Context, req *pb.ReportFinishedRequ
 	if err != nil {
 		return nil, err
 	}
+	elapsed, err := contract.OptionalMilliseconds(req.Elapsed)
+	if err != nil {
+		return nil, err
+	}
+	cpu, err := contract.OptionalMilliseconds(req.RootCpuTime)
+	if err != nil {
+		return nil, err
+	}
 	if job.Outcome != nil && job.Outcome.Kind != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN && job.Resources != nil {
 		summary := proto.Clone(job.Resources).(*pb.ResourceSummary)
-		if req.ElapsedMs != nil {
-			summary.ElapsedMs = proto.Int64(*req.ElapsedMs)
+		if elapsed != nil {
+			summary.Elapsed = contract.MillisecondDuration(*elapsed)
 		}
 		return commit(summary)
 	}
-	root := resourceIdentity(req.Process)
+	root, err := resourceIdentity(req.Process)
+	if err != nil {
+		return nil, err
+	}
 	entry := m.entries[req.JobId]
 	if entry != nil && entry.root != root {
 		return nil, storage.ErrIdentity
@@ -212,7 +238,7 @@ func (m *resourceManager) Finish(ctx context.Context, req *pb.ReportFinishedRequ
 		entry = &resourceEntry{root: root, aggregate: jobmetrics.New(root, job.Resources, job.Resources != nil), checkpoint: m.clock()}
 	}
 	final := entry.aggregate.Clone()
-	final.Finish(req.ElapsedMs, req.RootCpuTimeMs)
+	final.Finish(elapsed, cpu)
 	result, err := commit(final.Summary())
 	if result != nil {
 		if result.State == pb.JobState_JOB_STATE_FINISHED {

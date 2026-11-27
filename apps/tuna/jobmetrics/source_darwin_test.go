@@ -99,7 +99,7 @@ func TestDarwinSnapshotObservesSelf(t *testing.T) {
 		if p.Identity.PID != int64(os.Getpid()) {
 			continue
 		}
-		if p.Identity.StartTimeUnixNs != identity.StartTimeUnixNs || p.Problem != "" ||
+		if p.Identity.StartTimeUnixNs != identity.StartTime.AsTime().UnixNano() || p.Problem != "" ||
 			p.CPUTimeNs == nil || p.RSSBytes == nil || *p.RSSBytes <= 0 {
 			t.Fatalf("self observation = %+v; snapshot gap = %q", p, snapshot.IncompletenessReason)
 		}
@@ -166,7 +166,7 @@ func TestDarwinSnapshotObservesLiveDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rootID := Identity{PID: root.Pid, StartTimeUnixNs: root.StartTimeUnixNs}
+	rootID := Identity{PID: root.Pid, StartTimeUnixNs: root.StartTime.AsTime().UnixNano()}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		snapshot, err := DefaultSource().Snapshot(context.Background())
