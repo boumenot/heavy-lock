@@ -113,6 +113,9 @@ struct MonitorView: View {
                 if let worklog = row.worklog {
                     self.worklogLink(worklog, cwd: row.cwd)
                 }
+                if let session = row.session {
+                    Self.sessionLink(session)
+                }
                 if let cwd = row.cwd {
                     self.checkoutLink(cwd, display: row.cwdDisplay ?? cwd)
                 }
@@ -155,17 +158,43 @@ struct MonitorView: View {
 
     @ViewBuilder
     private func worklogLink(_ worklog: WorklogReference, cwd: String?) -> some View {
+        let label = worklog.qualifiedLabel
         switch self.metadata.issue(worklog, cwd: cwd) {
         case .resolved(let issue):
-            if let url = issue.url {
-                Link("\(worklog.label) \(issue.title)", destination: url).font(.caption)
+            if let url = issue.url ?? worklog.url {
+                Link("\(label) \(issue.title)", destination: url).font(.caption)
             } else {
-                Text("\(worklog.label) \(issue.title)").font(.caption)
+                Text("\(label) \(issue.title)").font(.caption)
             }
         case .loading:
-            Text("\(worklog.label) Loading title…").font(.caption).foregroundStyle(.secondary)
+            Self.worklogFallback(worklog, label: label, note: "Loading title…")
         case .unavailable:
-            Text("\(worklog.label) Title unavailable").font(.caption).foregroundStyle(.secondary)
+            Self.worklogFallback(worklog, label: label, note: "Title unavailable")
+        }
+    }
+
+    /// The recorded issue link stays usable when `gh` cannot supply a title.
+    @ViewBuilder
+    private static func worklogFallback(_ worklog: WorklogReference, label: String, note: String) -> some View {
+        HStack(spacing: 4) {
+            if let url = worklog.url {
+                Link(label, destination: url)
+            } else {
+                Text(label)
+            }
+            Text(note).foregroundStyle(.secondary)
+        }
+        .font(.caption)
+    }
+
+    @ViewBuilder
+    private static func sessionLink(_ session: AgentSession) -> some View {
+        if let url = session.url {
+            Link("Copilot session \(session.id.prefix(8))", destination: url)
+                .font(.caption)
+                .help("Open session \(session.id) in the GitHub Copilot app")
+        } else {
+            Text("Agent session \(session.id)").font(.caption).foregroundStyle(.secondary)
         }
     }
 

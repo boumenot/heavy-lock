@@ -144,6 +144,7 @@ CREATE TABLE jobs (
                       -- explicitly reported only, e.g. 'macos'
   client_architecture TEXT CHECK (client_architecture IN ('arm64', 'amd64', 'other')),
                       -- explicitly reported only, e.g. 'arm64'
+  client_os_version   TEXT,     -- e.g. '26.1'; explicitly reported only
   service_version     TEXT    NOT NULL,  -- broker version at submission, e.g. '2.0.0'
 
   -- Explicit attribution; NULL when not supplied, never inferred ----------

@@ -100,7 +100,7 @@ choices are explicit user decisions.
 | History deletion | Available through REST and gRPC; not a monitor control |
 | Command and outcome | Full command plus arguments as a human-readable string; exit code |
 | Other recorded fields | Client name/version, service version, free memory at admission, termination signal when available, measurement completeness, queue/admission timestamps, explicitly supplied commit/target/configuration |
-| Attribution | Only explicit client-supplied values; missing stays unknown |
+| Attribution | Client-supplied values; the tuna runner reports its checkout and agent session (#33); missing stays unknown |
 | Scheduling from history | Not in v2 |
 | Service telemetry library | Deferred; job sampling and SQLite summaries are not deferred |
 
@@ -1531,8 +1531,10 @@ Host checks are **not authentication** and do not block the intentionally
 permitted cross-origin access.
 
 **Delegated decision: service compatibility.** The `GetHealth` contract reports
-`service_identity = "heavylock.v2"`, API major/minor `2.0`, and a nonempty
-service version. Go and Swift compatibility helpers require the identity,
+`service_identity = "heavylock.v2"`, API major/minor `2.1`, and a nonempty
+service version. Minor 1 added `ClientInfo.os_version`; runners require a
+broker of at least their own minor, because older brokers reject unknown
+submission fields. Go and Swift compatibility helpers require the identity,
 major 2, at least the minor they need, a nonblank service version and
 `live = true`.
 `ready = false` is a recognized but not-ready service, not an identity
@@ -1565,6 +1567,14 @@ only when explicitly supplied by the client.
 repository, branch, issue/worklog, agent/session or purpose remains
 unknown, never inferred from cwd or other context. Values are declarations,
 not authenticated identities.
+
+**User decision (#33, supersedes the above for the tuna runner).** The
+runner, as the client, reports its own context: the cwd checkout's
+repository and host (from the branch's upstream remote, else `origin`),
+branch and commit, the invoking `COPILOT_AGENT_SESSION_ID` and `AI_AGENT`,
+and its OS version. `--repository` and a qualified `--worklog` override
+detection. The broker still stores only what the client supplied and never
+infers values itself; anything the runner cannot read stays unknown.
 
 **User decision (approved recommendation).** Store known metadata fields in
 dedicated columns and extensible extras in one validated `metadata_json`
@@ -1745,11 +1755,13 @@ the user does not need, at the cost of additional compatibility machinery.
 
 **Delegated decision: familiar runner CLI.** Keep the command separator
 `--` and the existing `--weight heavy|light|<positive integer>` and
-`--worklog <positive integer>` options. As in v1, `heavy` means two slots,
+`--worklog <positive integer>` options (#33 adds `--repository` and the
+qualified `--worklog [HOST/]OWNER/NAME#N`). As in v1, `heavy` means two slots,
 `light` one and the default is `heavy`. Pass the command and its arguments
 without an implicit shell. `--no-wait` and its definite-busy exit code 75
 were already retained (section 2). The worklog value is explicitly supplied
-attribution; do not infer its repository.
+attribution; its repository comes only from the job's checkout or an
+explicit option (#33), never a guess.
 
 This adopts the assistant's recommendation under the user's delegation, not
 an individual user selection. Familiar option names ease updating scripts,
@@ -2443,6 +2455,8 @@ message ClientInfo {
   optional string version = 2;
   ClientOS os = 3;
   ClientArchitecture architecture = 4;
+  // Human-readable OS release, e.g. "26.1" on macOS; absent when unknown.
+  optional string os_version = 5;
 }
 
 message Attribution {
@@ -2939,7 +2953,9 @@ optionals and OS/architecture enums; attribution's eight optional strings
 in proto field order; an unsigned 64-bit extra-map count and each key/value
 string sorted by key's UTF-8 bytes; a runner-presence byte, its incarnation
 ID and a process-presence byte followed by PID/start time when present;
-then optional `retry_of_job_id`. Missing client/attribution messages are
+then optional `retry_of_job_id`. Fields added after canonical-v1 follow only
+when present, each as its name string then its value string, so earlier
+submissions keep their hash: `client.os_version` (API minor 1). Missing client/attribution messages are
 equivalent to empty ones; missing runner/process messages are distinct from
 present empty messages. Reject unknown protobuf fields and populated newer
 fields not explicitly covered by this encoding. Evolve the encoding and
@@ -3114,6 +3130,7 @@ CREATE TABLE jobs (
                       -- explicitly reported only, e.g. 'macos'
   client_architecture TEXT CHECK (client_architecture IN ('arm64', 'amd64', 'other')),
                       -- explicitly reported only, e.g. 'arm64'
+  client_os_version   TEXT,     -- e.g. '26.1'; explicitly reported only
   service_version     TEXT    NOT NULL,  -- broker version at submission, e.g. '2.0.0'
 
   -- Explicit attribution; NULL when not supplied, never inferred ----------
@@ -3437,6 +3454,7 @@ COMMIT;
 |---|---|
 | `ClientInfo.name`, `.version` | `jobs.client_name`, `jobs.client_version`; absent stays `NULL` |
 | `ClientInfo.os`, `.architecture` | `jobs.client_os`, `jobs.client_architecture`; `UNSPECIFIED` stays `NULL`, never inferred |
+| `ClientInfo.os_version` | `jobs.client_os_version`; absent stays `NULL` |
 | `Attribution` known fields (`repository`, `branch`, `worklog`, `agent_session`, `purpose`, `commit_sha`, `build_target`, `build_configuration`) | The matching `jobs` columns; absent stays `NULL`; an empty string is rejected |
 | `Attribution.extra` | `jobs.metadata_json` as a string-valued object; keys colliding with known or reserved fields are rejected (`RESERVED_METADATA_KEY`); size limits enforced (`METADATA_TOO_LARGE`) |
 | `RunnerIncarnation` | Queued runner identity in `queue_entries`; intended grant owner in `reservations` |

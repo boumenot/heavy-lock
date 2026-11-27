@@ -752,12 +752,23 @@ public nonisolated struct Heavylock_V2_ClientInfo: Sendable {
 
   public var architecture: Heavylock_V2_ClientArchitecture = .unspecified
 
+  /// Human-readable OS release, e.g. "26.1" on macOS; absent when unknown.
+  public var osVersion: String {
+    get {_osVersion ?? String()}
+    set {_osVersion = newValue}
+  }
+  /// Returns true if `osVersion` has been explicitly set.
+  public var hasOsVersion: Bool {self._osVersion != nil}
+  /// Clears the value of `osVersion`. Subsequent reads from it will return its default value.
+  public mutating func clearOsVersion() {self._osVersion = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _name: String? = nil
   fileprivate var _version: String? = nil
+  fileprivate var _osVersion: String? = nil
 }
 
 public nonisolated struct Heavylock_V2_Attribution: Sendable {
@@ -2563,7 +2574,7 @@ nonisolated extension Heavylock_V2_ErrorReason: SwiftProtobuf._ProtoNameProvidin
 
 nonisolated extension Heavylock_V2_ClientInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ClientInfo"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{1}version\0\u{1}os\0\u{1}architecture\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{1}version\0\u{1}os\0\u{1}architecture\0\u{3}os_version\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2575,6 +2586,7 @@ nonisolated extension Heavylock_V2_ClientInfo: SwiftProtobuf.Message, SwiftProto
       case 2: try { try decoder.decodeSingularStringField(value: &self._version) }()
       case 3: try { try decoder.decodeSingularEnumField(value: &self.os) }()
       case 4: try { try decoder.decodeSingularEnumField(value: &self.architecture) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self._osVersion) }()
       default: break
       }
     }
@@ -2597,6 +2609,9 @@ nonisolated extension Heavylock_V2_ClientInfo: SwiftProtobuf.Message, SwiftProto
     if self.architecture != .unspecified {
       try visitor.visitSingularEnumField(value: self.architecture, fieldNumber: 4)
     }
+    try { if let v = self._osVersion {
+      try visitor.visitSingularStringField(value: v, fieldNumber: 5)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -2605,6 +2620,7 @@ nonisolated extension Heavylock_V2_ClientInfo: SwiftProtobuf.Message, SwiftProto
     if lhs._version != rhs._version {return false}
     if lhs.os != rhs.os {return false}
     if lhs.architecture != rhs.architecture {return false}
+    if lhs._osVersion != rhs._osVersion {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

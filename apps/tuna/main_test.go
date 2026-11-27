@@ -51,6 +51,9 @@ func TestDispatch(t *testing.T) {
 		{name: "bad service port", args: []string{"service", "--port", "0"}, code: 64, wantError: "invalid service arguments"},
 		{name: "bad weight", args: []string{"--port", "1", "--weight", "0", "--", "echo"}, code: 64, wantError: "--weight"},
 		{name: "bad worklog", args: []string{"--port", "1", "--worklog", "x", "--", "echo"}, code: 64, wantError: "--worklog"},
+		{name: "bare worklog repository", args: []string{"--port", "1", "--worklog", "heavy-lock#3", "--", "echo"}, code: 64, wantError: "--worklog"},
+		{name: "bad repository", args: []string{"--port", "1", "--repository", "heavy-lock", "--", "echo"}, code: 64, wantError: "--repository must be"},
+		{name: "duplicate repository", args: []string{"--port", "1", "--repository", "a/b", "--repository=a/b", "--", "echo"}, code: 64, wantError: "once"},
 		{name: "too many retries", args: []string{"--port", "1", "--retries", "4", "--", "echo"}, code: 64, wantError: "--retries"},
 		{name: "negative retries", args: []string{"--port", "1", "--retries=-1", "--", "echo"}, code: 64, wantError: "--retries"},
 		{name: "duplicate weight", args: []string{"--port", "1", "--weight", "1", "--weight=2", "--", "echo"}, code: 64, wantError: "once"},
@@ -80,16 +83,25 @@ func TestDispatch(t *testing.T) {
 func TestDispatchRunnerOptions(t *testing.T) {
 	var r recorded
 	var stderr bytes.Buffer
-	args := []string{"--port=49790", "--weight", "light", "--worklog=13", "--no-wait", "--retries", "3", "--", "make", "--", "-j"}
+	args := []string{"--port=49790", "--weight", "light", "--worklog=13", "--repository", "github.com/boumenot/heavy-lock", "--no-wait", "--retries", "3", "--", "make", "--", "-j"}
 	if got := dispatch(args, &bytes.Buffer{}, &stderr, r.launcher()); got != 0 {
 		t.Fatalf("exit code = %d; stderr = %q", got, stderr.String())
 	}
 	o := r.runner
-	if o == nil || o.Port != 49790 || o.Weight != runner.LightWeight || o.Worklog != "13" || !o.NoWait || o.Retries != 3 {
+	if o == nil || o.Port != 49790 || o.Weight != runner.LightWeight || o.Attribution.Worklog == nil || o.Attribution.Worklog.String() != "13" ||
+		o.Attribution.Repository == nil || o.Attribution.Repository.String() != "github.com/boumenot/heavy-lock" || !o.NoWait || o.Retries != 3 {
 		t.Fatalf("options = %+v", o)
 	}
 	if !reflect.DeepEqual(o.Command, []string{"make", "--", "-j"}) {
 		t.Fatalf("command = %q; arguments after the first -- belong to the command", o.Command)
+	}
+
+	r = recorded{}
+	if got := dispatch([]string{"--port", "1", "--worklog", "ghe.example/org/plans#4", "--", "echo"}, &bytes.Buffer{}, &stderr, r.launcher()); got != 0 {
+		t.Fatalf("exit code = %d; stderr = %q", got, stderr.String())
+	}
+	if w := r.runner.Attribution.Worklog; w == nil || w.URL() != "https://ghe.example/org/plans/issues/4" || r.runner.Attribution.Repository != nil {
+		t.Fatalf("qualified worklog options = %+v", r.runner.Attribution)
 	}
 
 	r = recorded{}

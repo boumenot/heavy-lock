@@ -88,6 +88,8 @@ func TestCanonicalSubmitDetectsConflicts(t *testing.T) {
 		{name: "optional presence", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Cwd = nil }},
 		{name: "metadata", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Attribution.Extra["a"] = "changed" }},
 		{name: "runner incarnation", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Runner.Process.StartTimeUnixNs++ }},
+		{name: "os version", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Client.OsVersion = proto.String("26.1") }},
+		{name: "empty os version", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Client.OsVersion = proto.String("") }},
 		{name: "retry lineage", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.RetryOfJobId = proto.String("predecessor") }},
 	}
 	for _, tt := range tests {

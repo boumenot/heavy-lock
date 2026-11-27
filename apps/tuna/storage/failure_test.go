@@ -302,7 +302,7 @@ func TestSchemaAndConnectionConfiguration(t *testing.T) {
 }
 
 func TestInvalidFreshRequestsNeverCommitBusyKey(t *testing.T) {
-	for _, scenario := range []string{"oversized metadata", "reserved metadata", "empty attribution", "invalid runner", "invalid command", "zero weight"} {
+	for _, scenario := range []string{"oversized metadata", "reserved metadata", "reserved os version", "empty os version", "empty attribution", "invalid runner", "invalid command", "zero weight"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := setup(t)
 			req := f.request()
@@ -314,6 +314,10 @@ func TestInvalidFreshRequestsNeverCommitBusyKey(t *testing.T) {
 				}
 			case "reserved metadata":
 				req.Attribution = &pb.Attribution{Extra: map[string]string{"metadata_json": "hidden"}}
+			case "reserved os version":
+				req.Attribution = &pb.Attribution{Extra: map[string]string{"client_os_version": "26.1"}}
+			case "empty os version":
+				req.Client = &pb.ClientInfo{OsVersion: proto.String("")}
 			case "empty attribution":
 				req.Attribution = &pb.Attribution{Repository: proto.String("")}
 			case "invalid runner":

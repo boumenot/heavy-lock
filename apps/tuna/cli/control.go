@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
 	"io"
 	"strconv"
 	"strings"
@@ -186,10 +187,44 @@ func printJob(w io.Writer, job *pb.Job) error {
 	return err
 }
 
+// printJobDetails adds the job's recorded attribution and client, one
+// "  label: value" line each, omitting values that were not recorded.
+func printJobDetails(w io.Writer, job *pb.Job) error {
+	a := job.Attribution
+	var lines [][2]string
+	add := func(label, value string) {
+		if value != "" {
+			lines = append(lines, [2]string{label, value})
+		}
+	}
+	if a.GetRepository() != "" {
+		add("Repository", attribution.Repository{Host: a.GetExtra()[attribution.RepositoryHostKey], Path: a.GetRepository()}.String())
+	}
+	add("Branch", a.GetBranch())
+	add("Commit", a.GetCommitSha())
+	if link, ok := attribution.LinkWorklog(a); ok {
+		add("Worklog", strings.TrimSpace(link.Label+" "+link.URL))
+	}
+	if a.GetAgentSession() != "" {
+		add("Agent session", strings.TrimSpace(a.GetAgentSession()+" "+attribution.SessionLink(a)))
+	}
+	add("Client", attribution.ClientText(job.Client))
+	add("Cwd", job.GetCwd())
+	for _, line := range lines {
+		if _, err := fmt.Fprintf(w, "  %s: %s\n", line[0], line[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func printResult(w io.Writer, result proto.Message) error {
 	switch value := result.(type) {
 	case *pb.Job:
-		return printJob(w, value)
+		if err := printJob(w, value); err != nil {
+			return err
+		}
+		return printJobDetails(w, value)
 	case *pb.Queue:
 		if _, err := fmt.Fprintf(w, "Queue: %d jobs; state: %s; head blocked=%s\n", len(value.Jobs),
 			enumName(value.QueueState.String(), "QUEUE_STATE_"), value.HeadBlockedReason); err != nil {
