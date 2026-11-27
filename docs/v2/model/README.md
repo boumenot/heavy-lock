@@ -36,11 +36,11 @@ nix develop -c bash -c \
 
 Each committed `.cfg` describes its bounds. `check.py` uses one worker and a
 temporary state directory, records the complete TLC log, and rejects parse
-errors, incomplete runs, wrong exit codes or unexpected invariants. Positive
+errors, incomplete runs, wrong exit codes or unexpected properties. Positive
 cases require TLC exit 0 and a completed search. Negative witnesses require
-exit 12 and the named deliberately violated invariant: a successful wrapper
-exit means that the intended trace was found, **not** that the invariant is
-true.
+exit 12 and the named deliberately violated invariant; the blocking-runner
+mutation requires exit 13 and a temporal violation. A successful wrapper exit
+means the intended trace was found, **not** that the property is true.
 
 Run CPU- or memory-heavy checks, full suites, and any command that may load
 the machine for more than a minute through the shared heavy-work gate.
@@ -193,6 +193,90 @@ rule, a submission is queued unregistered with grace running until its first
 disconnected queued state. Starting connected therefore skips only that
 prefix; an unregistered submission behaves like a modeled disconnect and is
 never reserved before it registers.
+
+## Descendant scan barrier
+
+`DescendantScan.tla` isolates one already-fenced job, its root and one possible
+child. It checks that a known live child or a captured stable live child cannot
+be unreserved, that an unsuccessful scan cannot authorize release, that an
+unstable identity cannot become known, and that committed identities survive
+a broker crash. Exit verification is sound by assumption. A successful scan
+may omit a live child; a crash or storage reopen may discard an uncommitted
+observation. These are explicit best-effort limits, not exit evidence.
+
+`StartScan` models the in-flight state in `scheduler/discovery.go`; snapshot
+steps model stable, unstable or omitted results. `FinishScan` corresponds to
+the `TrackProcess` transaction before opening the barrier. `FailScan`,
+`RejectUnstable`, `Crash`, `Restart`, `StorageFailure` and `ReopenStorage`
+model loss, errors and volatile-state reset. `VerifyRoot`, `VerifyChild` and
+`Release` correspond to `scheduler/launch.go` and the storage release
+recheck. The existing no-future-launch fence and outcome checks are assumed
+already satisfied; the no-launch exception is outside this focused model.
+Process identity primitives, multiple jobs, full ancestry traversal, signal
+delivery and the separate runner/broker termination interlock are abstracted
+away.
+
+The liveness property requires eventual release once both processes have
+exited. It assumes bounded crashes and scan/storage failures, weak fairness
+for recovery, sampling and verification, and strong fairness for release;
+it does not assume that a live process eventually exits.
+`DescendantScanQuick` has no crashes or failures. `DescendantScanSafety`
+allows one broker crash, one scan failure and one storage failure, and is
+part of `dart tool/dev.dart test tuna` along with mutation and reachability
+witnesses.
+
+On macOS on 2026-11-26, the quick safety/liveness check explored 367 generated
+and 153 distinct states with no error. The crash/failure safety and liveness
+check explored 6,289 generated and 2,038 distinct states with no error.
+Removing the in-flight release guard produced the expected
+`NoCapturedLiveUnreserved` counterexample (1,618
+generated / 668 distinct states): an earlier scan omits a child, a later
+scan captures it, and root-exit evidence releases before the capture is
+committed. Allowing an unstable child into tracking produced the expected
+`NoUnstableDescendants` counterexample (36 / 27 states). These are checks of
+the bounded model, not proofs of the implementation; deterministic Go tests
+exercise the corresponding release race and unstable identities. Separate
+witnesses reached stable capture, a restart with a committed child and scan
+failure; TLC coverage showed every modeled action enabled.
+
+## Finish-report cancellation
+
+`RunnerFinish.tla` starts after an eligible command exits, with its finish RPC
+pending. It separates the broker's finish commit, cancellation commit and
+release event from delivery of the finish reply and event. The runner can
+handle cancellation while the reply is withheld, acknowledge it independently,
+and retain an early finished event until it can decide whether to retry.
+`HandleFinishReply` also models a cancellation found in the returned job.
+These actions map to `runner/attempt.go`; the deterministic runner regressions
+cover a blocked reply, cancellation in the reply and a finished event arriving
+first. An additional runner test covers cancellation first observed in a
+different lifecycle reply while pending reports are drained.
+
+The model checks that acknowledgment requires a request, a runner cannot
+return before finishing the report, and retry requires a finished event and
+no committed cancellation. Under weak fairness for cancellation handling and
+acknowledgment, a withheld finish reply cannot indefinitely block the
+acknowledgment. This assumes the cancellation event reaches a live runner
+and the acknowledgment can commit; it does not model actual deadlines,
+failed RPCs, other lifecycle reports, recovery's `UNKNOWN` outcome, process
+termination, broker crashes or multiple jobs.
+
+The bounded check explored 128 generated / 81 distinct states with no error.
+Blocking the event loop produced the expected temporal counterexample:
+cancellation commits while the finish reply is withheld and remains
+unacknowledged. Dropping an early finished event violated
+`NoDroppedEarlyFinal` (12 / 12 states). Separate witnesses reached an
+acknowledgment and a finished event while the reply was pending; coverage
+showed every modeled action enabled. These are model results, not proof of
+the implementation. The cases run in `dart tool/dev.dart test tuna`; run
+them alone with:
+
+```bash
+nix develop -c env JAVA_TOOL_OPTIONS=-Xmx256m \
+  python3 docs/v2/model/check.py RunnerFinishSafety RunnerFinishBlocking \
+  RunnerFinishDropped RunnerFinishEarlyAck RunnerFinishEarlyFinal \
+  --logs /tmp/heavy-lock-runner-finish
+```
 
 ## Invariants and profiles
 

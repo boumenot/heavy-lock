@@ -30,11 +30,7 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89a
 var extraPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
 
 func validRunner(r *pb.RunnerIncarnation) bool {
-	if r == nil || !uuidPattern.MatchString(r.IncarnationId) {
-		return false
-	}
-	_, err := processStart(r.Process)
-	return err == nil
+	return r != nil && uuidPattern.MatchString(r.IncarnationId) && validProcess(r.Process)
 }
 
 func validateSubmission(req *pb.SubmitJobRequest) error {

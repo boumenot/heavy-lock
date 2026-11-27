@@ -1,5 +1,5 @@
 // Package jobmetrics observes process resources for historical summaries.
-// Its observations are not evidence for admission, signaling or release.
+// Metrics do not prove process exit or authorize signaling or release.
 package jobmetrics
 
 import (
@@ -32,6 +32,9 @@ type Process struct {
 type Snapshot struct {
 	Processes            []Process
 	IncompletenessReason string
+	// IdentityFailure distinguishes an unusable identity table from gaps
+	// confined to CPU or memory measurements.
+	IdentityFailure string
 }
 
 type Source interface {

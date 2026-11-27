@@ -84,4 +84,7 @@ func TestReplacedStartTimeIsExited(t *testing.T) {
 	if _, err := Exited(&pb.ProcessIdentity{Pid: 0}); err == nil {
 		t.Fatal("invalid identity accepted")
 	}
+	if _, err := Exited(&pb.ProcessIdentity{Pid: self.Pid}); err == nil {
+		t.Fatal("identity without a start time was treated as exited")
+	}
 }

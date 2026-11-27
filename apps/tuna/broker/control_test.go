@@ -50,6 +50,13 @@ func TestControlReadinessPauseAndSnapshot(t *testing.T) {
 	if err != nil || st.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED {
 		t.Fatalf("resume = %v, %v", st, err)
 	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, err = c.GetHealth(ctx, &pb.GetHealthRequest{})
+	if err != nil || !h.Live || h.Ready || h.StorageDetail == nil {
+		t.Fatalf("storage failure health = %v, %v", h, err)
+	}
 }
 
 func TestControlRejectsInvalidTimestampBounds(t *testing.T) {

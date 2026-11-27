@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -86,7 +87,9 @@ func freePort(t *testing.T) int {
 type testBroker struct {
 	port   int
 	sched  *scheduler.Scheduler
+	store  *storage.Store
 	server *transport.Server
+	domain *composite
 	stop   func()
 }
 
@@ -131,7 +134,7 @@ func startBrokerAt(t *testing.T, capacity uint32, path string, port int) *testBr
 	wg.Add(2)
 	go func() { defer wg.Done(); maintain(ctx, sched, b, t.Logf) }()
 	go func() { defer wg.Done(); b.resources.run(ctx, t.Logf) }()
-	tb := &testBroker{port: server.Port(), sched: sched, server: server}
+	tb := &testBroker{port: server.Port(), sched: sched, store: store, server: server, domain: b}
 	var once sync.Once
 	tb.stop = func() {
 		once.Do(func() {
@@ -242,6 +245,131 @@ func TestRunnerPropagatesOutcomesAndReleasesCapacity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLiveDescendantRemainsReservedAfterRootExit(t *testing.T) {
+	b := startBroker(t, 2)
+	dir := t.TempDir()
+	childStop := filepath.Join(dir, "stop-child")
+	rootStop := filepath.Join(dir, "stop-root")
+	childPIDFile := filepath.Join(dir, "child-pid")
+	inv := b.start(t, nil, "/bin/sh", "-c",
+		`/bin/sh -c 'while [ ! -e "$0" ]; do /bin/sleep 0.1; done' "$1" >/dev/null 2>&1 & echo $! > "$2"; while [ ! -e "$3" ]; do /bin/sleep 0.1; done`,
+		"workload", childStop, childPIDFile, rootStop)
+	waited := false
+	var childIdentity *pb.ProcessIdentity
+	t.Cleanup(func() {
+		if err := os.WriteFile(rootStop, nil, 0o600); err != nil {
+			t.Errorf("release root: %v", err)
+		}
+		if err := os.WriteFile(childStop, nil, 0o600); err != nil {
+			t.Errorf("release descendant: %v", err)
+		}
+		if !waited {
+			select {
+			case <-inv.done:
+			case <-time.After(10 * time.Second):
+				t.Error("workload runner did not exit after cleanup")
+			}
+		}
+		if childIdentity != nil {
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				exited, err := (procid.Probe{}).Exited(context.Background(), childIdentity)
+				if err != nil {
+					t.Errorf("check descendant cleanup: %v", err)
+					return
+				}
+				if exited {
+					return
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			t.Error("descendant did not exit after cleanup")
+		}
+	})
+	id := inv.log.jobID(t)
+	var childPID int64
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(childPIDFile); err == nil {
+			childPID, err = strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+			if err == nil && childPID > 0 {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if childPID == 0 {
+		t.Fatal("workload did not report its descendant PID")
+	}
+	var err error
+	if childIdentity, err = procid.Of(int(childPID)); err != nil {
+		t.Fatalf("identify workload descendant: %v", err)
+	}
+	var tracked []storage.Process
+	for time.Now().Before(deadline) {
+		err := b.store.View(context.Background(), func(r *storage.Reader) error {
+			var err error
+			tracked, err = r.Processes(id)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, p := range tracked {
+			found = found || p.Role == "descendant" && proto.Equal(p.Identity, childIdentity)
+		}
+		if found {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	found := false
+	for _, p := range tracked {
+		found = found || p.Role == "descendant" && proto.Equal(p.Identity, childIdentity)
+	}
+	if !found {
+		t.Fatalf("live descendant %d was not tracked: %+v", childPID, tracked)
+	}
+	if err := os.WriteFile(rootStop, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code := inv.wait(t)
+	waited = true
+	if code != 0 {
+		t.Fatalf("root exit = %d; log:\n%s", code, inv.log.String())
+	}
+	time.Sleep(2 * MaintenanceInterval)
+	childExited, err := (procid.Probe{}).Exited(context.Background(), childIdentity)
+	if err != nil || childExited {
+		t.Fatalf("descendant was not live after root exit: exited=%v err=%v", childExited, err)
+	}
+	j, err := b.sched.Job(context.Background(), id)
+	if err != nil || j.State == pb.JobState_JOB_STATE_FINISHED {
+		t.Fatalf("live reparented descendant did not retain the reservation: job=%v err=%v", j, err)
+	}
+	if err := os.WriteFile(childStop, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.waitState(t, id, pb.JobState_JOB_STATE_FINISHED)
+	if err := b.store.View(context.Background(), func(r *storage.Reader) error {
+		var err error
+		tracked, err = r.Processes(id)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range tracked {
+		if p.Role == "descendant" && proto.Equal(p.Identity, childIdentity) {
+			if p.ExitedVerifiedAt == nil {
+				t.Fatal("release did not retain verified descendant exit evidence")
+			}
+			return
+		}
+	}
+	t.Fatal("finished job lost its known descendant")
 }
 
 func TestFinishedJobRetainsRuntimeAndDeclaredMetadata(t *testing.T) {
@@ -536,6 +664,9 @@ func TestCancelRunningJobForcesCommand(t *testing.T) {
 	j := b.waitState(t, id, pb.JobState_JOB_STATE_FINISHED)
 	if j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_SIGNALED || j.CancelRequestedAt == nil {
 		t.Fatalf("job %+v", j)
+	}
+	if j.Resources == nil || j.Resources.CpuTime == nil {
+		t.Fatalf("cancelled job lost the root CPU measurement: %+v", j.Resources)
 	}
 }
 

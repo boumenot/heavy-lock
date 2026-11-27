@@ -56,6 +56,17 @@ func (r *Reader) ActiveJobs() ([]*pb.Job, error) {
 	return jobs, nil
 }
 
+// UnreconciledReservations conservatively counts active reservations from an
+// earlier broker run and current reservations with unresolved cleanup evidence.
+func (r *Reader) UnreconciledReservations(run int64) (uint32, error) {
+	var count uint32
+	err := r.scan(`SELECT count(*) FROM reservations r JOIN jobs j ON j.id=r.job_id
+		WHERE r.released_at_ns IS NULL AND (r.service_run_id!=? OR j.outcome_kind IS NOT NULL
+			OR j.cancel_requested_at_ns IS NOT NULL OR j.broker_termination_at_ns IS NOT NULL)`,
+		[]any{run}, &count)
+	return count, err
+}
+
 type Grace struct {
 	ElapsedUS               int64
 	StartedAt, ServiceRunID *int64

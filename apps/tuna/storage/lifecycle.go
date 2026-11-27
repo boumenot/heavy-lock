@@ -110,12 +110,28 @@ func (tx *Tx) FenceRunnerTerminated(id string, runner *pb.RunnerIncarnation) err
 		return ErrIdentity
 	}
 	if res.FencedAt != nil {
+		if res.ClaimedAt == nil && res.NoLaunchProof == nil {
+			if err := tx.exec("UPDATE reservations SET no_launch_proof='claim_prevented' WHERE job_id=?", id); err != nil {
+				return err
+			}
+			return tx.jobChanged(id)
+		}
 		return nil
 	}
-	if err := tx.exec("UPDATE reservations SET fenced_at_ns=?,fence_reason='runner_terminated' WHERE job_id=?", tx.at, id); err != nil {
+	var proof any
+	if res.ClaimedAt == nil {
+		proof = "claim_prevented"
+	}
+	if err := tx.exec(`UPDATE reservations SET fenced_at_ns=?,fence_reason='runner_terminated',
+		no_launch_proof=? WHERE job_id=?`, tx.at, proof, id); err != nil {
 		return err
 	}
 	return tx.jobChanged(id)
+}
+
+func validProcess(p *pb.ProcessIdentity) bool {
+	_, err := processStart(p)
+	return err == nil
 }
 
 func (tx *Tx) started(j *pb.Job, res *Reservation, p *pb.ProcessIdentity) error {
@@ -189,7 +205,7 @@ func (tx *Tx) ReportFinished(id, grant string, runner *pb.RunnerIncarnation, p *
 		state, strings.ToLower(strings.TrimPrefix(outcome.Kind.String(), "OUTCOME_KIND_")), outcome.ExitCode, outcome.SignalNumber, outcome.SignalName, outcome.Detail, id); err != nil {
 		return err
 	}
-	return tx.jobChanged(id)
+	return tx.jobAndStatusChanged(id)
 }
 
 func (tx *Tx) ReportLaunchFailed(id, grant string, runner *pb.RunnerIncarnation, detail string, cancelled bool) error {
@@ -220,7 +236,7 @@ func (tx *Tx) ReportLaunchFailed(id, grant string, runner *pb.RunnerIncarnation,
 		strings.ToLower(strings.TrimPrefix(kind.String(), "OUTCOME_KIND_")), detail, id); err != nil {
 		return err
 	}
-	return tx.jobChanged(id)
+	return tx.jobAndStatusChanged(id)
 }
 
 func (tx *Tx) TrackProcess(id string, p *pb.ProcessIdentity, role string) error {
@@ -242,7 +258,8 @@ func (tx *Tx) TrackProcess(id string, p *pb.ProcessIdentity, role string) error 
 		if *existing != role {
 			return ErrIdentity
 		}
-		return nil
+		return tx.exec(`UPDATE job_processes SET last_seen_at_ns=?,exited_verified_at_ns=NULL
+			WHERE job_id=? AND pid=? AND start_time_ns=?`, tx.at, id, p.Pid, start)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -279,8 +296,8 @@ func (tx *Tx) VerifyProcessExited(id string, p *pb.ProcessIdentity) error {
 }
 
 // Release rechecks durable fencing and all tracked non-runner processes.
-// The caller must also establish that discovery is complete and no untracked
-// descendants can appear; the database cannot prove OS discovery completeness.
+// The caller must serialize positive discovery with release; untracked
+// descendants remain an accepted limitation of best-effort OS discovery.
 func (tx *Tx) Release(id, reason string) error {
 	j, err := tx.Job(id)
 	if err != nil {
@@ -326,6 +343,9 @@ func (tx *Tx) Release(id, reason string) error {
 	case "recovery_verified_gone":
 		if j.Outcome == nil || j.Outcome.Kind != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN {
 			return ErrTransition
+		}
+		if j.Process == nil && res.NoLaunchProof == nil {
+			return ErrUnreconciled
 		}
 	default:
 		return errors.New("invalid release reason")
@@ -381,7 +401,7 @@ func (tx *Tx) Cancel(id string, reason *string) error {
 			return tx.Release(id, "cancelled_before_start")
 		}
 	}
-	return tx.jobChanged(id)
+	return tx.jobAndStatusChanged(id)
 }
 
 func (tx *Tx) acknowledge(j *pb.Job) error {
@@ -467,7 +487,7 @@ func (tx *Tx) RecordTermination(id string, reason pb.BrokerTermination_Reason) e
 		strings.ToLower(strings.TrimPrefix(reason.String(), "REASON_")), id); err != nil {
 		return err
 	}
-	return tx.jobChanged(id)
+	return tx.jobAndStatusChanged(id)
 }
 
 func (tx *Tx) MarkUnknown(id string, detail *string) error {
@@ -482,7 +502,7 @@ func (tx *Tx) MarkUnknown(id string, detail *string) error {
 	if err := tx.exec("UPDATE jobs SET outcome_kind='unknown',outcome_detail=? WHERE id=?", detail, id); err != nil {
 		return err
 	}
-	return tx.jobChanged(id)
+	return tx.jobAndStatusChanged(id)
 }
 
 func (tx *Tx) SaveResources(id string, s *pb.ResourceSummary) error {

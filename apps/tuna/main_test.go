@@ -126,6 +126,57 @@ func TestDispatchService(t *testing.T) {
 	}
 }
 
+func TestDispatchServiceLaunchTimeout(t *testing.T) {
+	tests := []struct {
+		value string
+		code  int
+	}{
+		{value: "7s", code: 0},
+		{value: "0s", code: usageExitCode},
+		{value: "-1s", code: usageExitCode},
+		{value: "1500us", code: usageExitCode},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			var r recorded
+			var stderr bytes.Buffer
+			code := dispatch([]string{"service", "--launch-timeout", tt.value}, &bytes.Buffer{}, &stderr, r.launcher())
+			if code != tt.code {
+				t.Fatalf("exit code = %d, want %d; stderr = %q", code, tt.code, stderr.String())
+			}
+			if (r.service != nil) != (tt.code == 0) {
+				t.Fatalf("service options = %+v", r.service)
+			}
+			if tt.code == 0 && r.service.LaunchTimeout != 7*time.Second {
+				t.Fatalf("launch timeout = %v", r.service.LaunchTimeout)
+			}
+		})
+	}
+}
+
+func TestDispatchServiceCancelTimeouts(t *testing.T) {
+	for _, name := range []string{"--cancel-ack-timeout", "--cancel-completion-timeout"} {
+		for _, value := range []string{"7s", "0s", "-1s", "1500us"} {
+			t.Run(name+"/"+value, func(t *testing.T) {
+				var r recorded
+				var stderr bytes.Buffer
+				code := dispatch([]string{"service", name, value}, &bytes.Buffer{}, &stderr, r.launcher())
+				want := usageExitCode
+				if value == "7s" {
+					want = 0
+				}
+				if code != want || (r.service != nil) != (want == 0) {
+					t.Fatalf("exit code = %d, options = %+v, stderr = %q", code, r.service, stderr.String())
+				}
+				if want == 0 && (name == "--cancel-ack-timeout" && r.service.CancelAckTimeout != 7*time.Second ||
+					name == "--cancel-completion-timeout" && r.service.CancelCompletionTimeout != 7*time.Second) {
+					t.Fatalf("service timeouts = %+v", r.service)
+				}
+			})
+		}
+	}
+}
+
 type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) {

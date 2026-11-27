@@ -14,6 +14,7 @@ type composite struct {
 	*broker.Control
 	*broker.Runner
 	resources *resourceManager
+	discovery jobmetrics.Source
 }
 
 func newBroker(sched *scheduler.Scheduler, store *storage.Store, hub *broker.Hub, o Options) (*composite, error) {
@@ -35,7 +36,8 @@ func newBroker(sched *scheduler.Scheduler, store *storage.Store, hub *broker.Hub
 	if err != nil {
 		return nil, err
 	}
-	return &composite{Control: control, Runner: runner, resources: resources}, nil
+	return &composite{Control: control, Runner: runner, resources: resources,
+		discovery: jobmetrics.DefaultSource()}, nil
 }
 
 func (c *composite) maintain(ctx context.Context) error { return c.Control.Maintain(ctx) }

@@ -382,7 +382,8 @@ Xcode 27.2 (Swift 6.4.2), Go 1.27.3 and `protoc` 36.2.
 
 ```bash
 tuna service [--port 49783] [--data-dir DIR] [--event-max-age 24h] \
-  [--event-max-count 100000]          # per-user broker; one per user
+  [--event-max-count 100000] [--launch-timeout 30s] \
+  [--cancel-ack-timeout 5s] [--cancel-completion-timeout 30s]  # per-user broker; one per user
 tuna --port 49783 [--weight heavy|light|N] [--repository [HOST/]OWNER/NAME] \
   [--worklog N|[HOST/]OWNER/NAME#N] [--no-wait] [--retries 0-3] \
   -- <command> [arguments...]
@@ -404,7 +405,9 @@ are not provided. The runner:
 - registers a stream with a fresh runner incarnation, waits in the queue
   (or, with `--no-wait`, exits 75 when not admitted), then durably claims
   the grant before it spawns the command once, without a shell. It seals
-  no-future-launch and reports start, finish or launch failure.
+  no-future-launch and reports start, finish or launch failure. Cancellation
+  remains responsive while a claim reply or finish report is delayed; the
+  runner fences its local launch and ignores a late claim reply.
 - sets `TUNA_JOB_ID` to the job ID in the command's environment. A nested
   `tuna` that sees a valid marker runs its command directly, without the
   broker; an invalid marker exits 64. The v1 `HEAVY_LOCK_HELD` marker is
@@ -423,11 +426,26 @@ are not provided. The runner:
   stop the command; its exit status still propagates, and the reservation
   stays held until the broker verifies the exit.
 
-For admission, cancellation and release, only the command root is tracked;
-process identity uses darwin `sysctl`. The observational resource sampler
-does not make descendants safe to signal or prove that they have exited.
-The advertised 30-second launch-investigation timeout does not yet trigger
-investigation; its clock and restart reconstruction are tracked in #15.
+The configurable launch-investigation clock starts at reservation commit.
+When it expires, an unresolved launch without a definite outcome, reported
+root or no-launch proof is marked `UNKNOWN`; the reservation remains held.
+Cancellation has separate acknowledgment and completion deadlines. These
+monotonic clocks restart their full current interval once a restarted broker
+is ready; downtime is not charged. A timeout is never proof of exit.
+
+For release, the broker separately discovers stable descendants using Darwin
+PID/start identities and persists them. A failed or unstable identity scan
+holds the reservation; a missing process in a scan is not exit evidence.
+Discovery is best effort, so a descendant missed before reparenting or a
+broker crash can survive release. The runner force-stops only the root on
+cancellation. The broker records takeover triggers and logs that it cannot
+safely signal: identity-bound broker signaling and runner/broker termination
+coordination are not implemented. A reservation without sufficient exit or
+no-launch evidence stays held, including a claimed job whose root is unknown.
+Process-observation failures are logged without replacing a reported native
+outcome. The reported unreconciled count includes every unreleased reservation
+from an earlier broker run and current reservations with outcome, cancellation
+or takeover evidence.
 Service identity, REST/CORS and submission equivalence are specified in the
 [v2 design](docs/v2-design.md#6-apis-port-and-local-access-risks).
 Both APIs are unauthenticated; any local process, and potentially any web

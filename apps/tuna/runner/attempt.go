@@ -23,6 +23,17 @@ type streamMsg struct {
 	err error
 }
 
+type reportResult struct {
+	name string
+	job  *pb.Job
+	err  error
+}
+
+type claimResult struct {
+	response *pb.ClaimLaunchResponse
+	err      error
+}
+
 // attempt is one submission and, at most, one spawn of its command. All of
 // its state is owned by the loop goroutine, so the spawn and every decision
 // not to spawn are serialized.
@@ -43,12 +54,19 @@ type attempt struct {
 	cmd        *exec.Cmd
 	proc       *pb.ProcessIdentity
 	exited     chan childExit
+	reports    chan reportResult
+	pending    int
+	claims     chan claimResult
+	stopClaim  context.CancelFunc
 
-	ran        bool // the command was spawned and has exited
-	code       int
-	awaitFinal time.Time // non-zero while waiting for release before a retry
-	heartbeat  time.Duration
-	position   *uint32
+	ran                    bool // the command was spawned and has exited
+	code                   int
+	finishPending          bool
+	retryEligible          bool
+	finishedWhileReporting *pb.Job
+	awaitFinal             time.Time // non-zero while waiting for release before a retry
+	heartbeat              time.Duration
+	position               *uint32
 }
 
 func (r *runner) attempt(ctx context.Context, retryOf string, noWait bool) result {
@@ -138,8 +156,13 @@ func (a *attempt) loop(ctx context.Context) result {
 		lastMsg      = time.Now()
 		failingSince time.Time
 		backoff      = 50 * time.Millisecond
+		interrupt    = a.r.interrupt.Done()
 	)
-	defer func() { stop() }()
+	defer func() {
+		stop()
+		a.cancelClaim()
+		a.waitReports(ctx)
+	}()
 	connect := func() {
 		stop()
 		msgs, stop = a.open(ctx)
@@ -181,7 +204,29 @@ func (a *attempt) loop(ctx context.Context) result {
 			if res, done := a.childExited(exit); done {
 				return res
 			}
-		case <-a.r.interrupt.Done():
+		case report := <-a.reports:
+			a.finishReport(report)
+			if reportsCancellation(report) {
+				if res, done := a.cancel(ctx); done {
+					return res
+				}
+			}
+			if report.name == "finish" {
+				if res, done := a.finishReported(report.err); done {
+					return res
+				}
+				interrupt = a.r.interrupt.Done()
+			}
+		case claim := <-a.claims:
+			if res, done := a.claimCompleted(ctx, claim); done {
+				return res
+			}
+		case <-interrupt:
+			if a.finishPending {
+				interrupt = nil
+				continue
+			}
+			a.cancelClaim()
 			return a.abandon(ctx)
 		case <-tick.C:
 			if msgs != nil && time.Since(lastMsg) > 3*a.heartbeat {
@@ -255,7 +300,7 @@ func (a *attempt) handle(ctx context.Context, ev *pb.JobEvent) (result, bool) {
 		if a.grant == nil {
 			a.grant = e.Granted
 		}
-		return a.launch(ctx)
+		return a.launch()
 	case *pb.JobEvent_CancelRequested:
 		return a.cancel(ctx)
 	case *pb.JobEvent_Finished:
@@ -305,18 +350,44 @@ func (a *attempt) apply(ctx context.Context, job *pb.Job) (result, bool) {
 		a.waiting(job.GetQueuePosition(), 0)
 	}
 	if a.grant != nil {
-		return a.launch(ctx)
+		return a.launch()
 	}
 	return result{}, false
 }
 
-func (a *attempt) launch(ctx context.Context) (result, bool) {
-	if a.fenced || a.cancelSeen || a.grant == nil {
+func (a *attempt) launch() (result, bool) {
+	if a.fenced || a.cancelSeen || a.grant == nil || a.claims != nil {
 		return result{}, false
 	}
-	resp, err := retry(a.r.interrupt, a.r.o.ReconnectWindow, func(c context.Context) (*pb.ClaimLaunchResponse, error) {
-		return a.r.client.ClaimLaunch(c, &pb.ClaimLaunchRequest{JobId: a.jobID, GrantId: a.grant.GetGrantId(), Runner: a.r.inc})
-	})
+	// Only the loop can act on a claim; it must stay responsive to
+	// cancellation even while the claim's outcome is ambiguous.
+	claimCtx, stop := context.WithCancel(a.r.interrupt)
+	a.stopClaim = stop
+	a.claims = make(chan claimResult, 1)
+	claims, r, jobID, grant := a.claims, a.r, a.jobID, a.grant.GetGrantId()
+	go func() {
+		resp, err := retry(claimCtx, r.o.ReconnectWindow, func(c context.Context) (*pb.ClaimLaunchResponse, error) {
+			return r.client.ClaimLaunch(c, &pb.ClaimLaunchRequest{JobId: jobID, GrantId: grant, Runner: r.inc})
+		})
+		claims <- claimResult{response: resp, err: err}
+	}()
+	return result{}, false
+}
+
+func (a *attempt) cancelClaim() {
+	if a.stopClaim != nil {
+		a.stopClaim()
+		a.stopClaim = nil
+	}
+	a.claims = nil
+}
+
+func (a *attempt) claimCompleted(ctx context.Context, claim claimResult) (result, bool) {
+	a.cancelClaim()
+	if a.fenced || a.cancelSeen {
+		return result{}, false
+	}
+	resp, err := claim.response, claim.err
 	if err != nil {
 		if _, ok := a.r.interrupted(); ok {
 			return a.abandon(ctx), true
@@ -373,22 +444,61 @@ func (a *attempt) spawn(ctx context.Context) (result, bool) {
 	go func() {
 		a.exited <- waitForCommand(cmd, start, func() { a.r.disarmChild(cmd.Process) }, a.r.logf)
 	}()
-	if _, err := retry(ctx, a.r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
-		return a.r.client.SealLaunch(c, &pb.SealLaunchRequest{JobId: a.jobID, GrantId: a.grant.GetGrantId(), Runner: a.r.inc})
-	}); err != nil {
-		a.r.logf("seal report for job %s not delivered: %s", a.jobID, describe(err))
-	}
+	jobID, grant, r := a.jobID, a.grant.GetGrantId(), a.r
+	a.report("seal", func() (*pb.Job, error) {
+		return retry(ctx, r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
+			return r.client.SealLaunch(c, &pb.SealLaunchRequest{JobId: jobID, GrantId: grant, Runner: r.inc})
+		})
+	})
 	if perr != nil {
 		a.r.logf("could not observe command identity (pid %d): %v; job %s's reservation stays held", cmd.Process.Pid, perr, a.jobID)
 		return result{}, false
 	}
 	a.proc = proc
-	if _, err := retry(ctx, a.r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
-		return a.r.client.ReportStarted(c, &pb.ReportStartedRequest{JobId: a.jobID, GrantId: a.grant.GetGrantId(), Process: proc, Runner: a.r.inc})
-	}); err != nil {
-		a.r.logf("start report for job %s not delivered: %s", a.jobID, describe(err))
-	}
+	a.report("start", func() (*pb.Job, error) {
+		return retry(ctx, r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
+			return r.client.ReportStarted(c, &pb.ReportStartedRequest{JobId: jobID, GrantId: grant, Process: proc, Runner: r.inc})
+		})
+	})
 	return result{}, false
+}
+
+func (a *attempt) report(name string, send func() (*pb.Job, error)) {
+	if a.reports == nil {
+		a.reports = make(chan reportResult, 3)
+	}
+	a.pending++
+	reports := a.reports
+	go func() {
+		job, err := send()
+		reports <- reportResult{name: name, job: job, err: err}
+	}()
+}
+
+func (a *attempt) finishReport(report reportResult) {
+	a.pending--
+	if report.err != nil {
+		if report.name == "finish" {
+			a.r.logf("finish report for job %s not delivered: %s; its reservation stays held until the broker verifies the command exited", a.jobID, describe(report.err))
+		} else {
+			a.r.logf("%s report for job %s not delivered: %s", report.name, a.jobID, describe(report.err))
+		}
+	}
+}
+
+func reportsCancellation(report reportResult) bool {
+	return report.err == nil && report.job != nil && report.job.CancelRequestedAt != nil
+}
+
+func (a *attempt) waitReports(ctx context.Context) {
+	for a.pending > 0 {
+		report := <-a.reports
+		a.finishReport(report)
+		if a.ran && a.claimed && !a.cancelSeen && reportsCancellation(report) {
+			a.cancelSeen = true
+			a.acknowledgeCancellation(ctx)
+		}
+	}
 }
 
 // reportNoLaunch fences the grant with no spawn and reports why.
@@ -408,6 +518,15 @@ func (a *attempt) reportNoLaunch(ctx context.Context, window time.Duration, canc
 	}
 }
 
+func (a *attempt) acknowledgeCancellation(ctx context.Context) {
+	jobID, grant, r := a.jobID, a.grant.GetGrantId(), a.r
+	a.report("cancellation acknowledgment", func() (*pb.Job, error) {
+		return retry(ctx, r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
+			return r.client.AcknowledgeCancel(c, &pb.AcknowledgeCancelRequest{JobId: jobID, GrantId: grant, Runner: r.inc})
+		})
+	})
+}
+
 func (a *attempt) cancel(ctx context.Context) (result, bool) {
 	if a.cancelSeen {
 		return result{}, false
@@ -416,25 +535,25 @@ func (a *attempt) cancel(ctx context.Context) (result, bool) {
 	switch {
 	case a.running:
 		a.r.logf("job %s cancelled; stopping the command", a.jobID)
-		grant := a.grant.GetGrantId()
-		if _, err := retry(ctx, a.r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
-			return a.r.client.AcknowledgeCancel(c, &pb.AcknowledgeCancelRequest{JobId: a.jobID, GrantId: grant, Runner: a.r.inc})
-		}); err != nil {
-			a.r.logf("cancellation acknowledgement for job %s not delivered: %s", a.jobID, describe(err))
+		jobID, grant, r := a.jobID, a.grant.GetGrantId(), a.r
+		// Only the unreaped root can be targeted safely by this runner.
+		if err := r.killChild(a.cmd.Process); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			a.report("cancellation failure", func() (*pb.Job, error) {
+				return retry(ctx, r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
+					return r.client.ReportCancelFailed(c, &pb.ReportCancelFailedRequest{JobId: jobID, GrantId: grant, Runner: r.inc, Error: err.Error()})
+				})
+			})
+		} else {
+			a.acknowledgeCancellation(ctx)
 		}
-		// Signal under the same fence as reaping. Only the root is targeted;
-		// descendant observations are not termination evidence.
-		if err := a.r.killChild(a.cmd.Process); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			if _, rerr := retry(ctx, a.r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
-				return a.r.client.ReportCancelFailed(c, &pb.ReportCancelFailedRequest{JobId: a.jobID, GrantId: grant, Runner: a.r.inc, Error: err.Error()})
-			}); rerr != nil {
-				a.r.logf("cancellation failure report for job %s not delivered: %s", a.jobID, describe(rerr))
-			}
-		}
-	case a.claimed && !a.fenced:
+	case a.claims != nil || a.claimed && !a.fenced:
 		a.fenced = true
+		a.cancelClaim()
+		a.acknowledgeCancellation(ctx)
 		a.reportNoLaunch(ctx, a.r.o.ReconnectWindow, true, "cancelled before launch")
 		return result{code: ExitCancelled, jobID: a.jobID}, true
+	case a.claimed && a.ran:
+		a.acknowledgeCancellation(ctx)
 	default:
 		// Unclaimed: the broker fences the grant itself and finishes the job.
 		a.fenced = true
@@ -446,8 +565,12 @@ func (a *attempt) childExited(exit childExit) (result, bool) {
 	a.running, a.ran = false, true
 	a.r.setChild(nil)
 	if exit.state == nil {
-		a.r.logf("could not wait for command in job %s: %v; its reservation stays held", a.jobID, exit.err)
+		a.r.logf("could not obtain the command's exit status: %v; job %s's reservation stays held", exit.err, a.jobID)
 		return result{code: ExitSoftware, jobID: a.jobID}, true
+	}
+	var exitError *exec.ExitError
+	if exit.err != nil && !errors.As(exit.err, &exitError) {
+		a.r.logf("waiting for the command reported an I/O error: %v", exit.err)
 	}
 	if exit.timingErr != nil {
 		a.r.logf("could not observe root runtime for job %s: %v", a.jobID, exit.timingErr)
@@ -457,23 +580,33 @@ func (a *attempt) childExited(exit childExit) (result, bool) {
 	if a.proc == nil {
 		return result{code: code, jobID: a.jobID}, true
 	}
-	// The exit status is known, so a later runner signal must not drop the
-	// report that lets the broker release the reservation.
-	if _, err := retry(context.WithoutCancel(a.r.interrupt), a.r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
-		return a.r.client.ReportFinished(c, &pb.ReportFinishedRequest{
-			JobId: a.jobID, GrantId: a.grant.GetGrantId(), Outcome: outcome, Runner: a.r.inc, Process: a.proc,
-			Elapsed: optionalMilliseconds(exit.elapsedMs), RootCpuTime: optionalMilliseconds(exit.rootCPUMs),
+	a.finishPending = true
+	a.retryEligible = a.r.o.Retries > 0 && code != 0 && outcome.GetKind() == pb.OutcomeKind_OUTCOME_KIND_EXITED &&
+		!a.grant.GetForced()
+	jobID, grant, proc, r := a.jobID, a.grant.GetGrantId(), a.proc, a.r
+	a.report("finish", func() (*pb.Job, error) {
+		// Once the outcome is known, a runner signal must not drop it.
+		return retry(context.WithoutCancel(r.interrupt), r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
+			return r.client.ReportFinished(c, &pb.ReportFinishedRequest{
+				JobId: jobID, GrantId: grant, Outcome: outcome, Runner: r.inc, Process: proc,
+				Elapsed: optionalMilliseconds(exit.elapsedMs), RootCpuTime: optionalMilliseconds(exit.rootCPUMs),
+			})
 		})
-	}); err != nil {
-		a.r.logf("finish report for job %s not delivered: %s; its reservation stays held until the broker verifies the command exited", a.jobID, describe(err))
-		return result{code: code, jobID: a.jobID}, true
-	}
-	if a.r.o.Retries == 0 || code == 0 || outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_EXITED ||
-		a.cancelSeen || a.grant.GetForced() || a.noWatch || a.r.signalled() {
-		return result{code: code, jobID: a.jobID}, true
+	})
+	return result{}, false
+}
+
+func (a *attempt) finishReported(err error) (result, bool) {
+	a.finishPending = false
+	if err != nil || !a.retryEligible || a.cancelSeen || a.noWatch || a.r.signalled() {
+		return result{code: a.code, jobID: a.jobID}, true
 	}
 	// A retry needs the broker's verified release, signalled by finished.
 	a.awaitFinal = time.Now()
+	// A finished event may precede the response to the report that caused it.
+	if a.finishedWhileReporting != nil {
+		return a.finished(a.finishedWhileReporting)
+	}
 	return result{}, false
 }
 
@@ -492,6 +625,10 @@ func (a *attempt) finished(job *pb.Job) (result, bool) {
 	}
 	o := job.GetOutcome()
 	if a.ran {
+		if a.finishPending {
+			a.finishedWhileReporting = job
+			return result{}, false
+		}
 		eligible := !a.awaitFinal.IsZero() && o.GetKind() == pb.OutcomeKind_OUTCOME_KIND_EXITED &&
 			o.GetExitCode() != 0 && job.CancelRequestedAt == nil && !job.GetForced()
 		return result{code: a.code, jobID: a.jobID, retryable: eligible}, true
@@ -563,6 +700,7 @@ func launchExitCode(err error) int {
 func direct(o Options, logf func(string, ...any)) int {
 	cmd := newCommand(o, o.Env)
 	err := cmd.Err
+	start := time.Now()
 	if err == nil {
 		err = cmd.Start()
 	}
@@ -570,6 +708,7 @@ func direct(o Options, logf func(string, ...any)) int {
 		logf("launch failed: %v", err)
 		return launchExitCode(err)
 	}
+	owner := &runner{child: cmd.Process, childSignalable: true, logf: logf}
 	done := make(chan struct{})
 	defer close(done)
 	if o.Signals != nil {
@@ -580,13 +719,19 @@ func direct(o Options, logf func(string, ...any)) int {
 					return
 				case s := <-o.Signals:
 					if sig, ok := s.(syscall.Signal); ok && sig != syscall.SIGINT {
-						_ = cmd.Process.Signal(sig)
+						if err := owner.signalChild(cmd.Process, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
+							logf("could not forward signal to the command: %v", err)
+						}
 					}
 				}
 			}
 		}()
 	}
-	_ = cmd.Wait()
-	code, _ := exitStatus(cmd.ProcessState)
+	exit := waitForCommand(cmd, start, func() { owner.disarmChild(cmd.Process) }, logf)
+	if exit.state == nil {
+		logf("could not obtain the command's exit status: %v", exit.err)
+		return ExitSoftware
+	}
+	code, _ := exitStatus(exit.state)
 	return code
 }

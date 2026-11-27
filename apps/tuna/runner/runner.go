@@ -116,7 +116,10 @@ func Run(ctx context.Context, o Options) int {
 	if o.Weight == 0 {
 		o.Weight = HeavyWeight
 	}
+	var logMu sync.Mutex
 	logf := func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
 		if o.Log != nil {
 			_, _ = fmt.Fprintf(o.Log, "tuna: "+format+"\n", args...)
 		}
@@ -215,7 +218,7 @@ type runner struct {
 	stopInterrupt context.CancelFunc
 
 	mu              sync.Mutex
-	child           *os.Process // the command, until its wait completes
+	child           *os.Process // retained while its wait drains child I/O
 	childSignalable bool
 	signal          syscall.Signal
 	// anySignal records any runner signal, including one forwarded to a
@@ -240,21 +243,20 @@ func (r *runner) routeSignals() {
 				r.mu.Lock()
 				r.anySignal = true
 				child := r.child
-				var signalErr error
 				if child == nil {
 					r.signal = sig
-				} else if r.childSignalable && sig != syscall.SIGINT {
-					// Keep the fence held through signaling so the PID
-					// cannot be reaped and reused in between.
-					signalErr = child.Signal(sig)
+				}
+				var err error
+				if child != nil && r.childSignalable && sig != syscall.SIGINT {
+					err = child.Signal(sig)
 				}
 				r.mu.Unlock()
-				if child == nil {
+				switch {
+				case child == nil:
 					r.stopInterrupt()
 					return
-				}
-				if signalErr != nil && !errors.Is(signalErr, os.ErrProcessDone) {
-					r.logf("could not forward signal to the command: %v", signalErr)
+				case err != nil && !errors.Is(err, os.ErrProcessDone):
+					r.logf("could not forward signal to the command: %v", err)
 				}
 			}
 		}
@@ -278,13 +280,17 @@ func (r *runner) disarmChild(p *os.Process) {
 	}
 }
 
-func (r *runner) killChild(p *os.Process) error {
+func (r *runner) signalChild(p *os.Process, sig os.Signal) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.child != p || !r.childSignalable {
 		return os.ErrProcessDone
 	}
-	return p.Kill()
+	return p.Signal(sig)
+}
+
+func (r *runner) killChild(p *os.Process) error {
+	return r.signalChild(p, syscall.SIGKILL)
 }
 
 func (r *runner) signalled() bool {

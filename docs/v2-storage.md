@@ -1,10 +1,10 @@
 # v2 transactional storage
 
-`apps/tuna/storage` implements worklog #11 as a library. The prototype still
-runs no jobs: transport wiring, admission policy (the
-[scheduler](v2-scheduler.md), #12), OS evidence gathering and process
-signaling are separate work. Storage does not establish exclusive
-broker ownership or automatically declare recovery complete.
+`apps/tuna/storage` implements transactional storage as a library. The
+prototype can run jobs, but transport, admission policy (the
+[scheduler](v2-scheduler.md)), OS evidence gathering and process signaling
+are separate from storage. Storage does not establish exclusive broker
+ownership or automatically declare recovery complete.
 
 ## Transactions and publication
 
@@ -60,8 +60,15 @@ commit still makes the outcome unavailable and requires reconciliation.
   accordingly; a report alone does not finish the job or release capacity.
 - Release rechecks durable fencing, no-launch/root outcome and tracked
   non-runner exit evidence. The caller must supply trustworthy OS evidence and
-  ensure complete, race-safe process discovery; timeouts, disconnection and
-  attempted kills are not evidence. These methods do not signal processes.
+  serialize positive discoveries with release; rediscovering an identity
+  invalidates its earlier exit evidence. Timeouts, disconnection, attempted
+  kills and omitted observations are not evidence. The scheduler records
+  stable discovered descendants, including across restart, but untracked
+  descendants can survive release under the accepted best-effort limitation.
+  Storage does not signal processes.
+- An unknown outcome cannot release a claimed reservation with neither a
+  known root nor confirmed-no-launch proof. This remains true after verified
+  runner death.
 - Pause survives reopen. Queue ordering uses explicit sequences, not wall
   clocks. Grace checkpoints consume caller-supplied monotonic elapsed time,
   excluding broker downtime; stream supersession and deadline policy belong

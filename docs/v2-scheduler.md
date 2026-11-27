@@ -1,11 +1,10 @@
 # v2 scheduler
 
-`apps/tuna/scheduler` implements worklog #12 as a library on top of the
-[transactional storage](v2-storage.md). It decides and commits normal
-admissions, force-starts and queue controls. #13 adds the launch lifecycle
-used by the broker's RunnerService (see [Launch lifecycle](#launch-lifecycle)).
-It does not signal processes or take over orphans (#15), expose control RPCs
-or CLI commands (#14), or predict load from history. Policy rules are those of
+`apps/tuna/scheduler` builds on the [transactional storage](v2-storage.md)
+to commit admissions, force-starts, queue controls, launch/recovery
+transitions, cancellation deadlines and positive descendant discovery. The
+broker exposes the control and runner RPCs. Broker-side termination is not
+implemented; the scheduler does not predict load from history. Policy rules are those of
 [design section 2](v2-design.md#2-queue-and-admission-policy) and the registration
 and grace rules of [section 4](v2-design.md#4-runner-and-service-lifecycle).
 
@@ -129,20 +128,73 @@ incarnation is acknowledged without a second allowance, a fenced or
 cancelled grant gets `GRANT_FENCED`, and claims are refused until
 `MarkReady`. Duplicate reports are idempotent.
 
-Grants advertise the 30-second launch-investigation timeout, but the
-investigation clock and its reconstruction after restart are not implemented
-yet (#15). A timeout is never release evidence.
+Grants advertise the configurable launch-investigation timeout (default
+30 seconds). Its monotonic clock starts at reservation commit; delivery,
+claim and reconnect do not reset it. If the deadline expires without a root,
+no-launch proof or definite outcome, the job is marked `UNKNOWN` and remains
+held. On broker restart, unresolved clocks start a full new interval when
+`MarkReady` commits; downtime is not charged. A timeout neither fences a
+grant nor proves release.
 
 Every transition checks, in the same transaction, whether the fenced
 reservation can be released: every tracked command process must be verified
 exited by the `ProcessProbe` (darwin `sysctl` PID and start time), with a
-matching outcome or no-spawn proof. A missing probe, a probe error or a live
-process keeps it held. `Reconcile`, run every second by the service, retries
-inconclusive probes. A release runs admission.
+matching outcome or no-spawn proof. A claimed launch without a root or
+no-launch proof stays held, even when its runner is verified dead. A missing
+probe, a probe error or a live process keeps the reservation held. A known
+root also needs a successful descendant scan in the current broker run.
+The confirmed-no-launch path does not need a scan.
+
+The service scans every second, separately from historical resource sampling.
+It anchors traversal at matching, stable root and previously tracked
+descendant PID/start identities, including reparented known descendants, and
+persists newly observed stable descendants. Metrics-only gaps do not make an
+identity unstable. A source failure, global identity-verification failure,
+or an invalid, duplicate or unstable reachable identity prevents release for
+the affected jobs and is logged. Stable siblings are still persisted. A later
+successful scan permits another release check; omissions never establish exit.
+Each scan marks its existing root identities in flight under the scheduler
+mutex, samples outside that mutex, and commits positive observations before
+opening the barrier. A root reported after the scan starts needs a later scan.
+Clean shutdown waits for a scan to finish; a crash can lose observations not
+yet committed. A short-lived or reparented descendant never observed by the
+broker can still be missed, as allowed by the best-effort design.
+
+`Reconcile`, run every second by the service, independently probes the
+assigned runner for death and retries inconclusive release checks. It does
+not use a disconnect or an empty observation as exit evidence. Observation
+errors are logged with the job, process role and identity, without replacing
+a native outcome; repeated identical errors are logged again only after
+the probe recovers or its error changes. A release runs admission.
 
 `Cancel` finishes a queued job at once, fences and releases a reserved,
-unclaimed grant, and only records the request for a claimed job, whose
-runner kills the command and reports. Every committed write goes through one
+unclaimed grant, and records the request for a claimed job. The runner
+can process cancellation while a claim response is pending: it prevents
+local spawn, discards late claim replies, acknowledges receipt and seals with
+no-spawn proof. For a running command it force-stops its owned root before
+asynchronously reporting acknowledgment or failure. After root exit, a
+delayed finish report does not block cancellation; a cancellation included
+in a lifecycle report's reply is also handled, including while pending reports
+are drained. A finished event received before the finish reply is retained
+for retry eligibility. Separate monotonic
+acknowledgment and completion clocks default to 5 and 30 seconds;
+acknowledgment alone is not completion. An explicit
+failure, either expired deadline or verified runner death records a sticky
+takeover reason after cleanup is rechecked. Restart reconstructs a full
+interval for the current phase after readiness; recovery and storage
+failure do not start a takeover. Late valid reports can still enrich the
+outcome without replacing the reason.
+
+**Current safety limit:** takeover records do not cause the broker to signal
+the runner or job processes. Identity-bound signaling and cross-process
+termination coordination remain unverified. The runner force-stops only its
+owned root, not known descendants. The broker logs blocked takeovers, and
+reservations without the required evidence remain held.
+`unreconciled_reservations` is conservative: it counts unreleased
+reservations from earlier runs and current reservations with outcome,
+cancellation or takeover evidence.
+
+Every committed write goes through one
 path that publishes its events exactly once, in commit order, to
 `Options.Publish`; `Registration.Seq` and `EventSeq` let a stream skip
 events already reflected by its snapshot.

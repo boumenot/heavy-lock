@@ -1300,8 +1300,14 @@ The absence evidence must remain valid through the release transaction.
 In particular, discovering a live child after a scan but before release
 invalidates that scan; the broker must serialize discovery and release or
 recheck newly known processes before committing. Otherwise an already-known
-survivor can be released despite the decision above. The concrete
-synchronization mechanism remains to be designed.
+survivor can be released despite the decision above. The macOS prototype
+brackets each descendant snapshot with a per-job in-flight barrier and
+persists stable positive identities before permitting release. Newly reported
+roots need a later scan; failed or unstable identity observations retain
+capacity. A crash can lose an observation not yet committed, and the next
+scan can still miss a reparented survivor under the accepted best-effort
+limitation. See [the scheduler implementation](v2-scheduler.md#launch-lifecycle)
+and [bounded scan model](v2/model/README.md#descendant-scan-barrier).
 
 There is a **confirmed-no-launch exception**: capacity may be released
 without a root identity if the broker transactionally prevented any claim,
@@ -1928,8 +1934,15 @@ traffic or false alarms; longer values reduce overhead but delay detection.
 Starting the launch timer at claim time avoids investigation during slow
 delivery but leaves an unclaimed reservation needing a separate timer. A
 reservation-based timer can investigate harmless delivery delays. These
-defaults are initial and unmeasured; monotonic timer reconstruction across
-broker restarts remains open.
+defaults are initial and unmeasured.
+
+**Delegated decision: launch clock reconstruction.** Within a broker run,
+the launch clock uses monotonic elapsed time. After a restart, unresolved
+launches receive the full configured interval once the broker is ready;
+neither downtime nor the previous run's elapsed time is charged. This avoids
+wall-clock jumps and durable per-job checkpoints, but can delay investigation
+by one additional interval per restart. Claim, delivery and reconnect do not
+restart the clock, and expiry cannot fence the grant or release capacity.
 
 The Swift monitor also uses gRPC, including a resumable live event stream.
 The draft `WatchEvents` uses broker-wide event sequences. The user chose

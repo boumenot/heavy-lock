@@ -45,12 +45,18 @@ func (s DarwinSource) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("enumerate processes: %w", err)
 	}
+	if len(before) == 0 {
+		return Snapshot{}, errors.New("enumerate processes: empty process table")
+	}
 	output, psErr := ps(ctx)
 	var rows map[int64]psRow
 	if psErr == nil {
 		rows, psErr = parsePS(output)
 	}
 	after, afterErr := table()
+	if afterErr == nil && len(after) == 0 {
+		afterErr = errors.New("empty process table")
+	}
 	var gaps []string
 	if psErr != nil {
 		gaps = append(gaps, "process metrics: "+psErr.Error())
@@ -67,6 +73,9 @@ func (s DarwinSource) Snapshot(ctx context.Context) (Snapshot, error) {
 		later[p.identity.PID] = p
 	}
 	result := Snapshot{IncompletenessReason: strings.Join(gaps, "; ")}
+	if afterErr != nil {
+		result.IdentityFailure = afterErr.Error()
+	}
 	for _, p := range before {
 		observation := Process{Identity: p.identity, ParentPID: p.parent}
 		current, found := later[p.identity.PID]

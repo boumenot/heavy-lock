@@ -78,7 +78,9 @@ build/heavy-lock/heavy-lock-status --json
 (on macOS, the runner, monitor, `tuna`, Swift v2 library and v2 monitor;
 the v2 monitor's broker integration test runs when `build/tuna/tuna`
 exists, which `check all` builds first); use `build`,
-`test` or `check` with a target name for one application. Focused tests run
+`test` or `check` with a target name for one application. The `tuna` test
+target also runs the bounded descendant-discovery and finish-report models
+and their witnesses; TLC logs go under `build/tuna-model`. Focused tests run
 directly, e.g. `cd tool && dart test` for the orchestrator. Regenerate v2
 bindings with `heavy-lock -- nix develop -c tool/generate_v2.sh`, or add
 `--check` to verify them. The opt-in Swift gRPC interoperability probe in

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,11 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/boumenot/heavy-lock/apps/tuna/procid"
 )
 
 const execEnv = "TUNA_TEST_EXEC_MAIN"
@@ -78,8 +82,39 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
+type fencedTestProcess struct {
+	cmd        *exec.Cmd
+	mu         sync.Mutex
+	signalable bool
+}
+
+func (p *fencedTestProcess) signal(sig syscall.Signal) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.signalable {
+		return os.ErrProcessDone
+	}
+	return p.cmd.Process.Signal(sig)
+}
+
+func (p *fencedTestProcess) wait() error {
+	if runtime.GOOS == "darwin" {
+		for {
+			_, state, err := procid.Observe(p.cmd.Process.Pid)
+			if err == nil && state != procid.Live {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		p.mu.Lock()
+		p.signalable = false
+		p.mu.Unlock()
+	}
+	return p.cmd.Wait()
+}
+
 type serviceProcess struct {
-	cmd    *exec.Cmd
+	fencedTestProcess
 	stderr *syncBuffer
 	done   chan error
 	exited bool
@@ -93,10 +128,13 @@ func startService(t *testing.T, port int, dir string) *serviceProcess {
 	if err := p.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	go func() { p.done <- p.cmd.Wait() }()
+	p.signalable = true
+	go func() { p.done <- p.wait() }()
 	t.Cleanup(func() {
 		if !p.exited {
-			_ = p.cmd.Process.Signal(syscall.SIGTERM)
+			if err := p.signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Errorf("stop service: %v", err)
+			}
 			select {
 			case <-p.done:
 			case <-time.After(10 * time.Second):
@@ -122,7 +160,7 @@ func startService(t *testing.T, port int, dir string) *serviceProcess {
 
 func (p *serviceProcess) stop(t *testing.T) {
 	t.Helper()
-	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := p.signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		t.Fatal(err)
 	}
 	select {

@@ -62,6 +62,7 @@ type harness struct {
 	sampler *fakeSampler
 	probe   ProcessProbe
 	publish func([]*pb.BrokerEvent)
+	warnf   func(string, ...any)
 	s       *Scheduler
 }
 
@@ -87,7 +88,7 @@ func (h *harness) start() {
 	}
 	h.clock = &fakeClock{}
 	if h.s, _, err = Start(h.ctx, h.store, Options{Config: h.cfg, ServiceVersion: "test", PID: 1, Clock: h.clock.read, Sampler: h.sampler,
-		Processes: h.probe, Publish: h.publish}); err != nil {
+		Processes: h.probe, Publish: h.publish, Warnf: h.warnf}); err != nil {
 		h.t.Fatal(err)
 	}
 	if _, err := h.s.MarkReady(h.ctx); err != nil {
