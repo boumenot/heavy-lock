@@ -41,8 +41,8 @@ func TestCancelAcknowledgmentDeadlineDoesNotReset(t *testing.T) {
 		t.Fatalf("takeover after acknowledgment deadline = %v", j.BrokerTermination)
 	}
 	if j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN ||
-		!strings.Contains(j.Outcome.GetDetail(), "identity-bound") {
-		t.Fatalf("unavailable safe signaling was not exposed: %v", j.Outcome)
+		!strings.Contains(j.Outcome.GetDetail(), "fingerprint-checked") {
+		t.Fatalf("takeover termination was not exposed: %v", j.Outcome)
 	}
 	if h.snapshot().Status.Occupied != 2 || j.State == pb.JobState_JOB_STATE_FINISHED {
 		t.Fatalf("deadline released the reservation: %v", j)

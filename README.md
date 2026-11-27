@@ -437,10 +437,16 @@ For release, the broker separately discovers stable descendants using Darwin
 PID/start identities and persists them. A failed or unstable identity scan
 holds the reservation; a missing process in a scan is not exit evidence.
 Discovery is best effort, so a descendant missed before reparenting or a
-broker crash can survive release. The runner force-stops only the root on
-cancellation. The broker records takeover triggers and logs that it cannot
-safely signal: identity-bound broker signaling and runner/broker termination
-coordination are not implemented. A reservation without sufficient exit or
+broker crash can survive release. On cancellation the runner freezes its
+root, stops the descendants it can enumerate, then kills the tree; if that
+fails it reports `ReportCancelFailed`. After a recorded takeover the broker
+freezes and kills the tracked root and descendants (never the runner) with
+fingerprint-checked signals: each signal is sent only when the PID's start
+time is unchanged, the start is in the current boot, the process is not a
+zombie and its uids equal the broker's. This is best effort, not
+identity-bound: between the last check and `kill` the process can exit and
+its PID be reused, and no timing bound is claimed. A signal, mismatch or
+skipped signal is never exit evidence. A reservation without sufficient exit or
 no-launch evidence stays held, including a claimed job whose root is unknown.
 Process-observation failures are logged without replacing a reported native
 outcome. The reported unreconciled count includes every unreleased reservation

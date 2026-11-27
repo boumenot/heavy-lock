@@ -16,6 +16,8 @@ type discoveryState struct {
 	root     jobmetrics.Identity
 	inFlight bool
 	ready    bool
+	// generation counts committed complete passes for this root.
+	generation uint64
 }
 
 type discoveryTarget struct {
@@ -143,6 +145,9 @@ func (s *Scheduler) Discover(ctx context.Context, source jobmetrics.Source) erro
 		state := s.discovery[target.jobID]
 		state.inFlight = false
 		state.ready = err == nil && results[i].err == nil
+		if state.ready {
+			state.generation++
+		}
 		s.discovery[target.jobID] = state
 		if err == nil && results[i].err != nil {
 			gaps = append(gaps, fmt.Errorf("job %s: %w", target.jobID, results[i].err))

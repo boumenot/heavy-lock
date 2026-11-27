@@ -61,6 +61,7 @@ type harness struct {
 	clock   *fakeClock
 	sampler *fakeSampler
 	probe   ProcessProbe
+	signals ProcessTerminator
 	publish func([]*pb.BrokerEvent)
 	warnf   func(string, ...any)
 	s       *Scheduler
@@ -88,7 +89,7 @@ func (h *harness) start() {
 	}
 	h.clock = &fakeClock{}
 	if h.s, _, err = Start(h.ctx, h.store, Options{Config: h.cfg, ServiceVersion: "test", PID: 1, Clock: h.clock.read, Sampler: h.sampler,
-		Processes: h.probe, Publish: h.publish, Warnf: h.warnf}); err != nil {
+		Processes: h.probe, Terminator: h.signals, Publish: h.publish, Warnf: h.warnf}); err != nil {
 		h.t.Fatal(err)
 	}
 	if _, err := h.s.MarkReady(h.ctx); err != nil {
@@ -651,7 +652,7 @@ func TestNotReadyRejectsNewWorkButAcceptsReconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.s, _, err = Start(h.ctx, h.store, Options{Config: h.cfg, ServiceVersion: "test", PID: 1, Clock: h.clock.read, Sampler: h.sampler,
-		Processes: h.probe, Publish: h.publish})
+		Processes: h.probe, Terminator: h.signals, Publish: h.publish})
 	if err != nil {
 		t.Fatal(err)
 	}

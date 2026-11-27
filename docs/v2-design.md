@@ -82,7 +82,8 @@ choices are explicit user decisions.
 | Initial query/storage tuning | `ListJobs` page size 50, maximum 500; SQLite cache 16 MiB per connection and mmap up to 256 MiB *(delegated; unmeasured)* |
 | Storage failure | Report not ready, refuse new reservations/claims and uncommitted acknowledgements; preserve running and previously claimed work |
 | Backup policy | Deferred until active development; do not automatically replace a corrupt database |
-| Blocked cancel takeover | On deadline expiry with a live runner blocking safe coordination, broker tries to terminate that verified runner; takes over only after its exact incarnation is verified dead and coordination is safe; otherwise waits holding the reservation. Explicit cancel only; the broker never kills a runner for runner-death cleanup |
+| Blocked cancel takeover | On deadline expiry with a live runner blocking safe coordination, broker tries to terminate that verified runner; takes over only after its exact incarnation is verified dead and coordination is safe; otherwise waits holding the reservation. Explicit cancel only; the broker never kills a runner for runner-death cleanup. Under the no-interlock termination decision no runner blocks the broker, so no runner is killed |
+| Takeover signals (macOS) | Fingerprint-checked best-effort `kill` (PID start time, current boot, not zombie, uids equal broker's); accepted check-to-signal race, no timing bound; freeze, settled discovery, then kill; never exit evidence *(user decision)* |
 | Cancel confirmation | Monitor confirms every cancel (queued, reserved or running); direct API clients get no prompt |
 | Routine monitor controls | Pause, resume and reorder do not require confirmation |
 | Control activity log | No separate long-term log; retain required job state and bounded replay events |
@@ -788,9 +789,9 @@ change event; the retained job remains the current state.
 
 The model abstracts termination as nondeterministic process exits; it does
 not model cancellation deadlines or takeover eligibility, and never treats
-timing as release evidence (section 12). Still open: coordination or fencing
-of a still-live runner beyond the blocked-takeover decision, detection of
-blocking coordination and platform termination mechanisms. The evidence
+timing as release evidence (section 12). The macOS signalling and
+termination sequences are recorded under the platform mechanisms below; no
+protocol or model change was needed. The evidence
 merge above is a policy, not proof that an OS observation or caller identity
 is trustworthy.
 
@@ -901,15 +902,17 @@ automatic remedy. The chosen approach trades those risks for progress:
   state, failed signal); then the broker cannot take over and waits with the
   reservation held.
 
-Still open: how the broker detects that the runner holds blocking
-coordination, the kill/escalation sequence and OS mechanisms for terminating
-the runner and verifying its death, and cleanup of stopped descendants.
+Resolved by the no-interlock termination decision below: the runner never
+holds coordination that blocks the broker, so the broker never needs to kill
+a live runner. The broker's own kill pass handles descendants that a
+runner stopped before dying.
 
 **Recommendations to validate before implementation.** These mechanisms
 are candidates, not a claim that the required guarantees are available on
 every supported platform:
 
-- Use a **per-job cross-process termination interlock** for every runner and
+- *(Not adopted; see the no-interlock decision below.)* Use a **per-job
+  cross-process termination interlock** for every runner and
   broker tree-termination sequence. The runner would acquire it and check
   the broker's durable takeover state while holding it before starting a
   sequence; if the broker is unreachable or has recorded takeover, it
@@ -929,8 +932,10 @@ every supported platform:
   must be tested. Do not unlink a lock file to manufacture availability.
   After killing a verified blocking runner, verify that incarnation is dead,
   reacquire coordination and account for stopped descendants before acting.
-- Identity checks must bind a signal and an exit observation to the **same
-  process incarnation**, including after broker restart. Comparing a PID
+- *(Superseded for signals by the user's fingerprint-checked decision
+  below; exit observations still use PID/start identity.)* Identity checks
+  must bind a signal and an exit observation to the **same process
+  incarnation**, including after broker restart. Comparing a PID
   and start time and then separately signalling a numeric PID is not enough:
   the PID can be reused between the check and signal. If the platform cannot
   establish a safe binding or process exit, report the limitation and retain
@@ -943,7 +948,7 @@ platform entries are historical context, not current implementation scope.
 
 | Platform | Candidate mechanisms and unresolved limits |
 |---|---|
-| macOS | [kqueue `EVFILT_PROC`/`NOTE_EXIT`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html) can report a watched PID's exit; identity binding at registration, missed exits, restart and safe signalling still need verification. The existing runner's `ps`/freeze/snapshot approach is useful prior art, not proof against PID reuse, reparenting or incomplete scans. |
+| macOS | [kqueue `EVFILT_PROC`/`NOTE_EXIT`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html) can report a watched PID's exit; identity binding at registration, missed exits and restart still need verification. Signalling uses fingerprint-checked `kill` with an accepted race (below). The existing runner's `ps`/freeze/snapshot approach is useful prior art, not proof against PID reuse, reparenting or incomplete scans. |
 | Linux | [`pidfd_open`](https://man7.org/linux/man-pages/man2/pidfd_open.2.html), polling a pidfd and [`pidfd_send_signal`](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html) can bind observation and signalling to an opened process. Obtaining the correct reference after PID reuse or broker restart still requires verified correspondence to the recorded incarnation and boot; `/proc` start time has clock-tick precision. Linux version, namespaces, permissions and error handling need validation. |
 | Windows | An opened process handle, [`GetProcessTimes`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) and [`WaitForSingleObject`](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject) are candidates for incarnation and exit checks; [`TerminateProcess`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess) is asynchronous and is not itself exit proof. Handle acquisition, access rights, boot/restart identity and descendant handling need validation. |
 
@@ -953,8 +958,71 @@ may help containment, but membership, breakaway, delegation and recovery
 must be verified; they do not justify assuming a complete tree. In
 particular, a Windows kill-on-last-handle-close policy can conflict with
 the decision that jobs survive broker crashes. The macOS `gopsutil` child
-enumeration caveat in section 8 remains applicable. No platform, signal,
-lock primitive or containment mechanism is selected or validated here.
+enumeration caveat in section 8 remains applicable. No containment
+mechanism or Linux/Windows mechanism is selected here; the macOS signalling
+choice is recorded below.
+
+**User decision: fingerprint-checked best-effort signals (macOS).** XNU
+offers no signal bound to a process incarnation: `kill` and
+`proc_terminate` take a numeric PID, and `task_for_pid` failed for an owned
+child in a controlled probe. The user accepted the residual race ("i am
+willing to live with that race."). Before each signal, `procid.Signal`
+re-reads the PID through `kern.proc.pid` and signals only if every key
+matches:
+
+- PID and the recorded `kern.proc` start time (microseconds). Start time
+  survives `exec` and is the persisted identity.
+- The process is live and not a zombie.
+- The recorded start is not before the current `kern.boottime`. This checks
+  the current boot without a new persisted field; a forward clock step after
+  boot fails closed.
+- Real and effective uids equal the broker's. A credential change skips the
+  signal.
+
+After the signal it re-reads the start time and reports a redirected signal
+if it changed. A mismatch or read failure skips the signal. A mismatch, read
+failure, signal or skipped signal is never exit evidence; release still
+needs verified exit. Not keys: the executable path and UUID change on
+legitimate `exec` (`sh -c` then `make`), so matching them would hold
+capacity for ordinary jobs; argv and cwd are mutable. `ri_proc_start_abstime`
+and a boot-session UUID would need new persisted fields and a protocol
+change. Between the last check and `kill` the target can exit, be reaped and
+have its PID reused. XNU skips occupied PIDs, and a process can be
+descheduled between check and signal, so no timing bound is claimed. This is
+not identity-bound signalling.
+
+**Delegated decision: termination sequences without a cross-process
+interlock.** Validation of the interlock recommendation above found it
+unnecessary for the mechanism chosen:
+
+- **Runner:** on cancellation it SIGSTOPs its root through the reap-fenced
+  child handle. For up to 10 rounds it lists the process table and SIGSTOPs
+  children of known incarnations: a parent is followed only while its start
+  time matches, a child must start no earlier than its parent, and zombies
+  are skipped. It then SIGKILLs the stopped descendants and the root. A
+  non-mismatch signal error, a table failure or a tree that does not settle
+  produces `ReportCancelFailed`, which makes takeover eligible.
+- **Broker:** after a takeover is recorded, `Scheduler.Terminate` SIGSTOPs
+  tracked non-runner targets that are not yet verified exited. It waits
+  until a discovery scan that began after the latest freeze completes, so
+  children forked before the freeze are tracked, and freezes any new ones.
+  After a settled scan, or after 10 passes, it SIGKILLs every remaining
+  target on each pass until Reconcile verifies exit and releases. It never
+  signals the runner, writes no state and releases nothing.
+- **No interlock:** both sequences only stop and kill, never resume, and end
+  in an idempotent SIGKILL that also kills stopped processes. Overlapping
+  sequences therefore cannot undo each other. A runner that dies mid-freeze
+  leaves stopped processes that the broker's kill handles. A runner never
+  holds coordination that blocks the broker, so the blocked-takeover
+  decision's precondition does not arise. The broker never kills a live
+  runner; an unresponsive runner keeps running while its job is terminated.
+  An interlock would add a lock file, owner detection and crash recovery
+  with no safety benefit here. It would be reconsidered if a sequence ever
+  needs to resume processes.
+- **Limits:** a descendant reparented before either side observed it is not
+  signalled. A process forked after the final scan and before SIGKILL can
+  survive. Both fall under the accepted best-effort descendant policy
+  (section 5).
 
 **Proposals for other controls and mechanisms.** Reorder waiting jobs only,
 visibly through the queue state. Cancel a waiting job by removing it and
@@ -965,8 +1033,9 @@ platform mechanisms are not.
 Untracked descendants are an explicitly accepted exception to complete tree
 verification (section 5).
 
-**Open.** Other exit/status codes, concurrent cancel/reorder/admit races,
-detection of blocking coordination and runner-kill mechanisms for takeover.
+**Open.** Other exit/status codes and concurrent cancel/reorder/admit
+races. Blocking-coordination detection and runner kill are unnecessary
+under the no-interlock decision above.
 
 ## 4. Runner and service lifecycle
 
@@ -3905,12 +3974,10 @@ current results from historical runs and list bounds and unchecked cases.
    runner-death cleanup.
    Clock starts, restart handling, the sticky first takeover reason and
    late-report merge are delegated decisions (section 3).
-   Coordination/fencing of a still-live runner and platform termination
-   mechanisms remain to be designed and verified. When a live
-   runner blocks safe coordination, the broker tries to kill that verified
-   runner and takes over only after its exact incarnation is verified dead,
-   otherwise waiting; detection of blocking coordination, kill/escalation
-   mechanisms and cleanup of stopped descendants remain open.
+   macOS termination uses fingerprint-checked best-effort signals with an
+   accepted check-to-signal race, and the runner and broker freeze/kill
+   sequences need no interlock (section 3), so a live runner never blocks
+   the broker and is never killed.
 2. Verify and measure the delegated initial `ListJobs` pagination and
    SQLite cache/mmap defaults; decide how requests above the page maximum
    are handled (sections 11.1 and 11.4).

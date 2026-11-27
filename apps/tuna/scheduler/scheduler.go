@@ -53,6 +53,10 @@ type Options struct {
 	// release. Without it no process is ever verified, so capacity held by
 	// a launched command stays held (fail closed).
 	Processes ProcessProbe
+	// Terminator force-stops the processes of jobs the broker has taken
+	// over. Without it Terminate signals nothing and takeover capacity stays
+	// held until exit is verified some other way.
+	Terminator ProcessTerminator
 	// Warnf receives process-observation failures without changing lifecycle
 	// RPC results or native outcomes. It runs outside the scheduler lock, must
 	// be safe for concurrent calls, and defaults to the standard logger.
@@ -104,6 +108,8 @@ type Scheduler struct {
 	warnf         func(string, ...any)
 	probeFailures map[string]map[probeIdentity]string
 	discovery     map[string]discoveryState
+	terminator    ProcessTerminator
+	termination   map[string]*terminationState
 	lastSeq       int64
 }
 
@@ -129,7 +135,8 @@ func Start(ctx context.Context, store *storage.Store, o Options) (*Scheduler, []
 	s := &Scheduler{store: store, cfg: o.Config, version: o.ServiceVersion, clock: o.Clock,
 		sampler: o.Sampler, streams: map[string]*Registration{}, grace: map[string]disconnected{},
 		launch: map[string]time.Duration{}, cancellation: map[string]cancelClock{}, publish: o.Publish, processes: o.Processes,
-		warnf: o.Warnf, probeFailures: map[string]map[probeIdentity]string{}, discovery: map[string]discoveryState{}}
+		warnf: o.Warnf, probeFailures: map[string]map[probeIdentity]string{}, discovery: map[string]discoveryState{},
+		terminator: o.Terminator, termination: map[string]*terminationState{}}
 	now := s.clock()
 	// The previous admission time is unknown after a restart; settle from now.
 	s.lastAdmission = now

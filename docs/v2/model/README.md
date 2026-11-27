@@ -212,9 +212,10 @@ model loss, errors and volatile-state reset. `VerifyRoot`, `VerifyChild` and
 `Release` correspond to `scheduler/launch.go` and the storage release
 recheck. The existing no-future-launch fence and outcome checks are assumed
 already satisfied; the no-launch exception is outside this focused model.
-Process identity primitives, multiple jobs, full ancestry traversal, signal
-delivery and the separate runner/broker termination interlock are abstracted
-away.
+Process identity primitives, multiple jobs, full ancestry traversal and
+signal delivery are abstracted away. Termination signals only stop or kill,
+so they appear as nondeterministic exits; no runner/broker termination
+interlock exists (design section 3).
 
 The liveness property requires eventual release once both processes have
 exited. It assumes bounded crashes and scan/storage failures, weak fairness

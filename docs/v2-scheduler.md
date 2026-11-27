@@ -185,11 +185,29 @@ interval for the current phase after readiness; recovery and storage
 failure do not start a takeover. Late valid reports can still enrich the
 outcome without replacing the reason.
 
-**Current safety limit:** takeover records do not cause the broker to signal
-the runner or job processes. Identity-bound signaling and cross-process
-termination coordination remain unverified. The runner force-stops only its
-owned root, not known descendants. The broker logs blocked takeovers, and
-reservations without the required evidence remain held.
+**Termination.** The runner's cancellation freezes its root through the
+reap-fenced child handle, enumerates descendants by parent PID with
+start-time checks for up to 10 rounds, stops each with a fingerprint-checked
+signal, then kills the stopped descendants and the root. A signal error,
+table failure or unsettled tree is reported with `ReportCancelFailed`.
+`Scheduler.Terminate`, run by the service after `Reconcile`, handles jobs
+with a recorded takeover and an unreleased reservation. It targets tracked
+non-runner processes not yet verified exited. Each pass first SIGSTOPs new
+targets, then waits until a discovery scan started after that freeze
+completes, so children forked before the freeze are tracked. After that
+scan, or after `MaxFreezeRounds` passes, it SIGKILLs every remaining target
+on each pass until exit is verified. Signals go through `ProcessTerminator`
+(`procid.Terminator` on darwin) outside the scheduler mutex. Terminate
+writes no state and never releases. Reconcile still releases only after
+verified exit.
+
+**Current safety limit:** signals are fingerprint-checked (PID start time,
+current boot, not a zombie, real and effective uid equal to the broker's),
+not identity-bound. A process can exit and its PID be reused between the
+last check and `kill`; this race was accepted by the user and has no
+claimed timing bound. A mismatch or read failure skips the signal and keeps
+the reservation held. Descendants the broker never discovered, such as
+those reparented before a scan, are not signalled by it.
 `unreconciled_reservations` is conservative: it counts unreleased
 reservations from earlier runs and current reservations with outcome,
 cancellation or takeover evidence.
