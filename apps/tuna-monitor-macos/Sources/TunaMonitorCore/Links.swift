@@ -2,34 +2,88 @@ import Foundation
 import HeavyLockV2
 import Observation
 
+/// Attribution extra keys recorded by the tuna runner.
+public enum AttributionKey {
+    public static let repositoryHost = "repository_host"
+    public static let worklogURL = "worklog_url"
+    public static let aiAgent = "ai_agent"
+}
+
 /// A worklog issue named by a job's attribution. The repository is never
 /// inferred: it is either explicit (`owner/repo#N` or the job's repository
-/// attribution) or left to `gh` in the job's working directory, as in v1.
+/// attribution) or, for legacy jobs, left to `gh` in the job's working
+/// directory, as in v1.
 public struct WorklogReference: Hashable, Sendable {
+    /// The `gh --repo` value, `[HOST/]OWNER/NAME`, when known.
     public var repository: String?
     public var number: Int
+    /// The issue's web URL, as recorded or built from a known host.
+    public var url: URL?
 
-    public init(repository: String?, number: Int) {
+    public init(repository: String?, number: Int, url: URL? = nil) {
         self.repository = repository
         self.number = number
+        self.url = url
     }
 
     public init?(_ job: Heavylock_V2_Job) {
         guard job.attribution.hasWorklog else { return nil }
         let value = job.attribution.worklog.trimmingCharacters(in: .whitespaces)
-        let explicit = job.attribution.hasRepository ? job.attribution.repository : nil
-        if let hash = value.lastIndex(of: "#") {
-            let repository = String(value[..<hash])
-            guard let number = Int(value[value.index(after: hash)...]), number > 0 else { return nil }
-            self.init(repository: repository.isEmpty ? explicit : repository, number: number)
-        } else {
-            guard let number = Int(value), number > 0 else { return nil }
-            self.init(repository: explicit, number: number)
+        let extra = job.attribution.extra
+        let host = extra[AttributionKey.repositoryHost].flatMap { $0.isEmpty ? nil : $0 }
+        let jobRepository = job.attribution.hasRepository ? job.attribution.repository : nil
+        func qualified(_ path: String) -> String {
+            guard let host, let jobRepository, path.lowercased() == jobRepository.lowercased() else { return path }
+            return "\(host)/\(path)"
         }
+        let repository: String?
+        let number: Int
+        if let hash = value.lastIndex(of: "#") {
+            let path = String(value[..<hash])
+            guard let parsed = Int(value[value.index(after: hash)...]), parsed > 0 else { return nil }
+            repository = path.isEmpty ? jobRepository.map(qualified) : qualified(path)
+            number = parsed
+        } else {
+            guard let parsed = Int(value), parsed > 0 else { return nil }
+            repository = jobRepository.map(qualified)
+            number = parsed
+        }
+        var url = extra[AttributionKey.worklogURL].flatMap(URL.init(string:))
+        if url?.scheme != "https" || url?.host == nil { url = nil }
+        if url == nil, let repository, repository.split(separator: "/").count == 3 {
+            url = URL(string: "https://\(repository)/issues/\(number)")
+        }
+        self.init(repository: repository, number: number, url: url)
     }
 
     /// The short label, e.g. `#18`.
     public var label: String { "#\(self.number)" }
+
+    /// The label naming the repository when known, e.g. `owner/repo#18`.
+    public var qualifiedLabel: String {
+        guard let repository else { return self.label }
+        return repository.split(separator: "/").suffix(2).joined(separator: "/") + self.label
+    }
+}
+
+/// The Copilot session that submitted a job. `url` opens it in the GitHub
+/// Copilot app and is set only when that app reported the session.
+public struct AgentSession: Equatable, Sendable {
+    public var id: String
+    public var url: URL?
+
+    public init(id: String, url: URL?) {
+        self.id = id
+        self.url = url
+    }
+
+    public init?(_ job: Heavylock_V2_Job) {
+        guard job.attribution.hasAgentSession, !job.attribution.agentSession.isEmpty else { return nil }
+        let id = job.attribution.agentSession
+        let valid = id.count <= 128 && id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) }
+        let app = job.attribution.extra[AttributionKey.aiAgent] == "github_copilot_app_agent"
+        self.init(id: id, url: app && valid ? URL(string: "ghapp://sessions/\(id)") : nil)
+    }
 }
 
 /// Resolved issue title and URL, as returned by `gh issue view`.

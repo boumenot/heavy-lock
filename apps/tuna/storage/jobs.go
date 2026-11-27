@@ -53,6 +53,9 @@ func validateSubmission(req *pb.SubmitJobRequest) error {
 		if _, ok := pb.ClientArchitecture_name[int32(req.Client.Architecture)]; !ok {
 			return errors.New("unsupported client architecture")
 		}
+		if v := req.Client.OsVersion; v != nil && (*v == "" || len(*v) > 64 || !utf8.ValidString(*v)) {
+			return errors.New("present client OS version must be nonempty UTF-8 of at most 64 bytes")
+		}
 	}
 	if a := req.Attribution; a != nil {
 		for _, value := range []*string{a.Repository, a.Branch, a.Worklog, a.AgentSession,
@@ -73,7 +76,7 @@ func validateSubmission(req *pb.SubmitJobRequest) error {
 				return fmt.Errorf("invalid or reserved extra metadata key %q", key)
 			}
 			for _, reserved := range []string{"id", "request_sha256", "metadata_json", "client_name", "client_version",
-				"client_os", "client_architecture", "retry_submitted", "state", "outcome_kind", "runner",
+				"client_os", "client_os_version", "client_architecture", "retry_submitted", "state", "outcome_kind", "runner",
 				"queued_at_ns", "admitted_at_ns", "started_at_ns", "finished_at_ns", "cancel_requested_at_ns"} {
 				if key == reserved {
 					return fmt.Errorf("reserved extra metadata key %q", key)
@@ -204,12 +207,12 @@ func (tx *Tx) Submit(req *pb.SubmitJobRequest, options Submission) (SubmissionRe
 	}
 	err = tx.exec(`INSERT INTO jobs (id,idempotency_key,request_sha256,command,cwd,weight,state,
 		queued_at_ns,service_version,retry_of_job_id,attempt,client_name,client_version,client_os,
-		client_architecture,repository,branch,worklog,agent_session,purpose,commit_sha,
+		client_os_version,client_architecture,repository,branch,worklog,agent_session,purpose,commit_sha,
 		build_target,build_configuration,metadata_json)
-		VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, req.IdempotencyKey, hash[:], req.Command, req.Cwd, req.Weight, tx.at,
 		options.ServiceVersion, req.RetryOfJobId, attempt, client.Name, client.Version,
-		optionalEnum(client.Os.String(), "CLIENT_OS_"), optionalEnum(client.Architecture.String(), "CLIENT_ARCHITECTURE_"),
+		optionalEnum(client.Os.String(), "CLIENT_OS_"), client.OsVersion, optionalEnum(client.Architecture.String(), "CLIENT_ARCHITECTURE_"),
 		a.Repository, a.Branch, a.Worklog, a.AgentSession, a.Purpose, a.CommitSha, a.BuildTarget, a.BuildConfiguration, string(metadata))
 	if err != nil {
 		return result, err
@@ -292,7 +295,7 @@ func (r *Reader) Job(id string) (*pb.Job, error) {
 		cancel_requested_at_ns,cancel_reason,cancel_acknowledged_at_ns,cancel_failure_detail,
 		broker_termination_at_ns,broker_termination_reason,free_memory_at_admission_bytes,
 		admitted_by_backfill,backfill_bypass_count,retry_of_job_id,attempt,
-		client_name,client_version,client_os,client_architecture,
+		client_name,client_version,client_os,client_os_version,client_architecture,
 		repository,branch,worklog,agent_session,purpose,commit_sha,build_target,build_configuration,metadata_json,
 		coalesce(outcome_kind,''),exit_code,signal_number,signal_name,outcome_detail FROM jobs WHERE id=?`,
 		[]any{id}, &j.JobId, &j.IdempotencyKey, &state, &j.Command, &j.Cwd, &j.Weight, &j.Forced,
@@ -300,7 +303,7 @@ func (r *Reader) Job(id string) (*pb.Job, error) {
 		&j.CancelRequestedAtUnixNs, &j.CancelReason, &j.CancelAcknowledgedAtUnixNs, &j.CancelFailureDetail,
 		&terminationAt, &terminationReason, &j.FreeMemoryAtAdmissionBytes,
 		&j.AdmittedByBackfill, &j.BackfillBypassCount, &j.RetryOfJobId, &j.Attempt,
-		&j.Client.Name, &j.Client.Version, &osName, &archName,
+		&j.Client.Name, &j.Client.Version, &osName, &j.Client.OsVersion, &archName,
 		&j.Attribution.Repository, &j.Attribution.Branch, &j.Attribution.Worklog, &j.Attribution.AgentSession,
 		&j.Attribution.Purpose, &j.Attribution.CommitSha, &j.Attribution.BuildTarget, &j.Attribution.BuildConfiguration, &metadata,
 		&outcome, &o.ExitCode, &o.SignalNumber, &o.SignalName, &o.Detail)

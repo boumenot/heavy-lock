@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
 	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/procid"
@@ -79,13 +80,15 @@ func ParseWeight(value string) (uint32, bool) {
 }
 
 type Options struct {
-	Port    int
-	Weight  uint32
-	Worklog string // empty when not attributed
-	NoWait  bool
-	Retries int
-	Command []string
-	Version string
+	Port   int
+	Weight uint32
+	// Attribution holds the explicit --repository and --worklog options;
+	// the rest of a job's attribution is detected at submission.
+	Attribution attribution.Options
+	NoWait      bool
+	Retries     int
+	Command     []string
+	Version     string
 
 	// Child standard streams; nil inherits the runner's.
 	Stdin          io.Reader
@@ -98,6 +101,8 @@ type Options struct {
 	Signals <-chan os.Signal
 
 	ReconnectWindow time.Duration
+	// Git reads the job checkout's attribution; nil runs git with Env.
+	Git attribution.Git
 }
 
 // Run executes one invocation and returns the process exit code.
@@ -177,7 +182,9 @@ func Run(ctx context.Context, o Options) int {
 		inc:     &pb.RunnerIncarnation{IncarnationId: newUUID(), Process: self},
 		logf:    logf,
 		command: command,
+		info:    clientInfo(o.Version),
 	}
+	r.cwd, r.attribution = r.detectAttribution(ctx)
 	r.interrupt, r.stopInterrupt = context.WithCancel(ctx)
 	defer r.stopInterrupt()
 	r.routeSignals()
@@ -196,6 +203,10 @@ type runner struct {
 	inc     *pb.RunnerIncarnation
 	logf    func(string, ...any)
 	command string
+	info    *pb.ClientInfo // the reported client, shared by every attempt
+	// cwd and attribution are observed once and shared by every attempt.
+	cwd         string
+	attribution *pb.Attribution
 
 	// interrupt is cancelled when a runner signal arrives while no command
 	// runs; signal records that signal.
@@ -394,26 +405,54 @@ func (r *runner) submitRequest(retryOf string) *pb.SubmitJobRequest {
 		IdempotencyKey: newUUID(),
 		Command:        r.command,
 		Weight:         r.o.Weight,
-		Client: &pb.ClientInfo{
-			Name:         ptr("tuna"),
-			Os:           pb.ClientOS_CLIENT_OS_MACOS,
-			Architecture: architecture(),
-		},
-		Runner: r.inc,
+		Client:         r.info,
+		Runner:         r.inc,
+		Attribution:    r.attribution,
 	}
-	if r.o.Version != "" {
-		req.Client.Version = ptr(r.o.Version)
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		req.Cwd = &cwd
-	}
-	if r.o.Worklog != "" {
-		req.Attribution = &pb.Attribution{Worklog: ptr(r.o.Worklog)}
+	if r.cwd != "" {
+		req.Cwd = ptr(r.cwd)
 	}
 	if retryOf != "" {
 		req.RetryOfJobId = &retryOf
 	}
 	return req
+}
+
+func clientInfo(version string) *pb.ClientInfo {
+	c := &pb.ClientInfo{
+		Name:         ptr("tuna"),
+		Os:           attribution.ClientOS(runtime.GOOS),
+		Architecture: architecture(),
+	}
+	if version != "" {
+		c.Version = ptr(version)
+	}
+	if v := attribution.OSVersion(); v != "" {
+		c.OsVersion = ptr(v)
+	}
+	return c
+}
+
+// detectAttribution combines the explicit options with the working
+// directory's git checkout and the invoking agent session.
+func (r *runner) detectAttribution(ctx context.Context) (string, *pb.Attribution) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = ""
+	}
+	var checkout attribution.Checkout
+	if cwd != "" {
+		git := r.o.Git
+		if git == nil {
+			git = attribution.RunGit(r.o.Env)
+		}
+		checkout = attribution.DetectCheckout(ctx, cwd, git)
+	}
+	getenv := func(name string) string {
+		value, _ := lookup(r.o.Env, name)
+		return value
+	}
+	return cwd, attribution.Build(r.o.Attribution, checkout, getenv)
 }
 
 func architecture() pb.ClientArchitecture {

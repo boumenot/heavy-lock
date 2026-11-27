@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
 	"github.com/boumenot/heavy-lock/apps/tuna/cli"
 	"github.com/boumenot/heavy-lock/apps/tuna/runner"
 	"github.com/boumenot/heavy-lock/apps/tuna/service"
@@ -36,7 +37,10 @@ const (
 		"Runner options:\n" +
 		"  --port <port>          v2 broker port on 127.0.0.1 (required)\n" +
 		"  --weight <weight>      heavy (default), light, or a positive integer\n" +
-		"  --worklog <issue>      attribute the job to a worklog issue number\n" +
+		"  --repository <repo>    attribute the job to [HOST/]OWNER/NAME instead of\n" +
+		"                         the working directory's git remote\n" +
+		"  --worklog <issue>      attribute the job to worklog N or [HOST/]OWNER/NAME#N;\n" +
+		"                         N belongs to the job's repository\n" +
 		"  --no-wait              exit 75 instead of queueing when not admitted\n" +
 		"  --retries <n>          retry an eligible nonzero exit up to n (0-3) times\n\n" +
 		"The command runs without a shell. The broker must already be running;\n" +
@@ -137,11 +141,19 @@ func dispatch(args []string, stdout, stderr io.Writer, l launcher) int {
 			if o.Weight, valid = runner.ParseWeight(value); !valid {
 				err = fmt.Errorf("--weight must be heavy, light or a positive integer")
 			}
-		case "--worklog":
-			if n, perr := strconv.ParseUint(value, 10, 63); perr != nil || n == 0 {
-				err = fmt.Errorf("--worklog must be a positive issue number")
+		case "--repository":
+			var r attribution.Repository
+			if r, err = attribution.ParseRepository(value); err == nil {
+				o.Attribution.Repository = &r
 			} else {
-				o.Worklog = value
+				err = fmt.Errorf("--%v", err)
+			}
+		case "--worklog":
+			var w attribution.Worklog
+			if w, err = attribution.ParseWorklog(value); err == nil {
+				o.Attribution.Worklog = &w
+			} else {
+				err = fmt.Errorf("--%v", err)
 			}
 		case "--retries":
 			n, perr := strconv.Atoi(value)
@@ -186,7 +198,7 @@ func dispatchService(args []string, stdout, stderr io.Writer, l launcher) int {
 	})
 }
 
-var valued = map[string]bool{"--port": true, "--weight": true, "--worklog": true, "--retries": true}
+var valued = map[string]bool{"--port": true, "--weight": true, "--worklog": true, "--repository": true, "--retries": true}
 
 // option reads a valued option written as "--name value" or "--name=value".
 // Each option may be given once.

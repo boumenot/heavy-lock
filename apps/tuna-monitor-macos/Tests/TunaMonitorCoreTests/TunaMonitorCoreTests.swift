@@ -483,6 +483,49 @@ private func attributed(
         #expect(row.details == ["worklog release"])
     }
 
+    @Test func recordedAttributionQualifiesWorklogsAndLinksSessions() {
+        var value = attributed("a", .running, worklog: "boumenot/heavy-lock#33", repository: "boumenot/heavy-lock")
+        value.attribution.branch = "main"
+        value.attribution.commitSha = String(repeating: "a", count: 40)
+        value.attribution.agentSession = "22caf59c-ccac-4db8-96ac-9723739b61fb"
+        value.attribution.extra = [
+            AttributionKey.repositoryHost: "github.com",
+            AttributionKey.worklogURL: "https://github.com/boumenot/heavy-lock/issues/33",
+            AttributionKey.aiAgent: "github_copilot_app_agent",
+        ]
+        value.client.name = "tuna"
+        value.client.version = "2.0.0"
+        value.client.os = .macos
+        value.client.osVersion = "26.1"
+        value.client.architecture = .arm64
+        let row = Presentation.row(value, capacity: 2, now: self.now)
+        let url = URL(string: "https://github.com/boumenot/heavy-lock/issues/33")
+        #expect(row.worklog == WorklogReference(repository: "github.com/boumenot/heavy-lock", number: 33, url: url))
+        #expect(row.worklog?.qualifiedLabel == "boumenot/heavy-lock#33")
+        #expect(row.worklog?.label == "#33")
+        #expect(row.details.contains("boumenot/heavy-lock · main · aaaaaaa"))
+        #expect(row.details.contains("macOS 26.1 · arm64 · tuna 2.0.0"))
+        #expect(
+            row.session
+                == AgentSession(
+                    id: "22caf59c-ccac-4db8-96ac-9723739b61fb",
+                    url: URL(string: "ghapp://sessions/22caf59c-ccac-4db8-96ac-9723739b61fb")))
+
+        // A legacy bare number takes the job's repository and host.
+        var legacy = attributed("b", .running, worklog: "16", repository: "o/r")
+        legacy.attribution.extra = [AttributionKey.repositoryHost: "ghe.example"]
+        #expect(
+            WorklogReference(legacy)
+                == WorklogReference(repository: "ghe.example/o/r", number: 16, url: URL(string: "https://ghe.example/o/r/issues/16")))
+        // Unsafe recorded URLs and sessions from other agents are not linked.
+        var other = attributed("c", .running, worklog: "o/r#2")
+        other.attribution.extra = [AttributionKey.worklogURL: "javascript:alert(1)", AttributionKey.aiAgent: "other"]
+        other.attribution.agentSession = "abc"
+        #expect(WorklogReference(other) == WorklogReference(repository: "o/r", number: 2))
+        #expect(AgentSession(other) == AgentSession(id: "abc", url: nil))
+        #expect(Presentation.clientText(attributed("d", .running)) == nil)
+    }
+
     @Test func checkoutOutputIsParsed() {
         #expect(Checkout.parse("/w\nmain") == Checkout(directory: "/w", branch: "main"))
         #expect(Checkout.parse("/w\nHEAD")?.branch == "Detached HEAD")

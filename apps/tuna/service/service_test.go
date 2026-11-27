@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
 	"github.com/boumenot/heavy-lock/apps/tuna/broker"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/procid"
@@ -244,14 +245,34 @@ func TestRunnerPropagatesOutcomesAndReleasesCapacity(t *testing.T) {
 
 func TestFinishedJobRetainsRuntimeAndDeclaredMetadata(t *testing.T) {
 	b := startBroker(t, 2)
-	code, inv := b.run(t, func(o *runner.Options) { o.Worklog = "16" }, "/bin/sleep", "0.2")
+	commit := strings.Repeat("c", 40)
+	code, inv := b.run(t, func(o *runner.Options) {
+		o.Attribution.Worklog = &attribution.Worklog{Number: 16}
+		o.Env = append(o.Env, "COPILOT_AGENT_SESSION_ID=session-1", "AI_AGENT="+attribution.CopilotAppAgent)
+		o.Git = func(_ context.Context, _ string, args ...string) (string, error) {
+			switch strings.Join(args, " ") {
+			case "rev-parse --verify --quiet HEAD^{commit}":
+				return commit, nil
+			case "symbolic-ref --quiet --short HEAD":
+				return "feature", nil
+			case "remote get-url -- origin":
+				return "git@github.com:boumenot/heavy-lock.git", nil
+			}
+			return "", errors.New("exit status 1")
+		}
+	}, "/bin/sleep", "0.2")
 	if code != 0 {
 		t.Fatalf("exit %d; log:\n%s", code, inv.log.String())
 	}
 	j := b.waitState(t, inv.log.jobID(t), pb.JobState_JOB_STATE_FINISHED)
 	if j.Command != "/bin/sleep 0.2" || j.ServiceVersion != "test" ||
 		j.Client.GetName() != "tuna" || j.Client.GetVersion() != "test" ||
-		j.Attribution.GetWorklog() != "16" || j.Attribution.Repository != nil ||
+		j.Attribution.GetWorklog() != "boumenot/heavy-lock#16" || j.Attribution.GetRepository() != "boumenot/heavy-lock" ||
+		j.Attribution.GetBranch() != "feature" || j.Attribution.GetCommitSha() != commit ||
+		j.Attribution.GetAgentSession() != "session-1" ||
+		j.Attribution.GetExtra()[attribution.WorklogURLKey] != "https://github.com/boumenot/heavy-lock/issues/16" ||
+		attribution.SessionLink(j.Attribution) != "ghapp://sessions/session-1" ||
+		j.Client.GetOs() != pb.ClientOS_CLIENT_OS_MACOS || j.Client.GetOsVersion() != attribution.OSVersion() || j.Client.OsVersion == nil ||
 		j.QueuedAtUnixNs <= 0 || j.AdmittedAtUnixNs == nil || j.FreeMemoryAtAdmissionBytes == nil {
 		t.Fatalf("job metadata = %+v", j)
 	}

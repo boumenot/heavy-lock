@@ -383,8 +383,9 @@ Xcode 27.2 (Swift 6.4.2), Go 1.27.3 and `protoc` 36.2.
 ```bash
 tuna service [--port 49783] [--data-dir DIR] [--event-max-age 24h] \
   [--event-max-count 100000]          # per-user broker; one per user
-tuna --port 49783 [--weight heavy|light|N] [--worklog N] [--no-wait] \
-  [--retries 0-3] -- <command> [arguments...]
+tuna --port 49783 [--weight heavy|light|N] [--repository [HOST/]OWNER/NAME] \
+  [--worklog N|[HOST/]OWNER/NAME#N] [--no-wait] [--retries 0-3] \
+  -- <command> [arguments...]
 ```
 
 `tuna service` takes the non-blocking per-user singleton lock
@@ -444,9 +445,24 @@ summed RSS can double-count shared pages, and total tree CPU can be incomplete
 or double-counted. A restart marks potentially lost samples partial. These
 historical measurements never control admission or release.
 
-The runner supplies `--worklog` explicitly; gRPC clients may also supply
-repository, branch, session, purpose, commit, target, configuration and
-validated extra metadata. None is inferred from the working directory.
+The runner records the job's repository, branch and commit from the working
+directory's git checkout: `HEAD`, the current branch (absent when detached)
+and the host and `OWNER/NAME` of the branch's upstream remote, else
+`origin`, when its URL is an `https`, `ssh` or `user@host:` GitHub-style
+URL. The host is stored as `extra["repository_host"]`. Anything git cannot
+report, within a 2-second limit, stays unknown. `--repository` names
+another repository; the checkout's branch and commit are then kept only
+when it is the same repository. `--worklog N` belongs to the job's
+repository and is stored qualified as `OWNER/NAME#N` when that is known;
+`--worklog [HOST/]OWNER/NAME#N` names its repository explicitly. With a
+known host, `extra["worklog_url"]` records the issue URL. A runner started
+by a Copilot agent records `COPILOT_AGENT_SESSION_ID` as `agent_session`
+and `AI_AGENT` as `extra["ai_agent"]`. The client reports its OS from the
+Go platform and, on macOS, its version from `kern.osproductversion`
+(`ClientInfo.os_version`). gRPC clients may supply any of these fields,
+plus purpose, target, configuration and validated extra metadata.
+`tuna job --job ID` prints the recorded repository, branch, commit,
+worklog and its URL, agent session and its app link, and client.
 
 On macOS 26.7.3/arm64 (Apple A18 Pro), a locked benchmark on 2026-11-26
 observed about 507 system processes and measured 7.89–8.56 ms wall time and
@@ -609,10 +625,15 @@ recently finished jobs from `ListJobs`, refreshed on each snapshot.
 Running and queued counts and occupancy come from the job events, because
 the broker does not publish `status_changed` for every start or finish.
 Rows show the command, state, weight, outcome and warnings, including a
-persistent warning for a queued job heavier than capacity. A numeric
-worklog links to its issue title and URL from `gh issue view` run in the
-job's cwd (an `owner/repo#N` worklog or repository attribution is passed as
-`--repo`); the repository is never guessed. The cwd links to its git
+persistent warning for a queued job heavier than capacity. A worklog is
+labelled with its repository (`owner/repo#N`) and links to its issue title
+and URL from `gh issue view --repo [HOST/]OWNER/NAME`, using the job's
+recorded attribution; the recorded issue URL stays a link when `gh` cannot
+supply the title. Only jobs recorded without a repository fall back to
+`gh` in the job's cwd; the repository is never guessed. A row also shows
+the client OS and version, architecture and tuna version, and the agent
+session: a `ghapp://sessions/ID` link to the Copilot app session when the
+app submitted the job, otherwise its ID as text. The cwd links to its git
 checkout's top-level directory and branch in Finder, or to the cwd itself
 outside git, with home shown as `~`. Each available row action has its own
 icon button with a descriptive tooltip (1-second default delay, overridable

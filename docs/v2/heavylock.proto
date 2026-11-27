@@ -401,6 +401,8 @@ message ClientInfo {
   optional string version = 2;
   ClientOS os = 3;
   ClientArchitecture architecture = 4;
+  // Human-readable OS release, e.g. "26.1" on macOS; absent when unknown.
+  optional string os_version = 5;  // since API 2.2
 }
 
 message Attribution {

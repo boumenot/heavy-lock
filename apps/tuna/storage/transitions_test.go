@@ -114,7 +114,7 @@ func TestSubmissionMetadataAndResourceRoundTrip(t *testing.T) {
 	req := f.request()
 	req.Cwd = proto.String("/example")
 	req.Client = &pb.ClientInfo{Name: proto.String("runner"), Version: proto.String("test"),
-		Os: pb.ClientOS_CLIENT_OS_MACOS, Architecture: pb.ClientArchitecture_CLIENT_ARCHITECTURE_ARM64}
+		Os: pb.ClientOS_CLIENT_OS_MACOS, OsVersion: proto.String("26.1"), Architecture: pb.ClientArchitecture_CLIENT_ARCHITECTURE_ARM64}
 	req.Attribution = &pb.Attribution{Repository: proto.String("owner/repo"), Branch: proto.String("feature"),
 		Worklog: proto.String("owner/repo#1"), AgentSession: proto.String("session"), Purpose: proto.String("build"),
 		CommitSha: proto.String("0123456"), BuildTarget: proto.String("test"), BuildConfiguration: proto.String("debug"),

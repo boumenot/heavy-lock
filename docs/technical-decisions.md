@@ -332,14 +332,16 @@ dark when unknown or not live, so stale state never looks like running.
 Sections are Running, Queued and Recently finished; each available row action
 has its own labelled icon button with a 1-second default tooltip delay;
 paths under home display as `~`. A worklog
-links to the issue from v1's lookup, `gh issue view` in the job's cwd (or `--repo` from an
-explicit `owner/repo#N` worklog or repository attribution), cached per
-key, using only the returned URL. The cwd links to its git top-level
-directory and branch (`git rev-parse`), or to the cwd outside git. A
-Project link was requested, but jobs carry no Project or agent-session
-reference (the runner sends only `worklog`) and no supported link target is
-known, so none is shown; the link is deferred to
-[#33](https://github.com/boumenot/heavy-lock/issues/33).
+links to its issue via `gh issue view --repo [HOST/]OWNER/NAME` from the
+job's recorded attribution, keeping the recorded `worklog_url` as the link
+if `gh` fails, cached per key; only jobs recorded without a repository use
+v1's lookup in the job's cwd. The cwd links to its git top-level
+directory and branch (`git rev-parse`), or to the cwd outside git. The
+Project link ([#33](https://github.com/boumenot/heavy-lock/issues/33)) uses
+the job's `agent_session`, recorded from `COPILOT_AGENT_SESSION_ID`, as the
+documented `ghapp://sessions/SESSION_ID` deep link, only when `ai_agent` is
+`github_copilot_app_agent`; no variable carries a Project ID, so the
+Project is reached through its session. Other sessions show as text.
 
 **Alternatives.** Extending the v1 monitor would mix two protocols in one app
 before cutover and raise its macOS 13 floor. Polling REST would lose

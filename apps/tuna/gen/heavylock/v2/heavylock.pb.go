@@ -753,11 +753,13 @@ func (BrokerTermination_Reason) EnumDescriptor() ([]byte, []int) {
 }
 
 type ClientInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          *string                `protobuf:"bytes,1,opt,name=name,proto3,oneof" json:"name,omitempty"`
-	Version       *string                `protobuf:"bytes,2,opt,name=version,proto3,oneof" json:"version,omitempty"`
-	Os            ClientOS               `protobuf:"varint,3,opt,name=os,proto3,enum=heavylock.v2.ClientOS" json:"os,omitempty"`
-	Architecture  ClientArchitecture     `protobuf:"varint,4,opt,name=architecture,proto3,enum=heavylock.v2.ClientArchitecture" json:"architecture,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Name         *string                `protobuf:"bytes,1,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	Version      *string                `protobuf:"bytes,2,opt,name=version,proto3,oneof" json:"version,omitempty"`
+	Os           ClientOS               `protobuf:"varint,3,opt,name=os,proto3,enum=heavylock.v2.ClientOS" json:"os,omitempty"`
+	Architecture ClientArchitecture     `protobuf:"varint,4,opt,name=architecture,proto3,enum=heavylock.v2.ClientArchitecture" json:"architecture,omitempty"`
+	// Human-readable OS release, e.g. "26.1" on macOS; absent when unknown.
+	OsVersion     *string `protobuf:"bytes,5,opt,name=os_version,json=osVersion,proto3,oneof" json:"os_version,omitempty"` // since API 2.2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -818,6 +820,13 @@ func (x *ClientInfo) GetArchitecture() ClientArchitecture {
 		return x.Architecture
 	}
 	return ClientArchitecture_CLIENT_ARCHITECTURE_UNSPECIFIED
+}
+
+func (x *ClientInfo) GetOsVersion() string {
+	if x != nil && x.OsVersion != nil {
+		return *x.OsVersion
+	}
+	return ""
 }
 
 type Attribution struct {
@@ -4218,16 +4227,19 @@ var File_heavylock_proto protoreflect.FileDescriptor
 
 const file_heavylock_proto_rawDesc = "" +
 	"\n" +
-	"\x0fheavylock.proto\x12\fheavylock.v2\"\xc7\x01\n" +
+	"\x0fheavylock.proto\x12\fheavylock.v2\"\xfa\x01\n" +
 	"\n" +
 	"ClientInfo\x12\x17\n" +
 	"\x04name\x18\x01 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x1d\n" +
 	"\aversion\x18\x02 \x01(\tH\x01R\aversion\x88\x01\x01\x12&\n" +
 	"\x02os\x18\x03 \x01(\x0e2\x16.heavylock.v2.ClientOSR\x02os\x12D\n" +
-	"\farchitecture\x18\x04 \x01(\x0e2 .heavylock.v2.ClientArchitectureR\farchitectureB\a\n" +
+	"\farchitecture\x18\x04 \x01(\x0e2 .heavylock.v2.ClientArchitectureR\farchitecture\x12\"\n" +
+	"\n" +
+	"os_version\x18\x05 \x01(\tH\x02R\tosVersion\x88\x01\x01B\a\n" +
 	"\x05_nameB\n" +
 	"\n" +
-	"\b_version\"\xab\x04\n" +
+	"\b_versionB\r\n" +
+	"\v_os_version\"\xab\x04\n" +
 	"\vAttribution\x12#\n" +
 	"\n" +
 	"repository\x18\x01 \x01(\tH\x00R\n" +

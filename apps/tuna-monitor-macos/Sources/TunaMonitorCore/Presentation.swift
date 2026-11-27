@@ -27,6 +27,8 @@ public enum Presentation {
         /// The job's working directory, and the same path abbreviated with `~`.
         public var cwd: String?
         public var cwdDisplay: String?
+        /// The submitting agent session, linked when the Copilot app reported it.
+        public var session: AgentSession?
         public var details: [String]
         public var warnings: [String]
     }
@@ -195,10 +197,12 @@ public enum Presentation {
         let attribution = [
             job.attribution.hasRepository ? job.attribution.repository : nil,
             job.attribution.hasBranch ? job.attribution.branch : nil,
+            job.attribution.hasCommitSha ? String(job.attribution.commitSha.prefix(7)) : nil,
             // A worklog that is not an issue reference cannot be linked.
             job.attribution.hasWorklog && worklog == nil ? "worklog \(job.attribution.worklog)" : nil,
         ].compactMap { $0 }
         if !attribution.isEmpty { details.append(attribution.joined(separator: " · ")) }
+        if let client = Self.clientText(job) { details.append(client) }
         if job.state == .finished, job.hasResources, job.resources.hasElapsedMs {
             details.append("Ran \(Self.duration(milliseconds: job.resources.elapsedMs))")
         }
@@ -226,8 +230,36 @@ public enum Presentation {
             id: job.jobID, command: job.command, summary: summary.joined(separator: " · "),
             forced: job.forced, worklog: worklog, cwd: job.hasCwd ? job.cwd : nil,
             cwdDisplay: job.hasCwd ? Self.homeRelative(job.cwd, home: home) : nil,
-            details: details, warnings: warnings
+            session: AgentSession(job), details: details, warnings: warnings
         )
+    }
+
+    /// The submitting client, e.g. `macOS 26.1 · arm64 · tuna 2.0.0`, or nil
+    /// when nothing about it was recorded.
+    public static func clientText(_ job: Heavylock_V2_Job) -> String? {
+        guard job.hasClient else { return nil }
+        let client = job.client
+        let os: String? =
+            switch client.os {
+            case .macos: "macOS"
+            case .linux: "Linux"
+            case .windows: "Windows"
+            case .other: "Other OS"
+            default: nil
+            }
+        let architecture: String? =
+            switch client.architecture {
+            case .arm64: "arm64"
+            case .amd64: "amd64"
+            case .other: "other architecture"
+            default: nil
+            }
+        let parts = [
+            [os, client.hasOsVersion ? client.osVersion : nil].compactMap { $0 }.joined(separator: " "),
+            architecture ?? "",
+            [client.hasName ? client.name : nil, client.hasVersion ? client.version : nil].compactMap { $0 }.joined(separator: " "),
+        ].filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     public static func stateName(_ state: Heavylock_V2_JobState) -> String {

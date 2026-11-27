@@ -11,7 +11,7 @@ broker ownership or automatically declare recovery complete.
 Open an explicit persistent path with `storage.Open(ctx, path)`. Its parent
 directory must already exist and should be private to the user. New database
 files use mode 0600; existing files are neither replaced nor truncated.
-Opening checks SQLite integrity, foreign keys, the complete version-1 schema,
+Opening checks SQLite integrity, foreign keys, the complete current schema,
 migration records and cross-table lifecycle/event accounting. Unsupported,
 partial, inconsistent or corrupt databases return errors.
 
@@ -96,8 +96,10 @@ pins a compatible Go 1.27 toolchain.
 
 The authoritative schema remains `docs/v2/schema.sql`; run
 `go -C apps/tuna generate ./storage` to refresh the embedded copy. A focused
-test rejects a stale copy. Version 1 is the initial, not-yet-deployed schema;
-future changes to deployed databases need explicit migrations.
+test rejects a stale copy. Opening migrates older databases one version at a
+time with the steps in `storage/migrate.go` (version 2 adds the explicit
+queue mode, version 3 the client OS version) and refuses newer ones; every
+schema change needs a migration whose result matches `schema.sql` exactly.
 
 Configured settings are WAL, FULL synchronous on each connection, macOS
 fullfsync ON, foreign keys ON, 5 s busy timeout, 16 MiB cache and up to 256 MiB

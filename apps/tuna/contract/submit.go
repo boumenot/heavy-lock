@@ -91,6 +91,12 @@ func CanonicalSubmitHash(request *heavylockv2.SubmitJobRequest, mode AdmissionMo
 		}
 	}
 	encoded = appendOptionalString(encoded, request.RetryOfJobId)
+	// Fields added after canonical-v1 follow as named extensions only when
+	// present, so hashes of earlier submissions remain unchanged.
+	if client.OsVersion != nil {
+		encoded = appendString(encoded, "client.os_version")
+		encoded = appendString(encoded, *client.OsVersion)
+	}
 	return sha256.Sum256(encoded), nil
 }
 
@@ -142,7 +148,7 @@ func hasUnknownFields(message protoreflect.Message) bool {
 	case "heavylock.v2.SubmitJobRequest":
 		lastSupported = 8
 	case "heavylock.v2.ClientInfo":
-		lastSupported = 4
+		lastSupported = 5
 	case "heavylock.v2.Attribution":
 		lastSupported = 9
 	case "heavylock.v2.RunnerIncarnation", "heavylock.v2.ProcessIdentity":
