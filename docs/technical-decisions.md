@@ -388,7 +388,10 @@ state. `head_blocked_reason` stays as the head's diagnostic. This is API
 - **Degraded status.** With durable storage failed, `GetStatus` still
   answers with `ERROR`, unspecified mode, `storage_unavailable` and the
   configured capacity instead of failing, so clients can show why
-  admissions stopped. The monitor shows an error banner from the health
+  admissions stopped. `WatchEvents` ends open streams with `UNAVAILABLE`
+  once storage fails, because a failed write publishes no event and
+  heartbeats alone would leave watchers showing stale live state. The
+  monitor then reconnects, shows an error banner from the health
   `storage_detail` and does not watch events until storage recovers.
 - **CLI.** `tuna status` prints `Mode: …; state: …` instead of `paused:`;
   `tuna queue` prints the state. JSON and REST output both fields.
