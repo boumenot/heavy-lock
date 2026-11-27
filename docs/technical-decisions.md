@@ -418,6 +418,11 @@ responder over Network.framework, adding no dependency.
   Dock tile view and `NSDockTile`, so a Dock that stopped updating shows as
   `matchesExpected: false` instead of a second broker query that would
   always agree. It reports presentation state, not rendered pixels.
+- **Queue-mode freshness.** `queue.mode` is `unknown` for an unspecified or
+  unrecognized mode, or when the monitor is not live. A retained mode is
+  reported separately as `queue.lastKnownMode` while not live, so it cannot
+  be mistaken for the current broker mode after a storage or connection
+  failure.
 - **Identity.** Pid, bundle path, start time, the broker address and the
   broker's `Health` version and start time distinguish monitor and broker
   instances.
