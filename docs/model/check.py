@@ -71,6 +71,12 @@ CASES = {
     "RunnerFinishDropped": "NoDroppedEarlyFinal",
     "RunnerFinishEarlyAck": "NeverEarlyAck",
     "RunnerFinishEarlyFinal": "NeverEarlyFinal",
+    "RunnerExitSafety": None,
+    "RunnerExitFailureSafety": None,
+    "RunnerExitOldRule": "NoSpuriousTakeover",
+    "RunnerExitNoBarrier": "NoCapturedLiveUnreserved",
+    "RunnerExitCleanRelease": "NeverCleanExitRelease",
+    "RunnerExitDeathTakeover": "NeverDeathTakeover",
     "MonitorDelivery": None,
     "MonitorLoss": None,
     "MonitorRestart": None,
@@ -112,13 +118,14 @@ def main():
                     "tlc", "-workers", "1", "-fpmem", "0.05",
                     "-noGenerateSpecTE", "-metadir", tmp,
                 ]
-                if case.startswith("Monitor"):
+                if case.startswith(("Monitor", "RunnerExit")):
                     command.extend(["-coverage", "1"])
                 command.extend([
                     "-config", f"{case}.cfg",
                     (
                         "DescendantScan.tla" if case.startswith("DescendantScan")
                         else "RunnerFinish.tla" if case.startswith("RunnerFinish")
+                        else "RunnerExit.tla" if case.startswith("RunnerExit")
                         else "MonitorFreshness.tla" if case.startswith("Monitor")
                         else "BrokerRunner.tla"
                     ),

@@ -1224,6 +1224,8 @@ public nonisolated struct Tuna_Job: @unchecked Sendable {
   /// Clears the value of `queuePosition`. Subsequent reads from it will return its default value.
   public mutating func clearQueuePosition() {_uniqueStorage()._queuePosition = nil}
 
+  /// Whether the submitting runner's watch is registered. Projected only while
+  /// QUEUED; false in every other state, where it carries no meaning.
   public var runnerConnected: Bool {
     get {_storage._runnerConnected}
     set {_uniqueStorage()._runnerConnected = newValue}

@@ -282,6 +282,65 @@ nix develop -c env JAVA_TOOL_OPTIONS=-Xmx256m \
   --logs /tmp/tuna-runner-finish
 ```
 
+## Runner exit and takeover
+
+`RunnerExit.tla` follows one claimed, sealed job with a recorded root from
+`ReportStarted` until release. It models the race between the runner's finish
+report, the runner's own exit, the root and one child exiting, discovery
+passes (which may miss a just-started job, or fail) and the reconciliation
+that decides a runner-death takeover. The service's maintenance tick runs a
+discovery pass and then `Reconcile` in order; runner reports and process
+exits interleave anywhere.
+
+| Spec | Code |
+|---|---|
+| `ReportFinish` | `Scheduler.ReportFinished` (`scheduler/launch.go`), releasing in the same transaction via `reconcile` |
+| `RunnerExit`, `Reconcile` `dead` | runner probe, `TrackProcess`/`VerifyProcessExited`/`FenceRunnerTerminated` and `markUnknown` in `Scheduler.Reconcile` |
+| `BarrierOK`, `ok` | the discovery-barrier and tracked-exit checks of `Scheduler.reconcile` |
+| `needs` (`LiveTracked`) | `Scheduler.cleanupNeeded`: a tracked non-runner process not verified exited |
+| `record` | `takeoverReason` + `RecordTermination(RUNNER_DEAD)` |
+| `DiscoverStart`/`Commit`/`Missed`/`Fail` | `Scheduler.Discover` (`scheduler/discovery.go`) |
+| `Terminate` | `Scheduler.Terminate` (`scheduler/terminate.go`) |
+
+`OldTakeoverRule` restores the previous rule, which recorded a takeover
+whenever release was not yet possible. Its counterexample (74 distinct
+states, depth 5) is the observed spurious `RUNNER_DEAD`: the root exits, the
+runner exits, a discovery pass has not yet covered the root, and `Reconcile`
+records a takeover although nothing is alive. The same holds after a
+committed finish report. Go regressions
+`TestRunnerExitAfterFinishBeforeDiscoveryIsNotATakeover` (no pass yet, and
+a failed pass) and `TestUnreportedRunnerDeathWithExitedRootIsNotATakeover`
+reproduce it against the scheduler; `TestRunnerDeathBeforeDiscoveryTakesOverLiveRoot`
+and the existing runner-death tests keep real takeovers.
+
+With the fix, `RunnerExitSafety` (fair spec, no discovery failure) checked
+`NoSpuriousTakeover`, `TakeoverNeedsDeadRunner`, `NoTrackedLiveUnreserved`,
+`NoCapturedLiveUnreserved` and `ReleaseNeedsOutcome`, plus
+`CleanupEventually` (a live tracked child after runner exit is taken over or
+gone) and `ReleaseEventually`: 750 generated / 335 distinct states, depth 12.
+`RunnerExitFailureSafety` checked the safety invariants with failing
+discovery passes: 1,222 / 497 states, depth 13. Liveness is not claimed when
+discovery can fail indefinitely. Removing the barrier (`RunnerExitNoBarrier`)
+violated `NoCapturedLiveUnreserved` (69 distinct states): a finish report
+releases while an in-flight pass has captured a live child. Witnesses reached
+a clean release after runner exit with no takeover and a takeover of a
+tracked child. Coverage showed every action enabled where its constant
+allows it.
+
+Abstracted: probe errors (the code treats them as live), launch
+investigation and unknown roots, cancellation reasons and deadlines (not
+gated by the cleanup check; `TestCancelDeadlineReleasesSilentRunnerAfterRootExit`
+covers their release role), Terminate's freeze rounds, PID reuse, broker
+restart and multiple jobs. These are bounded model results, not proof of the
+implementation. Run them alone with:
+
+```bash
+nix develop -c env JAVA_TOOL_OPTIONS=-Xmx256m \
+  python3 docs/model/check.py RunnerExitSafety RunnerExitFailureSafety \
+  RunnerExitOldRule RunnerExitNoBarrier RunnerExitCleanRelease \
+  RunnerExitDeathTakeover --logs /tmp/tuna-runner-exit
+```
+
 ## Invariants and profiles
 
 The positive profiles check relevant subsets of:

@@ -12,6 +12,7 @@ import (
 
 	"github.com/boumenot/tuna/apps/tuna/contract"
 	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
+	"github.com/boumenot/tuna/apps/tuna/jobmetrics"
 	"github.com/boumenot/tuna/apps/tuna/storage"
 	"google.golang.org/protobuf/proto"
 )
@@ -780,6 +781,116 @@ func TestRunnerDeathReleaseRequiresRootAndKnownDescendantExit(t *testing.T) {
 	if err != nil || late.State != pb.JobState_JOB_STATE_FINISHED || late.Outcome.GetExitCode() != 3 ||
 		late.BrokerTermination.GetReason() != pb.BrokerTermination_REASON_RUNNER_DEAD {
 		t.Fatalf("late report lost recovery evidence: job=%v err=%v", late, err)
+	}
+}
+
+// startUndiscovered launches like start1 but leaves the root uncovered by any
+// discovery pass, as when a runner finishes before the next maintenance tick.
+func (h *harness) startUndiscovered(l *launched, pid int64) {
+	h.t.Helper()
+	if _, already, _, err := h.s.Claim(h.ctx, l.id, l.grant, l.req.Runner); err != nil || already {
+		h.t.Fatalf("claim: already=%v err=%v", already, err)
+	}
+	if _, _, err := h.s.Seal(h.ctx, l.id, l.grant, l.req.Runner, false); err != nil {
+		h.t.Fatalf("seal: %v", err)
+	}
+	l.proc = &pb.ProcessIdentity{Pid: pid, StartTime: contract.Timestamp(1000 + pid)}
+	if _, _, err := h.s.ReportStarted(h.ctx, l.id, l.grant, l.req.Runner, l.proc); err != nil {
+		h.t.Fatalf("started: %v", err)
+	}
+}
+
+// A runner that exits after its reported outcome, before discovery has
+// covered the root, leaves nothing for the broker to terminate: the job is
+// held only for the discovery barrier and must not be recorded as a takeover.
+func TestRunnerExitAfterFinishBeforeDiscoveryIsNotATakeover(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		pass func(t *testing.T, h *harness)
+	}{
+		{name: "no discovery pass yet", pass: func(*testing.T, *harness) {}},
+		{name: "failed discovery pass", pass: func(t *testing.T, h *harness) {
+			t.Helper()
+			if err := h.s.Discover(h.ctx, discoverySource(func(context.Context) (jobmetrics.Snapshot, error) {
+				return jobmetrics.Snapshot{}, errors.New("enumeration denied")
+			})); err == nil {
+				t.Fatal("discovery pass succeeded; want enumeration failure")
+			}
+		}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			probe := &fakeProbe{}
+			h, _ := launchHarness(t, 2, probe)
+			l := h.granted(2)
+			h.startUndiscovered(&l, 4242)
+			probe.exit(l.proc.Pid)
+			if _, _, err := h.s.ReportFinished(h.ctx, l.id, l.grant, l.req.Runner, l.proc, exited(0)); err != nil {
+				t.Fatal(err)
+			}
+			probe.exit(l.req.Runner.Process.Pid)
+			scenario.pass(t, h)
+			if _, err := h.s.Reconcile(h.ctx); err != nil {
+				t.Fatal(err)
+			}
+			if j := h.job(l.id); j.State == pb.JobState_JOB_STATE_FINISHED || j.BrokerTermination != nil ||
+				j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_EXITED {
+				t.Fatalf("clean runner exit was treated as a takeover or released early: %v", j)
+			}
+			if err := h.s.Discover(h.ctx, discoverySnapshot()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.s.Reconcile(h.ctx); err != nil {
+				t.Fatal(err)
+			}
+			j := h.expectState(l.id, pb.JobState_JOB_STATE_FINISHED)
+			if j.BrokerTermination != nil || j.Outcome.GetExitCode() != 0 {
+				t.Fatalf("finished job = %v", j)
+			}
+		})
+	}
+}
+
+// Model counterexample RunnerExitOldRule: the root and runner both exit with
+// no report before discovery covers the root. Runner death is still verified
+// and the outcome unknown, but nothing needs broker termination.
+func TestUnreportedRunnerDeathWithExitedRootIsNotATakeover(t *testing.T) {
+	probe := &fakeProbe{}
+	h, _ := launchHarness(t, 2, probe)
+	l := h.granted(2)
+	h.startUndiscovered(&l, 4242)
+	probe.exit(l.proc.Pid)
+	probe.exit(l.req.Runner.Process.Pid)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.job(l.id); j.State == pb.JobState_JOB_STATE_FINISHED || j.BrokerTermination != nil ||
+		j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN {
+		t.Fatalf("runner death without live processes = %v", j)
+	}
+	if err := h.s.Discover(h.ctx, discoverySnapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.expectState(l.id, pb.JobState_JOB_STATE_FINISHED); j.BrokerTermination != nil {
+		t.Fatalf("released job recorded a takeover: %v", j)
+	}
+}
+
+// Runner death still takes over a root that may be alive, even before any
+// discovery pass has covered it.
+func TestRunnerDeathBeforeDiscoveryTakesOverLiveRoot(t *testing.T) {
+	probe := &fakeProbe{}
+	h, _ := launchHarness(t, 2, probe)
+	l := h.granted(2)
+	h.startUndiscovered(&l, 4242)
+	probe.exit(l.req.Runner.Process.Pid)
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.job(l.id); j.BrokerTermination.GetReason() != pb.BrokerTermination_REASON_RUNNER_DEAD {
+		t.Fatalf("live root was not taken over: %v", j)
 	}
 }
 

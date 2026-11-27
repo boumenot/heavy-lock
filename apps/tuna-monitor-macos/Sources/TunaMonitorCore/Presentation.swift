@@ -222,7 +222,8 @@ public enum Presentation {
             let reason = oversized ? .weightExceedsCapacity : job.blockedReason
             if let blocked = Self.blockedText(reason, job: job, capacity: capacity) { warnings.append(blocked) }
         }
-        if job.state != .finished, !job.runnerConnected {
+        // The broker projects runner connectivity only for queued jobs.
+        if job.state == .queued, !job.runnerConnected {
             warnings.append(
                 "Runner disconnected"
                     + (job.hasGraceRemaining ? "; \(Self.duration(seconds: job.graceRemaining.seconds)) grace left" : ""))
@@ -233,8 +234,17 @@ public enum Presentation {
             warnings.append(text + "; not yet complete")
         }
         if job.hasCancelFailureDetail { warnings.append("Cancellation failed: \(job.cancelFailureDetail)") }
-        if job.hasBrokerTermination { warnings.append("Broker is terminating the job's processes") }
-        if job.hasOutcome, job.outcome.kind == .unknown { warnings.append("Outcome unknown; capacity may still be held") }
+        if job.hasBrokerTermination {
+            let reason = Self.terminationReasonText(job.brokerTermination.reason)
+            if job.state == .finished {
+                details.append("Broker took over termination" + (reason.map { ": \($0)" } ?? ""))
+            } else {
+                warnings.append("Broker is terminating the job's processes" + (reason.map { ": \($0)" } ?? ""))
+            }
+        }
+        if job.hasOutcome, job.outcome.kind == .unknown {
+            warnings.append(job.state == .finished ? "Outcome unknown" : "Outcome unknown; capacity may still be held")
+        }
 
         return JobRow(
             id: job.jobID, command: job.command, summary: summary.joined(separator: " · "),
@@ -270,6 +280,17 @@ public enum Presentation {
             [client.hasName ? client.name : nil, client.hasVersion ? client.version : nil].compactMap { $0 }.joined(separator: " "),
         ].filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Why the broker took over termination, or nil when unrecorded.
+    public static func terminationReasonText(_ reason: Tuna_BrokerTermination.Reason) -> String? {
+        switch reason {
+        case .runnerDead: "runner died"
+        case .cancelAckDeadline: "cancellation not acknowledged in time"
+        case .cancelCompletionDeadline: "cancellation did not complete in time"
+        case .cancelRunnerFailed: "runner failed to cancel"
+        default: nil
+        }
     }
 
     public static func stateName(_ state: Tuna_JobState) -> String {
