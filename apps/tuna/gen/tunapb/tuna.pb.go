@@ -1335,7 +1335,9 @@ type Job struct {
 	FinishedAt        *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
 	CancelRequestedAt *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=cancel_requested_at,json=cancelRequestedAt,proto3" json:"cancel_requested_at,omitempty"`
 	// Present only while QUEUED; 0 is the head.
-	QueuePosition              *uint32              `protobuf:"varint,16,opt,name=queue_position,json=queuePosition,proto3,oneof" json:"queue_position,omitempty"`
+	QueuePosition *uint32 `protobuf:"varint,16,opt,name=queue_position,json=queuePosition,proto3,oneof" json:"queue_position,omitempty"`
+	// Whether the submitting runner's watch is registered. Projected only while
+	// QUEUED; false in every other state, where it carries no meaning.
 	RunnerConnected            bool                 `protobuf:"varint,17,opt,name=runner_connected,json=runnerConnected,proto3" json:"runner_connected,omitempty"`
 	GraceRemaining             *durationpb.Duration `protobuf:"bytes,18,opt,name=grace_remaining,json=graceRemaining,proto3" json:"grace_remaining,omitempty"`
 	Grant                      *Grant               `protobuf:"bytes,19,opt,name=grant,proto3,oneof" json:"grant,omitempty"`

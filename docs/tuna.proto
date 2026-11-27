@@ -499,6 +499,8 @@ message Job {
 
   // Present only while QUEUED; 0 is the head.
   optional uint32 queue_position = 16;
+  // Whether the submitting runner's watch is registered. Projected only while
+  // QUEUED; false in every other state, where it carries no meaning.
   bool runner_connected = 17;
   google.protobuf.Duration grace_remaining = 18;
 

@@ -155,6 +155,34 @@ func TestCancelTakeoverPriorityAndCompletedCleanup(t *testing.T) {
 	}
 }
 
+// A cancel deadline against a live, silent runner whose root already exited
+// still records its takeover: the takeover's unknown outcome is what lets the
+// reservation be released.
+func TestCancelDeadlineReleasesSilentRunnerAfterRootExit(t *testing.T) {
+	probe := &fakeProbe{}
+	h, _ := launchHarness(t, 2, probe)
+	l := h.granted(2)
+	h.start1(&l, 4242)
+	probe.exit(l.proc.Pid)
+	if _, err := h.s.Cancel(h.ctx, l.id, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.Reconcile(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.clock.advance(time.Minute)
+	for range 2 {
+		if _, err := h.s.Reconcile(h.ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j := h.expectState(l.id, pb.JobState_JOB_STATE_FINISHED)
+	if j.BrokerTermination.GetReason() != pb.BrokerTermination_REASON_CANCEL_ACK_DEADLINE ||
+		j.Outcome.GetKind() != pb.OutcomeKind_OUTCOME_KIND_UNKNOWN {
+		t.Fatalf("silent runner's cancelled job = %v", j)
+	}
+}
+
 func TestCancelDeadlineRestartsAfterRecovery(t *testing.T) {
 	for _, scenario := range []struct {
 		name                      string

@@ -381,7 +381,16 @@ func (s *Scheduler) Reconcile(ctx context.Context) ([]*pb.BrokerEvent, error) {
 					return err
 				}
 				if current.BrokerTermination == nil {
-					if reason := s.takeoverReason(current, dead, now); reason != pb.BrokerTermination_REASON_UNSPECIFIED {
+					reason := s.takeoverReason(current, dead, now)
+					needed := reason != pb.BrokerTermination_REASON_UNSPECIFIED
+					// A cancel takeover also supplies the unknown outcome that
+					// releases a silent runner's job, so only runner death is gated.
+					if reason == pb.BrokerTermination_REASON_RUNNER_DEAD {
+						if needed, err = s.cleanupNeeded(ctx, tx, current, &warnings); err != nil {
+							return err
+						}
+					}
+					if needed {
 						if err := tx.RecordTermination(j.JobId, reason); err != nil {
 							return err
 						}
@@ -406,6 +415,44 @@ func (s *Scheduler) Reconcile(ctx context.Context) ([]*pb.BrokerEvent, error) {
 	}
 	more, err := s.admitLocked(ctx)
 	return append(events, more...), err
+}
+
+// cleanupNeeded reports whether a held reservation whose runner died has
+// anything for a broker takeover to terminate: an unresolved launch, or a tracked non-runner
+// process not verified exited. A probe error counts as needing cleanup.
+// Without such a process, the reservation is held only for release evidence
+// such as the discovery barrier, and the runner's exit (for example after it
+// reported the job's outcome) is not a takeover. A later discovery pass that
+// tracks a live process makes cleanup needed again on the next reconcile.
+func (s *Scheduler) cleanupNeeded(ctx context.Context, tx *storage.Tx, job *pb.Job, warnings *[]probeWarning) (bool, error) {
+	if job.Process == nil {
+		res, err := tx.Reservation(job.JobId)
+		if err != nil {
+			return false, err
+		}
+		if res.NoLaunchProof == nil {
+			return true, nil
+		}
+	}
+	processes, err := tx.Processes(job.JobId)
+	if err != nil {
+		return false, err
+	}
+	needed := false
+	for _, p := range processes {
+		if p.Role == "runner" || p.ExitedVerifiedAt != nil {
+			continue
+		}
+		exited, err := s.probeExited(ctx, job.JobId, p.Role, p.Identity, warnings)
+		if err != nil || !exited {
+			needed = true
+			continue
+		}
+		if err := tx.VerifyProcessExited(job.JobId, p.Identity); err != nil {
+			return false, err
+		}
+	}
+	return needed, nil
 }
 
 // reconcile releases a fenced reservation once its evidence is complete:

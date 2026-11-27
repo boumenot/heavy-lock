@@ -166,6 +166,17 @@ void main() {
         expect(
           shell.calls.last,
           containsAll([
+            'RunnerExitSafety',
+            'RunnerExitFailureSafety',
+            'RunnerExitOldRule',
+            'RunnerExitNoBarrier',
+            'RunnerExitCleanRelease',
+            'RunnerExitDeathTakeover',
+          ]),
+        );
+        expect(
+          shell.calls.last,
+          containsAll([
             'MonitorDelivery',
             'MonitorLoss',
             'MonitorRestart',

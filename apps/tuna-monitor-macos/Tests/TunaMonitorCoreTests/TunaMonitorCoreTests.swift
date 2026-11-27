@@ -101,6 +101,32 @@ import Testing
         #expect(Presentation.row(job("ok", .queued, weight: 4), capacity: 4, now: self.now).warnings.isEmpty)
     }
 
+    @Test func runnerConnectivityIsWarnedOnlyWhileQueued() {
+        // The broker projects runner_connected only for queued jobs.
+        var queued = job("q", .queued)
+        queued.runnerConnected = false
+        #expect(Presentation.row(queued, capacity: 2, now: self.now).warnings == ["Runner disconnected"])
+        for state in [Tuna_JobState.reserved, .running, .finishing, .finished] {
+            var active = job("a", state)
+            active.runnerConnected = false
+            #expect(Presentation.row(active, capacity: 2, now: self.now).warnings.isEmpty)
+        }
+    }
+
+    @Test func brokerTerminationIsActiveOnlyUntilFinished() {
+        var running = job("r", .running)
+        running.brokerTermination.reason = .runnerDead
+        #expect(
+            Presentation.row(running, capacity: 2, now: self.now).warnings
+                == ["Broker is terminating the job's processes: runner died"])
+        var finished = job("f", .finished)
+        finished.brokerTermination.reason = .cancelAckDeadline
+        finished.outcome.kind = .unknown
+        let row = Presentation.row(finished, capacity: 2, now: self.now)
+        #expect(row.warnings == ["Outcome unknown"])
+        #expect(row.details.contains("Broker took over termination: cancellation not acknowledged in time"))
+    }
+
     @Test func overCapacityIsExplained() {
         var state = MonitorState()
         state.status = status(capacity: 2, occupied: 0)

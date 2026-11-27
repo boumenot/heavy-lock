@@ -180,7 +180,15 @@ for retry eligibility. Separate monotonic
 acknowledgment and completion clocks default to 5 and 30 seconds;
 acknowledgment alone is not completion. An explicit
 failure, either expired deadline or verified runner death records a sticky
-takeover reason after cleanup is rechecked. Restart reconstructs a full
+takeover reason after cleanup is rechecked. For runner death, cleanup is
+needed only for an unresolved launch or a tracked non-runner process the OS
+probe has not verified exited (a probe error counts as live). A cancellation
+takeover is still recorded with nothing left to stop: its unknown outcome is
+what releases a job whose runner stays alive but silent. A reservation held only by
+the descendant-scan barrier, for example after a runner reports a finished
+root and exits before the next discovery pass, is released by that pass
+without a takeover; a pass that tracks a live descendant makes cleanup
+needed and takes over in the same tick. Restart reconstructs a full
 interval for the current phase after readiness; recovery and storage
 failure do not start a takeover. Late valid reports can still enrich the
 outcome without replacing the reason.

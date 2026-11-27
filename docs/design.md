@@ -745,7 +745,13 @@ reason. An acknowledgment committed before the decision makes the
 acknowledgment deadline ineligible. A root outcome alone does not satisfy
 the completion deadline while a known descendant or launch remains
 unresolved; if the applicable release checks are already established, no
-termination takeover is needed. If takeover committed first, a later
+termination takeover is needed. For `runner_dead`, cleanup is needed when a
+launch is unresolved or a tracked non-runner process is not OS-verified
+exited; a reservation held only for release evidence (such as the
+descendant-scan barrier after a runner exits following its finish report)
+is not a takeover, and its later release records none. A cancellation
+reason is still recorded against a live runner, because its unknown outcome
+is what releases a silent runner's job. If takeover committed first, a later
 acknowledgment, outcome, failure report or verified runner death is recorded
 without replacing its reason or revoking the takeover. For example, death
 caused by terminating a blocked runner does not rewrite a prior timeout
@@ -1178,7 +1184,9 @@ termination procedure (section 3). This is not a cancellation request and
 needs no monitor confirmation.
 - **Trigger:** OS-verified death only. A disconnect, missed heartbeat,
   expired launch or cancellation deadline, or ambiguous identity is not
-  death and never triggers it.
+  death and never triggers it. A runner exiting with nothing tracked left
+  to stop, for example after reporting its root's outcome, records no
+  takeover; it still fences the reservation.
 - **Unknown root:** if the runner died before any root identity was recorded,
   there is nothing verifiable to stop. The reservation stays held under the
   approved rules, with no override; verified death does fence future launch.
