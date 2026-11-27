@@ -29,6 +29,7 @@ const (
 	usageExitCode    = runner.ExitUsage
 	softwareExitCode = runner.ExitSoftware
 	serviceUsage     = "Service: tuna service [--port PORT (default 49783)] [--data-dir DIR]\n" +
+		"  [--capacity N (positive; default automatic)] [--backfill-limit K (default 1; 0 is FIFO)]\n" +
 		"  [--event-max-age DURATION (default 24h)] [--event-max-count N (default 100000)]\n" +
 		"  [--launch-timeout DURATION (default 30s)]\n" +
 		"  [--cancel-ack-timeout DURATION (default 5s)]\n" +
@@ -189,6 +190,25 @@ func dispatchService(args []string, stdout, stderr io.Writer, l launcher) int {
 	fs.SetOutput(io.Discard)
 	port := fs.Int("port", transport.DefaultPort, "broker port")
 	dataDir := fs.String("data-dir", "", "broker state directory")
+	var capacity uint32
+	var backfillLimit *uint32
+	fs.Func("capacity", "positive broker capacity", func(value string) error {
+		n, err := strconv.ParseUint(value, 10, 32)
+		if err != nil || n == 0 {
+			return errors.New("capacity must be a positive 32-bit integer")
+		}
+		capacity = uint32(n)
+		return nil
+	})
+	fs.Func("backfill-limit", "maximum bypasses per head", func(value string) error {
+		n, err := strconv.ParseUint(value, 10, 32)
+		if err != nil {
+			return errors.New("backfill limit must be a non-negative 32-bit integer")
+		}
+		limit := uint32(n)
+		backfillLimit = &limit
+		return nil
+	})
 	maxAge := fs.Duration("event-max-age", 24*time.Hour, "event replay age limit")
 	maxCount := fs.Int64("event-max-count", 100000, "event replay count limit")
 	launchTimeout := fs.Duration("launch-timeout", scheduler.LaunchTimeout, "launch investigation timeout")
@@ -209,6 +229,8 @@ func dispatchService(args []string, stdout, stderr io.Writer, l launcher) int {
 	return l.service(service.Options{
 		Port:                    *port,
 		DataDir:                 *dataDir,
+		Capacity:                capacity,
+		BackfillLimit:           backfillLimit,
 		ServiceVersion:          version,
 		Log:                     stderr,
 		EventMaxAge:             *maxAge,

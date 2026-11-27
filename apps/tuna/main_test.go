@@ -126,6 +126,42 @@ func TestDispatchService(t *testing.T) {
 	}
 }
 
+func TestDispatchServiceAdmissionSettings(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		capacity uint32
+		backfill uint32
+	}{
+		{name: "configured", args: []string{"--capacity", "4", "--backfill-limit", "0"}, capacity: 4, backfill: 0},
+		{name: "max values", args: []string{"--capacity=4294967295", "--backfill-limit=4294967295"}, capacity: 4294967295, backfill: 4294967295},
+		{name: "zero capacity", args: []string{"--capacity", "0"}, wantCode: usageExitCode},
+		{name: "negative capacity", args: []string{"--capacity=-1"}, wantCode: usageExitCode},
+		{name: "capacity overflow", args: []string{"--capacity=4294967296"}, wantCode: usageExitCode},
+		{name: "empty capacity", args: []string{"--capacity="}, wantCode: usageExitCode},
+		{name: "negative backfill", args: []string{"--backfill-limit=-1"}, wantCode: usageExitCode},
+		{name: "backfill overflow", args: []string{"--backfill-limit=4294967296"}, wantCode: usageExitCode},
+		{name: "empty backfill", args: []string{"--backfill-limit="}, wantCode: usageExitCode},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var r recorded
+			var stderr bytes.Buffer
+			code := dispatch(append([]string{"service"}, tt.args...), &bytes.Buffer{}, &stderr, r.launcher())
+			if code != tt.wantCode || (r.service != nil) != (tt.wantCode == 0) {
+				t.Fatalf("exit code = %d, options = %+v, stderr = %q", code, r.service, stderr.String())
+			}
+			if r.service != nil && r.service.Capacity != tt.capacity {
+				t.Fatalf("capacity = %d, want %d", r.service.Capacity, tt.capacity)
+			}
+			if r.service != nil && (r.service.BackfillLimit == nil || *r.service.BackfillLimit != tt.backfill) {
+				t.Fatalf("backfill limit = %v, want %d", r.service.BackfillLimit, tt.backfill)
+			}
+		})
+	}
+}
+
 func TestDispatchServiceLaunchTimeout(t *testing.T) {
 	tests := []struct {
 		value string

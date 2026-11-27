@@ -475,7 +475,7 @@ class TunaApp extends App {
   @override
   String get name => 'tuna';
   @override
-  String get description => 'v2 runner/broker prototype (Go; runs no work)';
+  String get description => 'v2 runner/broker prototype (Go)';
   @override
   Set<String> get hosts => const {'macos'};
   @override

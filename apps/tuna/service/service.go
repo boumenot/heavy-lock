@@ -42,7 +42,9 @@ type Options struct {
 	// account's stable default directory, independent of DataDir and HOME.
 	LockDir string
 	// Capacity 0 selects the v1-compatible default for this machine.
-	Capacity       uint32
+	Capacity uint32
+	// BackfillLimit nil selects the default; a pointer to zero is strict FIFO.
+	BackfillLimit  *uint32
 	ServiceVersion string
 	Log            io.Writer
 	// Sampler defaults to scheduler.DarwinSampler.
@@ -229,6 +231,9 @@ func Run(ctx context.Context, o Options) (err error) {
 
 	hub := broker.NewHub()
 	cfg := scheduler.DefaultConfig(o.Capacity)
+	if o.BackfillLimit != nil {
+		cfg.BackfillLimit = *o.BackfillLimit
+	}
 	if o.LaunchTimeout != 0 {
 		cfg.LaunchTimeout = o.LaunchTimeout
 	}

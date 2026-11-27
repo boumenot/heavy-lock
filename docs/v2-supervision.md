@@ -75,6 +75,11 @@ mkdir -p -m 700 "$(dirname "$bin")" "$state" "$(dirname "$plist")"
 install -m 700 build/tuna/tuna "$bin"
 : >> "$log"
 sh tool/render-tuna-launch-agent.sh "$bin" "$log" "$port" > "$plist"
+# Optional example: uncomment these four lines to set capacity 4 and strict FIFO.
+# plutil -insert ProgramArguments.4 -string --capacity "$plist"
+# plutil -insert ProgramArguments.5 -string 4 "$plist"
+# plutil -insert ProgramArguments.6 -string --backfill-limit "$plist"
+# plutil -insert ProgramArguments.7 -string 0 "$plist"
 plutil -lint "$plist"
 launchctl bootstrap "gui/$(id -u)" "$plist"
 launchctl print "gui/$(id -u)/$label"
@@ -86,6 +91,14 @@ does not prove readiness. If startup fails, inspect the log, the selected port
 and filesystem permissions. No service is started on demand by clients; use
 `tuna --port PORT -- command ...` only after a separately authorized cutover.
 Do not treat a GUI login agent as proof of availability in an SSH-only session.
+
+Capacity defaults to the automatic v1-compatible value; `--capacity` accepts a
+positive 32-bit integer. Backfill defaults to 1; `--backfill-limit` accepts a
+non-negative 32-bit integer and 0 selects strict FIFO. These settings are fixed
+for one broker run. Change an existing agent only with separate authorization
+and after draining jobs; retain reservations and state across restart. A lower
+capacity does not release existing reservations, and oversized queued jobs
+remain queued with a warning. V1 `HEAVY_LOCK_CAPACITY` does not configure v2.
 
 ## Upgrade and uninstall
 

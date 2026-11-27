@@ -50,10 +50,11 @@ targets:
 | `dart tool/dev.dart install <app\|all> [dir]` | Install an existing build; `dir` only for a single app |
 | `dart tool/dev.dart version` | Print the runner's version stamp |
 
-`all` means the applications implemented for this host (all four on macOS;
+`all` means the applications implemented for this host (all five on macOS;
 `heavy-lock` on Linux and Windows), never future targets or cross-compiles.
-`tuna` and `heavylock-v2-swift` are built and tested but not installable:
-`install all` skips them and installing either directly exits 69.
+`tuna`, `heavylock-v2-swift` and `tuna-monitor-macos` are built and tested
+but not installable: `install all` skips them and installing any directly
+exits 69.
 Unknown targets exit 64; future or host-unsupported targets exit 69. A
 failed build or install keeps the previous artifact.
 
@@ -63,6 +64,7 @@ failed build or install keeps the previous artifact.
 | `monitor-macos` | `build/monitor-macos/Heavy Lock Status.app` | `~/Applications/Heavy Lock Status.app` | Copied beside the target, then swapped in; the old bundle is restored on failure |
 | `tuna` | `build/tuna/tuna`, `tuna-test-broker` | — | Not installable (v2 prototype; the test broker is for integration tests only) |
 | `heavylock-v2-swift` | SwiftPM `.build/` only | — | Not installable (library) |
+| `tuna-monitor-macos` | `build/tuna-monitor-macos/Tuna Monitor.app` | — | Not installable (v2 prototype) |
 
 The orchestrator does not acquire the lock itself. Wrap builds and test
 suites in the shared runner:
@@ -381,7 +383,8 @@ target is macOS 26+ on Apple Silicon, exercised on macOS 26.7.3/arm64 with
 Xcode 27.2 (Swift 6.4.2), Go 1.27.3 and `protoc` 36.2.
 
 ```bash
-tuna service [--port 49783] [--data-dir DIR] [--event-max-age 24h] \
+tuna service [--port 49783] [--data-dir DIR] [--capacity N] [--backfill-limit K] \
+  [--event-max-age 24h] \
   [--event-max-count 100000] [--launch-timeout 30s] \
   [--cancel-ack-timeout 5s] [--cancel-completion-timeout 30s]  # per-user broker; one per user
 tuna --port 49783 [--weight heavy|light|N] [--repository [HOST/]OWNER/NAME] \
@@ -400,6 +403,12 @@ admission is open and stops cleanly on SIGINT/SIGTERM. A second broker exits
 the exit code unspecified); a port conflict exits 70. A per-user launchd agent
 can start and supervise it at login; see the [supervision and installation
 guide](docs/v2-supervision.md) for manual-check evidence and limitations.
+`--capacity` accepts a positive 32-bit integer; absent it, capacity is computed
+as in v1 (clamped to 2–8). `--backfill-limit` accepts a non-negative 32-bit
+integer, defaults to 1, and 0 selects strict FIFO. Both are fixed for a broker
+run; changing either requires a restart. Existing reservations remain held
+when capacity changes, and newly submitted weights above capacity are rejected.
+V1 `HEAVY_LOCK_CAPACITY` does not configure v2.
 The runner:
 
 - requires an explicit `--port`, a running, ready broker, and a command
