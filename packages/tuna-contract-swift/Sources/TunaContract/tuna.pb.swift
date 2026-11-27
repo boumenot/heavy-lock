@@ -2146,7 +2146,8 @@ public nonisolated struct Tuna_BrokerStatus: @unchecked Sendable {
   /// Clears the value of `freeMemoryBytes`. Subsequent reads from it will return its default value.
   public mutating func clearFreeMemoryBytes() {_uniqueStorage()._freeMemoryBytes = nil}
 
-  /// only this interval controls admission
+  /// Keep declarations adjacent for readable JSON; retain their wire numbers.
+  /// Only the 1-minute interval controls admission.
   public var loadAverage1M: Double {
     get {_storage._loadAverage1M ?? 0}
     set {_uniqueStorage()._loadAverage1M = newValue}
@@ -2155,6 +2156,26 @@ public nonisolated struct Tuna_BrokerStatus: @unchecked Sendable {
   public var hasLoadAverage1M: Bool {_storage._loadAverage1M != nil}
   /// Clears the value of `loadAverage1M`. Subsequent reads from it will return its default value.
   public mutating func clearLoadAverage1M() {_uniqueStorage()._loadAverage1M = nil}
+
+  /// informational
+  public var loadAverage5M: Double {
+    get {_storage._loadAverage5M ?? 0}
+    set {_uniqueStorage()._loadAverage5M = newValue}
+  }
+  /// Returns true if `loadAverage5M` has been explicitly set.
+  public var hasLoadAverage5M: Bool {_storage._loadAverage5M != nil}
+  /// Clears the value of `loadAverage5M`. Subsequent reads from it will return its default value.
+  public mutating func clearLoadAverage5M() {_uniqueStorage()._loadAverage5M = nil}
+
+  /// informational
+  public var loadAverage15M: Double {
+    get {_storage._loadAverage15M ?? 0}
+    set {_uniqueStorage()._loadAverage15M = newValue}
+  }
+  /// Returns true if `loadAverage15M` has been explicitly set.
+  public var hasLoadAverage15M: Bool {_storage._loadAverage15M != nil}
+  /// Clears the value of `loadAverage15M`. Subsequent reads from it will return its default value.
+  public mutating func clearLoadAverage15M() {_uniqueStorage()._loadAverage15M = nil}
 
   public var storageUnavailable: Bool {
     get {_storage._storageUnavailable}
@@ -2185,26 +2206,6 @@ public nonisolated struct Tuna_BrokerStatus: @unchecked Sendable {
     get {_storage._queueState}
     set {_uniqueStorage()._queueState = newValue}
   }
-
-  /// informational
-  public var loadAverage5M: Double {
-    get {_storage._loadAverage5M ?? 0}
-    set {_uniqueStorage()._loadAverage5M = newValue}
-  }
-  /// Returns true if `loadAverage5M` has been explicitly set.
-  public var hasLoadAverage5M: Bool {_storage._loadAverage5M != nil}
-  /// Clears the value of `loadAverage5M`. Subsequent reads from it will return its default value.
-  public mutating func clearLoadAverage5M() {_uniqueStorage()._loadAverage5M = nil}
-
-  /// informational
-  public var loadAverage15M: Double {
-    get {_storage._loadAverage15M ?? 0}
-    set {_uniqueStorage()._loadAverage15M = newValue}
-  }
-  /// Returns true if `loadAverage15M` has been explicitly set.
-  public var hasLoadAverage15M: Bool {_storage._loadAverage15M != nil}
-  /// Clears the value of `loadAverage15M`. Subsequent reads from it will return its default value.
-  public mutating func clearLoadAverage15M() {_uniqueStorage()._loadAverage15M = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -4467,13 +4468,13 @@ nonisolated extension Tuna_BrokerStatus: SwiftProtobuf.Message, SwiftProtobuf._M
     var _headBlockedReason: Tuna_BlockedReason = .unspecified
     var _freeMemoryBytes: Int64? = nil
     var _loadAverage1M: Double? = nil
+    var _loadAverage5M: Double? = nil
+    var _loadAverage15M: Double? = nil
     var _storageUnavailable: Bool = false
     var _unreconciledReservations: UInt32 = 0
     var _backfillLimit: UInt32 = 0
     var _queueMode: Tuna_QueueMode = .unspecified
     var _queueState: Tuna_QueueState = .unspecified
-    var _loadAverage5M: Double? = nil
-    var _loadAverage15M: Double? = nil
 
       // This property is used as the initial default value for new instances of the type.
       // The type itself is protecting the reference to its storage via CoW semantics.
@@ -4494,13 +4495,13 @@ nonisolated extension Tuna_BrokerStatus: SwiftProtobuf.Message, SwiftProtobuf._M
       _headBlockedReason = source._headBlockedReason
       _freeMemoryBytes = source._freeMemoryBytes
       _loadAverage1M = source._loadAverage1M
+      _loadAverage5M = source._loadAverage5M
+      _loadAverage15M = source._loadAverage15M
       _storageUnavailable = source._storageUnavailable
       _unreconciledReservations = source._unreconciledReservations
       _backfillLimit = source._backfillLimit
       _queueMode = source._queueMode
       _queueState = source._queueState
-      _loadAverage5M = source._loadAverage5M
-      _loadAverage15M = source._loadAverage15M
     }
   }
 
@@ -4618,13 +4619,13 @@ nonisolated extension Tuna_BrokerStatus: SwiftProtobuf.Message, SwiftProtobuf._M
         if _storage._headBlockedReason != rhs_storage._headBlockedReason {return false}
         if _storage._freeMemoryBytes != rhs_storage._freeMemoryBytes {return false}
         if _storage._loadAverage1M != rhs_storage._loadAverage1M {return false}
+        if _storage._loadAverage5M != rhs_storage._loadAverage5M {return false}
+        if _storage._loadAverage15M != rhs_storage._loadAverage15M {return false}
         if _storage._storageUnavailable != rhs_storage._storageUnavailable {return false}
         if _storage._unreconciledReservations != rhs_storage._unreconciledReservations {return false}
         if _storage._backfillLimit != rhs_storage._backfillLimit {return false}
         if _storage._queueMode != rhs_storage._queueMode {return false}
         if _storage._queueState != rhs_storage._queueState {return false}
-        if _storage._loadAverage5M != rhs_storage._loadAverage5M {return false}
-        if _storage._loadAverage15M != rhs_storage._loadAverage15M {return false}
         return true
       }
       if !storagesAreEqual {return false}

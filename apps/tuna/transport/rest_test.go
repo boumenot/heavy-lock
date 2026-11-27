@@ -1,12 +1,14 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,6 +27,7 @@ type recordingBroker struct {
 	called  string
 	request proto.Message
 	job     *tunapb.Job
+	status  *tunapb.BrokerStatus
 }
 
 func (b *recordingBroker) record(name string, request proto.Message) {
@@ -38,6 +41,9 @@ func (b *recordingBroker) GetHealth(_ context.Context, r *tunapb.GetHealthReques
 }
 func (b *recordingBroker) GetStatus(_ context.Context, r *tunapb.GetStatusRequest) (*tunapb.BrokerStatus, error) {
 	b.record("GetStatus", r)
+	if b.status != nil {
+		return proto.Clone(b.status).(*tunapb.BrokerStatus), nil
+	}
 	return &tunapb.BrokerStatus{}, nil
 }
 func (b *recordingBroker) GetQueue(_ context.Context, r *tunapb.GetQueueRequest) (*tunapb.Queue, error) {
@@ -187,6 +193,100 @@ func TestRESTJSONGoldenShapes(t *testing.T) {
 			}
 			if response.Code != http.StatusOK || !reflect.DeepEqual(got, want) {
 				t.Fatalf("status %d, JSON %s; want %s", response.Code, response.Body.String(), tt.golden)
+			}
+		})
+	}
+}
+
+func TestRESTStatusLoadAveragesJSONOrder(t *testing.T) {
+	tests := []struct {
+		name  string
+		loads [3]*float64
+	}{
+		{"all present", [3]*float64{proto.Float64(1.25), proto.Float64(2.5), proto.Float64(3.75)}},
+		{"explicit zeros", [3]*float64{proto.Float64(0), proto.Float64(0), proto.Float64(0)}},
+		{"one and fifteen only", [3]*float64{proto.Float64(0), nil, proto.Float64(3.75)}},
+		{"five and fifteen only", [3]*float64{nil, proto.Float64(2.5), proto.Float64(3.75)}},
+		{"all absent", [3]*float64{}},
+	}
+	loadNames := []string{"loadAverage1m", "loadAverage5m", "loadAverage15m"}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := &tunapb.BrokerStatus{
+				Capacity: 6, Occupied: 2, Paused: true, PausedAt: contract.Timestamp(1764121200000000000),
+				Recovering: true, QueuedJobs: 3, RunningJobs: 1, FreeMemoryBytes: proto.Int64(123456),
+				LoadAverage_1M: tt.loads[0], LoadAverage_5M: tt.loads[1], LoadAverage_15M: tt.loads[2],
+				StorageUnavailable: true, UnreconciledReservations: 4, BackfillLimit: 5,
+				QueueMode: tunapb.QueueMode_QUEUE_MODE_PAUSED,
+			}
+			response := httptest.NewRecorder()
+			newHandler(&recordingBroker{status: status}, DefaultPort).ServeHTTP(
+				response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:49783/status", nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+
+			decoder := json.NewDecoder(bytes.NewReader(response.Body.Bytes()))
+			if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+				t.Fatalf("invalid JSON object start %v: %v", token, err)
+			}
+			var keys []string
+			for decoder.More() {
+				token, err := decoder.Token()
+				if err != nil {
+					t.Fatal(err)
+				}
+				name, ok := token.(string)
+				if !ok {
+					t.Fatalf("invalid JSON key %v", token)
+				}
+				keys = append(keys, name)
+				var value json.RawMessage
+				if err := decoder.Decode(&value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+				t.Fatalf("invalid JSON object end %v: %v", token, err)
+			}
+
+			want := map[string]any{
+				"capacity": float64(6), "occupied": float64(2), "paused": true,
+				"pausedAt": "2025-11-26T01:40:00Z", "recovering": true,
+				"queuedJobs": float64(3), "runningJobs": float64(1),
+				"headBlockedReason": "BLOCKED_REASON_UNSPECIFIED", "freeMemoryBytes": "123456",
+				"storageUnavailable": true, "unreconciledReservations": float64(4), "backfillLimit": float64(5),
+				"queueMode": "QUEUE_MODE_PAUSED", "queueState": "QUEUE_STATE_UNSPECIFIED",
+			}
+			var wantLoads []string
+			for i, name := range loadNames {
+				if tt.loads[i] != nil {
+					want[name] = *tt.loads[i]
+					wantLoads = append(wantLoads, name)
+				} else if slices.Contains(keys, name) {
+					t.Errorf("absent load field %q appeared in %v", name, keys)
+				}
+			}
+			if len(wantLoads) != 0 {
+				start := slices.Index(keys, wantLoads[0])
+				if start < 0 || start+len(wantLoads) > len(keys) ||
+					!reflect.DeepEqual(keys[start:start+len(wantLoads)], wantLoads) {
+					t.Errorf("load keys %v are not consecutive in serialized fields %v", wantLoads, keys)
+				}
+			}
+			var got map[string]any
+			if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("JSON = %v, want %v", got, want)
+			}
+			var decoded tunapb.BrokerStatus
+			if err := protojson.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if !proto.Equal(&decoded, status) {
+				t.Errorf("decoded status = %v, want %v", &decoded, status)
 			}
 		})
 	}

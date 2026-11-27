@@ -52,6 +52,18 @@ private func hex(_ data: Data) -> String {
     #expect(decoded.hasRootCpuTime && decoded.rootCpuTime.seconds == 1 && decoded.rootCpuTime.nanos == 234_000_000)
 }
 
+@Test func statusLoadAveragesMatchGoEncoding() throws {
+    var status = Tuna_BrokerStatus()
+    status.loadAverage1M = 1.25
+    status.loadAverage5M = 2.5
+    status.loadAverage15M = 0
+    let encoded: Data = try status.serializedBytes()
+    #expect(hex(encoded) == "51000000000000f43f8101000000000000044089010000000000000000")
+    let decoded = try Tuna_BrokerStatus(serializedBytes: encoded)
+    #expect(decoded == status)
+    #expect(decoded.hasLoadAverage15M && decoded.loadAverage15M == 0)
+}
+
 @Test func contractNames() {
     #expect(Tuna_RunnerService.descriptor.fullyQualifiedService == "tuna.RunnerService")
     #expect(Tuna_ControlService.descriptor.fullyQualifiedService == "tuna.ControlService")

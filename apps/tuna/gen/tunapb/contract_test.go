@@ -65,6 +65,27 @@ func TestFinishMeasurementsMatchSwiftEncoding(t *testing.T) {
 	}
 }
 
+func TestBrokerStatusLoadAveragesWireCompatibility(t *testing.T) {
+	status := &BrokerStatus{
+		LoadAverage_1M: proto.Float64(1.25), LoadAverage_5M: proto.Float64(2.5), LoadAverage_15M: proto.Float64(0),
+	}
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const statusHex = "51000000000000f43f8101000000000000044089010000000000000000"
+	if got := hex.EncodeToString(encoded); got != statusHex {
+		t.Fatalf("encoding = %s, want %s", got, statusHex)
+	}
+	var decoded BrokerStatus
+	if err := proto.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(&decoded, status) {
+		t.Fatalf("decoded = %v, want %v", &decoded, status)
+	}
+}
+
 func TestContractNames(t *testing.T) {
 	if got := ErrorReason_JOB_NOT_WAITING.String(); got != "JOB_NOT_WAITING" {
 		t.Errorf("ErrorReason name = %q", got)

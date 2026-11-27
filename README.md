@@ -268,8 +268,9 @@ tuna force-start --job JOB_UUID
 Controls default to port 49783 and a total five-second RPC deadline
 (`--timeout 10s` overrides it); runners still require an explicit port.
 `--json` emits protobuf JSON including scalar defaults while omitting unknown
-optional values. Human output labels forced jobs `FORCED`, shows job times in
-the local time zone and reports available 1-, 5- and 15-minute load averages;
+optional values. `tuna status --json` and `/status` group available 1-, 5- and
+15-minute load averages in that order. Human output labels forced jobs `FORCED`,
+shows job times in the local time zone and reports available load averages;
 only the 1-minute load affects admission. These are the last values sampled
 for an admission decision, not a continuous poll; the monitor sees updates
 when a status event is published, so readings can lag. Usage errors exit 64,
