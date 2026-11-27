@@ -106,13 +106,21 @@ public final class MonitorSession {
             do {
                 let health = try await self.client.health()
                 do {
-                    try HeavyLockV2.checkService(health)
+                    // Minor 1 adds the explicit queue mode and state.
+                    try HeavyLockV2.checkService(health, minimumMinor: 1)
                 } catch {
                     self.state.connection = .incompatible(Self.describe(error))
                     try await Task.sleep(for: self.reconnectDelay)
                     continue
                 }
                 self.state.health = health
+                if health.hasStorageDetail {
+                    // Failed storage is sticky until the broker restarts and
+                    // it cannot stream events, so poll health instead.
+                    self.state.connection = .brokerError(health.storageDetail)
+                    try await Task.sleep(for: self.reconnectDelay)
+                    continue
+                }
                 try await self.watch()
                 throw Restart.streamEnded
             } catch {

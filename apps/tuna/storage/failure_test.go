@@ -21,7 +21,7 @@ import (
 func TestFailedCommitReturnsNoEventsAndPoisonsStore(t *testing.T) {
 	f := setup(t)
 	events, err := f.store.Write(f.ctx, func(tx *Tx) error {
-		if err := tx.Pause(true); err != nil {
+		if err := tx.SetQueueMode(pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 			return err
 		}
 		if err := tx.exec("PRAGMA defer_foreign_keys=ON"); err != nil {
@@ -49,7 +49,7 @@ func TestFailedCommitReturnsNoEventsAndPoisonsStore(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if s.Paused {
+		if s.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED {
 			t.Fatal("failed commit published pause")
 		}
 		var last int64
@@ -77,7 +77,7 @@ func TestCancelledReadDoesNotPoisonStorage(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || f.store.Failure() != nil {
 		t.Fatalf("cancelled client read poisoned storage: err=%v failure=%v", err, f.store.Failure())
 	}
-	f.write(func(tx *Tx) error { return tx.Pause(true) })
+	f.write(func(tx *Tx) error { return tx.SetQueueMode(pb.QueueMode_QUEUE_MODE_PAUSED) })
 }
 
 func TestBusyDecisionRollbackDoesNotRetainKey(t *testing.T) {
@@ -103,10 +103,10 @@ func TestBusyDecisionRollbackDoesNotRetainKey(t *testing.T) {
 func TestSwallowedWriteFailureStillRollsBack(t *testing.T) {
 	f := setup(t)
 	events, err := f.store.Write(f.ctx, func(tx *Tx) error {
-		if err := tx.Pause(true); err != nil {
+		if err := tx.SetQueueMode(pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 			return err
 		}
-		_ = tx.exec("UPDATE broker_state SET paused=2 WHERE id=1")
+		_ = tx.exec("UPDATE broker_state SET queue_mode='stopped' WHERE id=1")
 		return nil
 	})
 	if err == nil || len(events) != 0 || f.store.Failure() == nil {
@@ -152,7 +152,7 @@ func TestOpenRejectsCorruptPartialAndNewerWithoutReplacing(t *testing.T) {
 			defer db.Close()
 			statement := "CREATE TABLE keep_me(value TEXT); INSERT INTO keep_me VALUES ('preserved')"
 			if scenario == "newer" {
-				statement = "PRAGMA user_version=2"
+				statement = fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion+1)
 			}
 			if scenario == "drift" {
 				statement = "DROP TRIGGER deleted_keys_no_delete"
@@ -209,10 +209,10 @@ func TestOpenRejectsMissingActiveReservation(t *testing.T) {
 func TestMalformedEventIsStorageFailureNotEmptyReplay(t *testing.T) {
 	f := setup(t)
 	f.write(func(tx *Tx) error {
-		if err := tx.Pause(true); err != nil {
+		if err := tx.SetQueueMode(pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 			return err
 		}
-		return tx.Pause(false)
+		return tx.SetQueueMode(pb.QueueMode_QUEUE_MODE_ENABLED)
 	})
 	if _, err := f.store.db.Exec("UPDATE events SET payload=x'ff' WHERE seq=2"); err != nil {
 		t.Fatal(err)
@@ -226,10 +226,10 @@ func TestMalformedEventIsStorageFailureNotEmptyReplay(t *testing.T) {
 func TestMissingEventIsNotSuccessfulEmptyReplay(t *testing.T) {
 	f := setup(t)
 	f.write(func(tx *Tx) error {
-		if err := tx.Pause(true); err != nil {
+		if err := tx.SetQueueMode(pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
 			return err
 		}
-		return tx.Pause(false)
+		return tx.SetQueueMode(pb.QueueMode_QUEUE_MODE_ENABLED)
 	})
 	if _, err := f.store.db.Exec("DELETE FROM events WHERE seq=2"); err != nil {
 		t.Fatal(err)
@@ -347,12 +347,12 @@ func TestCrashHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.Write(context.Background(), func(tx *Tx) error { return tx.Pause(true) })
+	_, err = store.Write(context.Background(), func(tx *Tx) error { return tx.SetQueueMode(pb.QueueMode_QUEUE_MODE_PAUSED) })
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = store.Write(context.Background(), func(tx *Tx) error {
-		if err := tx.Pause(false); err != nil {
+		if err := tx.SetQueueMode(pb.QueueMode_QUEUE_MODE_ENABLED); err != nil {
 			return err
 		}
 		os.Exit(17) // abrupt exit after a write, before commit; no deferred cleanup
@@ -386,8 +386,8 @@ func TestCrashReopenKeepsCommittedAndRollsBackUncommittedState(t *testing.T) {
 		if err := r.scan("SELECT last_event_seq FROM broker_state", nil, &last); err != nil {
 			return err
 		}
-		if !s.Paused || last != 1 {
-			t.Fatalf("crash recovery: paused %v last %d", s.Paused, last)
+		if s.QueueMode != pb.QueueMode_QUEUE_MODE_PAUSED || !s.Paused || last != 2 {
+			t.Fatalf("crash recovery: paused %v last %d", s.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED, last)
 		}
 		return nil
 	})

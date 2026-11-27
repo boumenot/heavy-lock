@@ -29,7 +29,7 @@ final class FakeBroker: BrokerClient {
         var health = Heavylock_V2_Health()
         health.serviceIdentity = HeavyLockV2.errorDomain
         health.apiMajor = 2
-        health.apiMinor = 0
+        health.apiMinor = 1
         health.serviceVersion = "test"
         health.live = true
         health.ready = true

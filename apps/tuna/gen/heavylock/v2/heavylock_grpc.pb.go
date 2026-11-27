@@ -777,6 +777,10 @@ const (
 // WatchEvents is gRPC-only; REST clients poll the query endpoints.
 type ControlServiceClient interface {
 	GetHealth(ctx context.Context, in *GetHealthRequest, opts ...grpc.CallOption) (*Health, error)
+	// While durable storage is unavailable, GetStatus still answers with
+	// storage_unavailable, queue_state ERROR, queue_mode UNSPECIFIED and the
+	// configured capacity and backfill limit; durable counts are then zero
+	// and unknown. Other queries fail with UNAVAILABLE / STORAGE_UNAVAILABLE.
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*BrokerStatus, error)
 	GetQueue(ctx context.Context, in *GetQueueRequest, opts ...grpc.CallOption) (*Queue, error)
 	ListJobs(ctx context.Context, in *ListJobsRequest, opts ...grpc.CallOption) (*ListJobsResponse, error)
@@ -840,8 +844,10 @@ type ControlServiceClient interface {
 	// bypasses recovery, storage failure or launch-safety checks.
 	// A confirmed force-start is allowed while normal admissions are paused.
 	ForceStartJob(ctx context.Context, in *ForceStartJobRequest, opts ...grpc.CallOption) (*Job, error)
-	// Pause and resume commit durably before acknowledgement. Pause survives
-	// broker restarts until an explicit resume; it does not revoke reservations.
+	// Pause and resume commit durably before acknowledgement. Pause sets
+	// queue_mode PAUSED and survives broker restarts and recovery until an
+	// explicit resume sets ENABLED; it does not revoke reservations. Both are
+	// idempotent. They commit status_changed and queue_changed events.
 	// The monitor does not require confirmation for pause or resume.
 	PauseQueue(ctx context.Context, in *PauseQueueRequest, opts ...grpc.CallOption) (*BrokerStatus, error)
 	ResumeQueue(ctx context.Context, in *ResumeQueueRequest, opts ...grpc.CallOption) (*BrokerStatus, error)
@@ -1030,6 +1036,10 @@ type ControlService_WatchEventsClient = grpc.ServerStreamingClient[BrokerEvent]
 // WatchEvents is gRPC-only; REST clients poll the query endpoints.
 type ControlServiceServer interface {
 	GetHealth(context.Context, *GetHealthRequest) (*Health, error)
+	// While durable storage is unavailable, GetStatus still answers with
+	// storage_unavailable, queue_state ERROR, queue_mode UNSPECIFIED and the
+	// configured capacity and backfill limit; durable counts are then zero
+	// and unknown. Other queries fail with UNAVAILABLE / STORAGE_UNAVAILABLE.
 	GetStatus(context.Context, *GetStatusRequest) (*BrokerStatus, error)
 	GetQueue(context.Context, *GetQueueRequest) (*Queue, error)
 	ListJobs(context.Context, *ListJobsRequest) (*ListJobsResponse, error)
@@ -1093,8 +1103,10 @@ type ControlServiceServer interface {
 	// bypasses recovery, storage failure or launch-safety checks.
 	// A confirmed force-start is allowed while normal admissions are paused.
 	ForceStartJob(context.Context, *ForceStartJobRequest) (*Job, error)
-	// Pause and resume commit durably before acknowledgement. Pause survives
-	// broker restarts until an explicit resume; it does not revoke reservations.
+	// Pause and resume commit durably before acknowledgement. Pause sets
+	// queue_mode PAUSED and survives broker restarts and recovery until an
+	// explicit resume sets ENABLED; it does not revoke reservations. Both are
+	// idempotent. They commit status_changed and queue_changed events.
 	// The monitor does not require confirmation for pause or resume.
 	PauseQueue(context.Context, *PauseQueueRequest) (*BrokerStatus, error)
 	ResumeQueue(context.Context, *ResumeQueueRequest) (*BrokerStatus, error)

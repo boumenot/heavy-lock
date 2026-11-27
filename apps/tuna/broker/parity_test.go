@@ -115,7 +115,7 @@ func TestActualDomainGRPCRESTCLIParity(t *testing.T) {
 	}
 	code, data := rest(t, port, http.MethodGet, "/v1/status", "")
 	var st pb.BrokerStatus
-	if code != 200 || protojson.Unmarshal(data, &st) != nil || !st.Paused {
+	if code != 200 || protojson.Unmarshal(data, &st) != nil || st.QueueMode != pb.QueueMode_QUEUE_MODE_PAUSED {
 		t.Fatalf("REST status=%d %s", code, data)
 	}
 	var out, errors bytes.Buffer
@@ -124,7 +124,7 @@ func TestActualDomainGRPCRESTCLIParity(t *testing.T) {
 		t.Fatalf("CLI=%d %q", exit, errors.String())
 	}
 	statusAfter, err := client.GetStatus(ctx, &pb.GetStatusRequest{})
-	if err != nil || statusAfter.Paused {
+	if err != nil || statusAfter.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED {
 		t.Fatalf("shared scheduler status=%v %v", statusAfter, err)
 	}
 	missing := "00000000-0000-4000-8000-000000000001"
@@ -161,7 +161,7 @@ func TestSnapshotReplayPruningRequiresRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	event, err := stream.Recv()
-	if err != nil || event.EventSeq <= snapshot.EventSeq || event.GetStatusChanged() == nil || !event.GetStatusChanged().Paused {
+	if err != nil || event.EventSeq <= snapshot.EventSeq || event.GetStatusChanged() == nil || event.GetStatusChanged().QueueMode != pb.QueueMode_QUEUE_MODE_PAUSED {
 		t.Fatalf("live event=%v %v", event, err)
 	}
 	if _, err := client.ResumeQueue(ctx, &pb.ResumeQueueRequest{}); err != nil {
@@ -183,7 +183,7 @@ func TestSnapshotReplayPruningRequiresRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	newSnapshot, err := refreshed.Recv()
-	if err != nil || newSnapshot.GetSnapshot() == nil || newSnapshot.GetSnapshot().Status.Paused {
+	if err != nil || newSnapshot.GetSnapshot() == nil || newSnapshot.GetSnapshot().Status.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED {
 		t.Fatalf("refresh=%v %v", newSnapshot, err)
 	}
 }
@@ -222,7 +222,7 @@ func TestForceStartPausedAndControlErrorParity(t *testing.T) {
 		t.Fatalf("forced=%d %s", code, data)
 	}
 	st, err := client.GetStatus(ctx, &pb.GetStatusRequest{})
-	if err != nil || !st.Paused || st.Occupied != 2 {
+	if err != nil || st.QueueMode != pb.QueueMode_QUEUE_MODE_PAUSED || st.Occupied != 2 {
 		t.Fatalf("forced occupancy=%v %v", st, err)
 	}
 	var out, stderr bytes.Buffer

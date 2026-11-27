@@ -62,7 +62,7 @@ struct MonitorView: View {
                 Text(banner.title).font(.headline)
                 Spacer()
                 if let status = state.status {
-                    let action: ControlAction = status.paused ? .resume : .pause
+                    let action: ControlAction = status.queueMode == .paused ? .resume : .pause
                     Button(action.title) { self.session.request(action) }
                         .disabled(!state.isLive || self.session.inFlight.contains(action))
                 }

@@ -11,7 +11,7 @@ import (
 const (
 	ServiceIdentity = "heavylock.v2"
 	APIMajor        = 2
-	APIMinor        = 0
+	APIMinor        = 1
 )
 
 func CheckService(health *heavylockv2.Health, minimumMinor uint32) error {

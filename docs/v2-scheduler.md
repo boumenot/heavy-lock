@@ -23,6 +23,12 @@ sharing check:
   head runner not registered (`RUNNER_DISCONNECTED`, no backfill), head
   fits but sharing fails (`RESOURCE_CHECK`, no backfill), head does not fit
   (`INSUFFICIENT_SLOTS`).
+- The derived **queue state** is the first match of: storage failed
+  (`ERROR`), not ready (`RECOVERING`), mode paused (`PAUSED`), queued work
+  but nothing admissible now, even by backfill (`BLOCKED`), capacity held or
+  a job admissible (`RUNNING`), else `IDLE`. It is projected with every
+  status and queue event; the durable `QueueMode` is only changed by pause
+  and resume.
 - Free capacity is `max(0, capacity - occupied)`; occupied includes forced
   and unreconciled reservations and may exceed capacity.
 - Only a capacity-blocked, registered head is bypassed, at most K times
@@ -61,7 +67,9 @@ the last sample and the settle clock.
 
 ## Controls
 
-- **Pause/resume** is durable across restarts; resume runs admission.
+- **Pause/resume** set the durable `QueueMode` (survives restarts and
+  recovery), are idempotent, emit status and queue events, and resume runs
+  admission.
   Running and reserved work is unaffected.
 - **Reorder** (`MoveBefore`, `MoveToFront`, `MoveBefore(id, "")` for the
   back) applies only to queued jobs and then runs admission.

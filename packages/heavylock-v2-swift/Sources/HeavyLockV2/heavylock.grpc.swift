@@ -2184,6 +2184,13 @@ extension Heavylock_V2_ControlService {
 
         /// Call the "GetStatus" method.
         ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > While durable storage is unavailable, GetStatus still answers with
+        /// > storage_unavailable, queue_state ERROR, queue_mode UNSPECIFIED and the
+        /// > configured capacity and backfill limit; durable counts are then zero
+        /// > and unknown. Other queries fail with UNAVAILABLE / STORAGE_UNAVAILABLE.
+        ///
         /// - Parameters:
         ///   - request: A request containing a single `Heavylock_V2_GetStatusRequest` message.
         ///   - serializer: A serializer for `Heavylock_V2_GetStatusRequest` messages.
@@ -2405,8 +2412,10 @@ extension Heavylock_V2_ControlService {
         ///
         /// > Source IDL Documentation:
         /// >
-        /// > Pause and resume commit durably before acknowledgement. Pause survives
-        /// > broker restarts until an explicit resume; it does not revoke reservations.
+        /// > Pause and resume commit durably before acknowledgement. Pause sets
+        /// > queue_mode PAUSED and survives broker restarts and recovery until an
+        /// > explicit resume sets ENABLED; it does not revoke reservations. Both are
+        /// > idempotent. They commit status_changed and queue_changed events.
         /// > The monitor does not require confirmation for pause or resume.
         ///
         /// - Parameters:
@@ -2579,6 +2588,13 @@ extension Heavylock_V2_ControlService {
         }
 
         /// Call the "GetStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > While durable storage is unavailable, GetStatus still answers with
+        /// > storage_unavailable, queue_state ERROR, queue_mode UNSPECIFIED and the
+        /// > configured capacity and backfill limit; durable counts are then zero
+        /// > and unknown. Other queries fail with UNAVAILABLE / STORAGE_UNAVAILABLE.
         ///
         /// - Parameters:
         ///   - request: A request containing a single `Heavylock_V2_GetStatusRequest` message.
@@ -2889,8 +2905,10 @@ extension Heavylock_V2_ControlService {
         ///
         /// > Source IDL Documentation:
         /// >
-        /// > Pause and resume commit durably before acknowledgement. Pause survives
-        /// > broker restarts until an explicit resume; it does not revoke reservations.
+        /// > Pause and resume commit durably before acknowledgement. Pause sets
+        /// > queue_mode PAUSED and survives broker restarts and recovery until an
+        /// > explicit resume sets ENABLED; it does not revoke reservations. Both are
+        /// > idempotent. They commit status_changed and queue_changed events.
         /// > The monitor does not require confirmation for pause or resume.
         ///
         /// - Parameters:
@@ -3091,6 +3109,13 @@ extension Heavylock_V2_ControlService.ClientProtocol {
     }
 
     /// Call the "GetStatus" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > While durable storage is unavailable, GetStatus still answers with
+    /// > storage_unavailable, queue_state ERROR, queue_mode UNSPECIFIED and the
+    /// > configured capacity and backfill limit; durable counts are then zero
+    /// > and unknown. Other queries fail with UNAVAILABLE / STORAGE_UNAVAILABLE.
     ///
     /// - Parameters:
     ///   - request: A request containing a single `Heavylock_V2_GetStatusRequest` message.
@@ -3361,8 +3386,10 @@ extension Heavylock_V2_ControlService.ClientProtocol {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > Pause and resume commit durably before acknowledgement. Pause survives
-    /// > broker restarts until an explicit resume; it does not revoke reservations.
+    /// > Pause and resume commit durably before acknowledgement. Pause sets
+    /// > queue_mode PAUSED and survives broker restarts and recovery until an
+    /// > explicit resume sets ENABLED; it does not revoke reservations. Both are
+    /// > idempotent. They commit status_changed and queue_changed events.
     /// > The monitor does not require confirmation for pause or resume.
     ///
     /// - Parameters:
@@ -3541,6 +3568,13 @@ extension Heavylock_V2_ControlService.ClientProtocol {
     }
 
     /// Call the "GetStatus" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > While durable storage is unavailable, GetStatus still answers with
+    /// > storage_unavailable, queue_state ERROR, queue_mode UNSPECIFIED and the
+    /// > configured capacity and backfill limit; durable counts are then zero
+    /// > and unknown. Other queries fail with UNAVAILABLE / STORAGE_UNAVAILABLE.
     ///
     /// - Parameters:
     ///   - message: request message to send.
@@ -3843,8 +3877,10 @@ extension Heavylock_V2_ControlService.ClientProtocol {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > Pause and resume commit durably before acknowledgement. Pause survives
-    /// > broker restarts until an explicit resume; it does not revoke reservations.
+    /// > Pause and resume commit durably before acknowledgement. Pause sets
+    /// > queue_mode PAUSED and survives broker restarts and recovery until an
+    /// > explicit resume sets ENABLED; it does not revoke reservations. Both are
+    /// > idempotent. They commit status_changed and queue_changed events.
     /// > The monitor does not require confirmation for pause or resume.
     ///
     /// - Parameters:

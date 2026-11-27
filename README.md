@@ -625,12 +625,13 @@ the broker stopped being live meanwhile. There is no history deletion UI.
 Like v1, the Dock tile shows the longest-running job's
 worklog (`#?` when unattributed, `—` idle, `+N` for other running jobs) in
 a green, grey or dashed red (not live) ring, with the queued count as a
-badge while live. The bordered tile also has a stop light for normal
-admission: red when the queue is paused, amber when the broker holds all
-admissions (not ready, recovering or durable state unavailable), green
-otherwise, and all dark when the broker is not live. A blocked queue head
-alone does not turn it amber, since other jobs may still be admitted; its
-reason shows on the job's row. A Copilot app Project link is deferred to
+badge while live. The bordered tile also has a stop light from the
+broker's explicit queue state: green when idle or running, amber when
+blocked (queued work that cannot be admitted now, even by backfill),
+recovering or in error (durable state unavailable, shown with a banner),
+red when paused, and all dark when the state is unknown, including whenever
+the broker is not live. The status line names the state; `tuna status`
+prints `Mode: <enabled|paused>; state: <state>` and `tuna queue` the state. A Copilot app Project link is deferred to
 [#33](https://github.com/boumenot/heavy-lock/issues/33); jobs carry no
 Project reference yet.
 

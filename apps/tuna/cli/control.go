@@ -191,7 +191,8 @@ func printResult(w io.Writer, result proto.Message) error {
 	case *pb.Job:
 		return printJob(w, value)
 	case *pb.Queue:
-		if _, err := fmt.Fprintf(w, "Queue: %d jobs; head blocked=%s\n", len(value.Jobs), value.HeadBlockedReason); err != nil {
+		if _, err := fmt.Fprintf(w, "Queue: %d jobs; state: %s; head blocked=%s\n", len(value.Jobs),
+			enumName(value.QueueState.String(), "QUEUE_STATE_"), value.HeadBlockedReason); err != nil {
 			return err
 		}
 		for _, job := range value.Jobs {
@@ -210,11 +211,22 @@ func printResult(w io.Writer, result proto.Message) error {
 			return err
 		}
 	case *pb.BrokerStatus:
-		_, err := fmt.Fprintf(w, "Capacity: %d; occupied: %d; queued: %d; running: %d; paused: %t; recovering: %t; storage unavailable: %t\n",
-			value.Capacity, value.Occupied, value.QueuedJobs, value.RunningJobs, value.Paused, value.Recovering, value.StorageUnavailable)
+		_, err := fmt.Fprintf(w, "Mode: %s; state: %s; capacity: %d; occupied: %d; queued: %d; running: %d; recovering: %t; storage unavailable: %t\n",
+			enumName(value.QueueMode.String(), "QUEUE_MODE_"), enumName(value.QueueState.String(), "QUEUE_STATE_"),
+			value.Capacity, value.Occupied, value.QueuedJobs, value.RunningJobs, value.Recovering, value.StorageUnavailable)
 		return err
 	default:
 		return fmt.Errorf("unsupported response %T", result)
 	}
 	return nil
+}
+
+// enumName prints an enum value in lower case without its prefix; an older
+// broker that omits the field reports "unknown".
+func enumName(name, prefix string) string {
+	name = strings.ToLower(strings.TrimPrefix(name, prefix))
+	if name == "unspecified" {
+		return "unknown"
+	}
+	return name
 }

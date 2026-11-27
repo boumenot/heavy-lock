@@ -14,6 +14,9 @@ public struct MonitorState: Equatable, Sendable {
         case unavailable(String)
         /// Something answered that is not a compatible heavy-lock v2 broker.
         case incompatible(String)
+        /// The broker is running but its durable state failed, so it holds
+        /// every admission and cannot stream events until it is restarted.
+        case brokerError(String)
     }
 
     public enum ApplyResult: Equatable, Sendable {
@@ -32,6 +35,9 @@ public struct MonitorState: Equatable, Sendable {
     /// Queue order, head first.
     public var queue: [Heavylock_V2_Job] = []
     public var headBlockedReason: Heavylock_V2_BlockedReason = .unspecified
+    /// The broker's operational queue state, from whichever status or queue
+    /// event arrived last; both carry the state at their commit.
+    public var queueState: Heavylock_V2_QueueState = .unspecified
     /// Reserved, running and finishing jobs.
     public var active: [Heavylock_V2_Job] = []
     /// Retained finished jobs, newest first.
@@ -51,6 +57,16 @@ public struct MonitorState: Equatable, Sendable {
 
     public var isLive: Bool { self.connection == .live }
 
+    /// The queue state to show now: the broker's own while live, `.error`
+    /// when it reports failed storage and `.unspecified` (unknown) otherwise.
+    public var currentQueueState: Heavylock_V2_QueueState {
+        switch self.connection {
+        case .live: self.queueState
+        case .brokerError: .error
+        default: .unspecified
+        }
+    }
+
     // The broker does not emit `status_changed` for every reservation, start
     // or finish, so counts come from the event-maintained queue and active
     // jobs rather than from the last `BrokerStatus`.
@@ -67,6 +83,7 @@ public struct MonitorState: Equatable, Sendable {
             self.status = snapshot.status
             self.queue = snapshot.queue.jobs
             self.headBlockedReason = snapshot.queue.headBlockedReason
+            self.queueState = snapshot.queue.queueState
             self.active = Self.sortedActive(snapshot.activeJobs)
             self.lastEventSeq = event.eventSeq
             self.lastUpdate = time
@@ -90,10 +107,13 @@ public struct MonitorState: Equatable, Sendable {
         case .queueChanged(let queue):
             self.queue = queue.jobs
             self.headBlockedReason = queue.headBlockedReason
+            self.queueState = queue.queueState
             let queued = Set(queue.jobs.map(\.jobID))
             self.active.removeAll { queued.contains($0.jobID) }
         case .statusChanged(let status):
             self.status = status
+            self.headBlockedReason = status.headBlockedReason
+            self.queueState = status.queueState
         case .jobDeleted(let id):
             self.remove(id)
         default:

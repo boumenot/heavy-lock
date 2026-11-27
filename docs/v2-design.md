@@ -2203,6 +2203,10 @@ service RunnerService {
 // WatchEvents is gRPC-only; REST clients poll the query endpoints.
 service ControlService {
   rpc GetHealth(GetHealthRequest) returns (Health);
+  // While durable storage is unavailable, GetStatus still answers with
+  // storage_unavailable, queue_state ERROR, queue_mode UNSPECIFIED and the
+  // configured capacity and backfill limit; durable counts are then zero
+  // and unknown. Other queries fail with UNAVAILABLE / STORAGE_UNAVAILABLE.
   rpc GetStatus(GetStatusRequest) returns (BrokerStatus);
   rpc GetQueue(GetQueueRequest) returns (Queue);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
@@ -2271,8 +2275,10 @@ service ControlService {
   // A confirmed force-start is allowed while normal admissions are paused.
   rpc ForceStartJob(ForceStartJobRequest) returns (Job);
 
-  // Pause and resume commit durably before acknowledgement. Pause survives
-  // broker restarts until an explicit resume; it does not revoke reservations.
+  // Pause and resume commit durably before acknowledgement. Pause sets
+  // queue_mode PAUSED and survives broker restarts and recovery until an
+  // explicit resume sets ENABLED; it does not revoke reservations. Both are
+  // idempotent. They commit status_changed and queue_changed events.
   // The monitor does not require confirmation for pause or resume.
   rpc PauseQueue(PauseQueueRequest) returns (BrokerStatus);
   rpc ResumeQueue(ResumeQueueRequest) returns (BrokerStatus);
@@ -2358,6 +2364,42 @@ enum BlockedReason {
   // Per job, not head: weight exceeds the current capacity (lowered across a
   // restart). Skipped by normal admission; force-start or cancel to resolve.
   BLOCKED_REASON_WEIGHT_EXCEEDS_CAPACITY = 7;
+}
+
+// Durable admission mode: the operator's intent for normal admission. It
+// survives broker restarts, recovery and storage failure; only an explicit
+// pause or resume changes it.
+enum QueueMode {
+  QUEUE_MODE_UNSPECIFIED = 0;      // unknown, e.g. durable state unreadable
+  QUEUE_MODE_ENABLED = 1;
+  QUEUE_MODE_PAUSED = 2;
+}
+
+// Operational queue state derived by the broker from its mode, readiness,
+// storage and the current normal-admission decision. Exactly one applies,
+// chosen by the first matching rule in this precedence:
+//   ERROR       durable storage is unavailable; mode and counts are unknown
+//   RECOVERING  the broker is not ready; queue_mode still reports a pause
+//   PAUSED      queue_mode is PAUSED; existing reservations continue
+//   BLOCKED     queued work exists but no queued job can be admitted now,
+//               including through bounded backfill; head_blocked_reason
+//               gives the head's reason (UNSPECIFIED when every queued job
+//               is oversized), even while other work runs
+//   RUNNING     capacity is held (occupied > 0) or a queued job can start
+//   IDLE        nothing is queued and no capacity is held
+// A blocked head is not BLOCKED while backfill can admit a follower.
+// Clients that cannot obtain a trustworthy current state, such as a monitor
+// without a live connection, display it as unknown rather than reusing the
+// last value. Resource checks use the last live sample, so the state can lag
+// a change in free memory or load until the next admission decision.
+enum QueueState {
+  QUEUE_STATE_UNSPECIFIED = 0;     // unknown; older brokers do not set it
+  QUEUE_STATE_IDLE = 1;
+  QUEUE_STATE_RUNNING = 2;
+  QUEUE_STATE_BLOCKED = 3;
+  QUEUE_STATE_PAUSED = 4;
+  QUEUE_STATE_RECOVERING = 5;
+  QUEUE_STATE_ERROR = 6;
 }
 
 enum ErrorReason {
@@ -2679,8 +2721,10 @@ message GetStatusRequest {}
 message BrokerStatus {
   uint32 capacity = 1;
   uint32 occupied = 2;             // may exceed capacity after force-start
-  bool paused = 3;
-  optional int64 paused_at_unix_ns = 4;
+  // Deprecated since API 2.1: use queue_mode. Still set, to queue_mode ==
+  // QUEUE_MODE_PAUSED, for older clients.
+  bool paused = 3 [deprecated = true];
+  optional int64 paused_at_unix_ns = 4; // set while queue_mode is PAUSED
   bool recovering = 5;
   uint32 queued_jobs = 6;
   uint32 running_jobs = 7;
@@ -2692,13 +2736,19 @@ message BrokerStatus {
   // They count toward occupied but do not block unrelated admissions.
   uint32 unreconciled_reservations = 12;
   uint32 backfill_limit = 13;      // per-head bypass limit; 0 is strict FIFO
+  QueueMode queue_mode = 14;       // since API 2.1
+  QueueState queue_state = 15;     // since API 2.1
 }
 
 message GetQueueRequest {}
 
+// queue_state and head_blocked_reason are also in BrokerStatus. Each
+// queue_changed and status_changed event is projected when it commits, so a
+// client keeps the values from whichever of the two it received last.
 message Queue {
   repeated Job jobs = 1;           // queue order; head first
   BlockedReason head_blocked_reason = 2;
+  QueueState queue_state = 3;      // since API 2.1
 }
 
 message ListJobsRequest {
@@ -2918,7 +2968,11 @@ replace `NOT NULL`, `CHECK`, enabled foreign keys or broker-side
 validation; the schema uses all of them.
 
 ```sql
--- heavy-lock v2 SQLite schema (schema version 1).
+-- heavy-lock v2 SQLite schema (schema version 2).
+--
+-- A new database is created at the current version and records every
+-- migration version it includes. Older databases are migrated in place by
+-- the broker (apps/tuna/storage/migrate.go) to exactly this schema.
 --
 -- Requirements: SQLite 3.38.0 or later (STRICT tables and built-in JSON).
 -- Conventions:
@@ -2956,14 +3010,15 @@ CREATE TABLE schema_migrations (
 -- Single-row broker state.
 CREATE TABLE broker_state (
   id                INTEGER PRIMARY KEY CHECK (id = 1),
-  -- Committed pause survives broker restarts until an explicit resume.
-  paused            INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
-  paused_at_ns      INTEGER,              -- NULL when not paused
+  -- Durable admission mode (QueueMode). A committed pause survives broker
+  -- restarts, recovery and storage failure until an explicit resume.
+  queue_mode        TEXT    NOT NULL DEFAULT 'enabled' CHECK (queue_mode IN ('enabled', 'paused')),
+  paused_at_ns      INTEGER,              -- NULL unless queue_mode = 'paused'
   next_queue_seq    INTEGER NOT NULL DEFAULT 1, -- next back-of-queue sequence
   last_event_seq    INTEGER NOT NULL DEFAULT 0, -- last issued events.seq; never decreases
   event_floor_seq   INTEGER NOT NULL DEFAULT 0, -- resume after a lower seq is refused
   CHECK (event_floor_seq BETWEEN 0 AND last_event_seq),
-  CHECK ((paused = 0 AND paused_at_ns IS NULL) OR (paused = 1 AND paused_at_ns IS NOT NULL))
+  CHECK ((queue_mode = 'enabled' AND paused_at_ns IS NULL) OR (queue_mode = 'paused' AND paused_at_ns IS NOT NULL))
 ) STRICT;
 
 -- One row per broker process lifetime; used to exclude downtime from grace
@@ -3364,11 +3419,14 @@ INSERT INTO broker_state (id) VALUES (1);
 -- SQLite's bootstrap clock has millisecond precision. Integer arithmetic
 -- encodes it as nanoseconds without floating-point rounding; normal broker
 -- writes bind Go time.Time.UnixNano() values at their available source precision.
+-- One row per schema version; a new database includes every migration.
 INSERT INTO schema_migrations (version, applied_at_ns, description)
-  VALUES (1, CAST(strftime('%s', 'now') AS INTEGER) * 1000000000
+  SELECT version, CAST(strftime('%s', 'now') AS INTEGER) * 1000000000
              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) * 1000000,
-          'initial v2 schema');
-PRAGMA user_version = 1;
+         description
+  FROM (SELECT 1 AS version, 'initial v2 schema' AS description
+        UNION ALL SELECT 2, 'explicit queue mode');
+PRAGMA user_version = 2;
 
 COMMIT;
 ```
@@ -3710,7 +3768,13 @@ do not validate modernc. Pin the version and revisit the driver if it fails.
 `PRAGMA user_version` and `schema_migrations` both record the schema
 version. Migrations run in one `BEGIN IMMEDIATE` transaction before
 recovery, and the broker refuses to open a database whose schema version is
-newer than it supports.
+newer than it supports. Each step in `apps/tuna/storage/migrate.go` upgrades
+one version; the transaction commits only when the result matches
+`schema.sql`'s object definitions exactly, so a drifted or partial database
+is left unchanged. Schema version 2 (#32) replaces `broker_state.paused`
+with the durable `queue_mode` text column, preserving a committed pause and
+its timestamp. Migration is one-way: an older broker refuses the upgraded
+database.
 
 ## 12. TLA+ concurrency and recovery review
 

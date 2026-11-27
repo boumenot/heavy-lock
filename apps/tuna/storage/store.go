@@ -105,34 +105,24 @@ func (s *Store) initialize(ctx context.Context) (err error) {
 		(SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')`).Scan(&version, &tables); err != nil {
 		return err
 	}
-	if version == 0 && tables == 0 {
-		if err := bootstrap(ctx, conn); err != nil {
-			return err
-		}
-	} else if version != 1 {
-		return fmt.Errorf("unsupported schema version %d (objects %d)", version, tables)
-	}
-
-	// Validate the complete schema, not just a trusted user_version pragma.
 	expected, err := schemaObjects(ctx)
 	if err != nil {
 		return err
 	}
-	actual, err := readSchema(ctx, conn)
-	if err != nil {
-		return err
-	}
-	if len(actual) != len(expected) {
-		return errors.New("schema objects differ from version 1")
-	}
-	for name, definition := range expected {
-		if actual[name] != definition {
-			return fmt.Errorf("schema object %s differs from version 1", name)
+	switch {
+	case version == 0 && tables == 0:
+		if err := bootstrap(ctx, conn); err != nil {
+			return err
 		}
+	case version >= 1 && version < SchemaVersion:
+		if err := migrate(ctx, conn, expected); err != nil {
+			return err
+		}
+	case version != SchemaVersion:
+		return fmt.Errorf("unsupported schema version %d (objects %d)", version, tables)
 	}
-	var migrations, migration int
-	if err = conn.QueryRowContext(ctx, "SELECT count(*), coalesce(max(version),0) FROM schema_migrations").Scan(&migrations, &migration); err != nil || migrations != 1 || migration != 1 {
-		return errors.Join(errors.New("invalid migration record"), err)
+	if err := validateSchema(ctx, conn, expected); err != nil {
+		return err
 	}
 	var journal string
 	if err = conn.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&journal); err != nil {
@@ -210,13 +200,44 @@ func bootstrap(ctx context.Context, conn *sql.Conn) (err error) {
 		if _, err := conn.ExecContext(ctx, body); err != nil {
 			return err
 		}
-	} else if version != 1 {
+	} else if version < 1 || version > SchemaVersion {
 		return fmt.Errorf("unsupported schema version %d (objects %d)", version, objects)
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return err
 	}
 	committed = true
+	return nil
+}
+
+// validateSchema checks the complete current schema and migration record,
+// not just a trusted user_version pragma.
+func validateSchema(ctx context.Context, q querier, expected map[string]string) error {
+	var version int
+	if err := q.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	if version != SchemaVersion {
+		return fmt.Errorf("unsupported schema version %d", version)
+	}
+	actual, err := readSchema(ctx, q)
+	if err != nil {
+		return err
+	}
+	if len(actual) != len(expected) {
+		return fmt.Errorf("schema objects differ from version %d", SchemaVersion)
+	}
+	for name, definition := range expected {
+		if actual[name] != definition {
+			return fmt.Errorf("schema object %s differs from version %d", name, SchemaVersion)
+		}
+	}
+	// Exactly one record per version from 1 through the current version.
+	var count, low, high int
+	if err := q.QueryRowContext(ctx, "SELECT count(*), coalesce(min(version),0), coalesce(max(version),0) FROM schema_migrations").
+		Scan(&count, &low, &high); err != nil || count != SchemaVersion || low != 1 || high != SchemaVersion {
+		return errors.Join(errors.New("invalid migration record"), err)
+	}
 	return nil
 }
 

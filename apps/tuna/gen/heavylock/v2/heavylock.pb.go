@@ -432,6 +432,138 @@ func (BlockedReason) EnumDescriptor() ([]byte, []int) {
 	return file_heavylock_proto_rawDescGZIP(), []int{6}
 }
 
+// Durable admission mode: the operator's intent for normal admission. It
+// survives broker restarts, recovery and storage failure; only an explicit
+// pause or resume changes it.
+type QueueMode int32
+
+const (
+	QueueMode_QUEUE_MODE_UNSPECIFIED QueueMode = 0 // unknown, e.g. durable state unreadable
+	QueueMode_QUEUE_MODE_ENABLED     QueueMode = 1
+	QueueMode_QUEUE_MODE_PAUSED      QueueMode = 2
+)
+
+// Enum value maps for QueueMode.
+var (
+	QueueMode_name = map[int32]string{
+		0: "QUEUE_MODE_UNSPECIFIED",
+		1: "QUEUE_MODE_ENABLED",
+		2: "QUEUE_MODE_PAUSED",
+	}
+	QueueMode_value = map[string]int32{
+		"QUEUE_MODE_UNSPECIFIED": 0,
+		"QUEUE_MODE_ENABLED":     1,
+		"QUEUE_MODE_PAUSED":      2,
+	}
+)
+
+func (x QueueMode) Enum() *QueueMode {
+	p := new(QueueMode)
+	*p = x
+	return p
+}
+
+func (x QueueMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (QueueMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_heavylock_proto_enumTypes[7].Descriptor()
+}
+
+func (QueueMode) Type() protoreflect.EnumType {
+	return &file_heavylock_proto_enumTypes[7]
+}
+
+func (x QueueMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use QueueMode.Descriptor instead.
+func (QueueMode) EnumDescriptor() ([]byte, []int) {
+	return file_heavylock_proto_rawDescGZIP(), []int{7}
+}
+
+// Operational queue state derived by the broker from its mode, readiness,
+// storage and the current normal-admission decision. Exactly one applies,
+// chosen by the first matching rule in this precedence:
+//
+//	ERROR       durable storage is unavailable; mode and counts are unknown
+//	RECOVERING  the broker is not ready; queue_mode still reports a pause
+//	PAUSED      queue_mode is PAUSED; existing reservations continue
+//	BLOCKED     queued work exists but no queued job can be admitted now,
+//	            including through bounded backfill; head_blocked_reason
+//	            gives the head's reason (UNSPECIFIED when every queued job
+//	            is oversized), even while other work runs
+//	RUNNING     capacity is held (occupied > 0) or a queued job can start
+//	IDLE        nothing is queued and no capacity is held
+//
+// A blocked head is not BLOCKED while backfill can admit a follower.
+// Clients that cannot obtain a trustworthy current state, such as a monitor
+// without a live connection, display it as unknown rather than reusing the
+// last value. Resource checks use the last live sample, so the state can lag
+// a change in free memory or load until the next admission decision.
+type QueueState int32
+
+const (
+	QueueState_QUEUE_STATE_UNSPECIFIED QueueState = 0 // unknown; older brokers do not set it
+	QueueState_QUEUE_STATE_IDLE        QueueState = 1
+	QueueState_QUEUE_STATE_RUNNING     QueueState = 2
+	QueueState_QUEUE_STATE_BLOCKED     QueueState = 3
+	QueueState_QUEUE_STATE_PAUSED      QueueState = 4
+	QueueState_QUEUE_STATE_RECOVERING  QueueState = 5
+	QueueState_QUEUE_STATE_ERROR       QueueState = 6
+)
+
+// Enum value maps for QueueState.
+var (
+	QueueState_name = map[int32]string{
+		0: "QUEUE_STATE_UNSPECIFIED",
+		1: "QUEUE_STATE_IDLE",
+		2: "QUEUE_STATE_RUNNING",
+		3: "QUEUE_STATE_BLOCKED",
+		4: "QUEUE_STATE_PAUSED",
+		5: "QUEUE_STATE_RECOVERING",
+		6: "QUEUE_STATE_ERROR",
+	}
+	QueueState_value = map[string]int32{
+		"QUEUE_STATE_UNSPECIFIED": 0,
+		"QUEUE_STATE_IDLE":        1,
+		"QUEUE_STATE_RUNNING":     2,
+		"QUEUE_STATE_BLOCKED":     3,
+		"QUEUE_STATE_PAUSED":      4,
+		"QUEUE_STATE_RECOVERING":  5,
+		"QUEUE_STATE_ERROR":       6,
+	}
+)
+
+func (x QueueState) Enum() *QueueState {
+	p := new(QueueState)
+	*p = x
+	return p
+}
+
+func (x QueueState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (QueueState) Descriptor() protoreflect.EnumDescriptor {
+	return file_heavylock_proto_enumTypes[8].Descriptor()
+}
+
+func (QueueState) Type() protoreflect.EnumType {
+	return &file_heavylock_proto_enumTypes[8]
+}
+
+func (x QueueState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use QueueState.Descriptor instead.
+func (QueueState) EnumDescriptor() ([]byte, []int) {
+	return file_heavylock_proto_rawDescGZIP(), []int{8}
+}
+
 type ErrorReason int32
 
 const (
@@ -549,11 +681,11 @@ func (x ErrorReason) String() string {
 }
 
 func (ErrorReason) Descriptor() protoreflect.EnumDescriptor {
-	return file_heavylock_proto_enumTypes[7].Descriptor()
+	return file_heavylock_proto_enumTypes[9].Descriptor()
 }
 
 func (ErrorReason) Type() protoreflect.EnumType {
-	return &file_heavylock_proto_enumTypes[7]
+	return &file_heavylock_proto_enumTypes[9]
 }
 
 func (x ErrorReason) Number() protoreflect.EnumNumber {
@@ -562,7 +694,7 @@ func (x ErrorReason) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ErrorReason.Descriptor instead.
 func (ErrorReason) EnumDescriptor() ([]byte, []int) {
-	return file_heavylock_proto_rawDescGZIP(), []int{7}
+	return file_heavylock_proto_rawDescGZIP(), []int{9}
 }
 
 type BrokerTermination_Reason int32
@@ -604,11 +736,11 @@ func (x BrokerTermination_Reason) String() string {
 }
 
 func (BrokerTermination_Reason) Descriptor() protoreflect.EnumDescriptor {
-	return file_heavylock_proto_enumTypes[8].Descriptor()
+	return file_heavylock_proto_enumTypes[10].Descriptor()
 }
 
 func (BrokerTermination_Reason) Type() protoreflect.EnumType {
-	return &file_heavylock_proto_enumTypes[8]
+	return &file_heavylock_proto_enumTypes[10]
 }
 
 func (x BrokerTermination_Reason) Number() protoreflect.EnumNumber {
@@ -2844,22 +2976,28 @@ func (*GetStatusRequest) Descriptor() ([]byte, []int) {
 }
 
 type BrokerStatus struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	Capacity           uint32                 `protobuf:"varint,1,opt,name=capacity,proto3" json:"capacity,omitempty"`
-	Occupied           uint32                 `protobuf:"varint,2,opt,name=occupied,proto3" json:"occupied,omitempty"` // may exceed capacity after force-start
-	Paused             bool                   `protobuf:"varint,3,opt,name=paused,proto3" json:"paused,omitempty"`
-	PausedAtUnixNs     *int64                 `protobuf:"varint,4,opt,name=paused_at_unix_ns,json=pausedAtUnixNs,proto3,oneof" json:"paused_at_unix_ns,omitempty"`
-	Recovering         bool                   `protobuf:"varint,5,opt,name=recovering,proto3" json:"recovering,omitempty"`
-	QueuedJobs         uint32                 `protobuf:"varint,6,opt,name=queued_jobs,json=queuedJobs,proto3" json:"queued_jobs,omitempty"`
-	RunningJobs        uint32                 `protobuf:"varint,7,opt,name=running_jobs,json=runningJobs,proto3" json:"running_jobs,omitempty"`
-	HeadBlockedReason  BlockedReason          `protobuf:"varint,8,opt,name=head_blocked_reason,json=headBlockedReason,proto3,enum=heavylock.v2.BlockedReason" json:"head_blocked_reason,omitempty"`
-	FreeMemoryBytes    *int64                 `protobuf:"varint,9,opt,name=free_memory_bytes,json=freeMemoryBytes,proto3,oneof" json:"free_memory_bytes,omitempty"`
-	LoadAverage_1M     *float64               `protobuf:"fixed64,10,opt,name=load_average_1m,json=loadAverage1m,proto3,oneof" json:"load_average_1m,omitempty"`
-	StorageUnavailable bool                   `protobuf:"varint,11,opt,name=storage_unavailable,json=storageUnavailable,proto3" json:"storage_unavailable,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Capacity uint32                 `protobuf:"varint,1,opt,name=capacity,proto3" json:"capacity,omitempty"`
+	Occupied uint32                 `protobuf:"varint,2,opt,name=occupied,proto3" json:"occupied,omitempty"` // may exceed capacity after force-start
+	// Deprecated since API 2.1: use queue_mode. Still set, to queue_mode ==
+	// QUEUE_MODE_PAUSED, for older clients.
+	//
+	// Deprecated: Marked as deprecated in heavylock.proto.
+	Paused             bool          `protobuf:"varint,3,opt,name=paused,proto3" json:"paused,omitempty"`
+	PausedAtUnixNs     *int64        `protobuf:"varint,4,opt,name=paused_at_unix_ns,json=pausedAtUnixNs,proto3,oneof" json:"paused_at_unix_ns,omitempty"` // set while queue_mode is PAUSED
+	Recovering         bool          `protobuf:"varint,5,opt,name=recovering,proto3" json:"recovering,omitempty"`
+	QueuedJobs         uint32        `protobuf:"varint,6,opt,name=queued_jobs,json=queuedJobs,proto3" json:"queued_jobs,omitempty"`
+	RunningJobs        uint32        `protobuf:"varint,7,opt,name=running_jobs,json=runningJobs,proto3" json:"running_jobs,omitempty"`
+	HeadBlockedReason  BlockedReason `protobuf:"varint,8,opt,name=head_blocked_reason,json=headBlockedReason,proto3,enum=heavylock.v2.BlockedReason" json:"head_blocked_reason,omitempty"`
+	FreeMemoryBytes    *int64        `protobuf:"varint,9,opt,name=free_memory_bytes,json=freeMemoryBytes,proto3,oneof" json:"free_memory_bytes,omitempty"`
+	LoadAverage_1M     *float64      `protobuf:"fixed64,10,opt,name=load_average_1m,json=loadAverage1m,proto3,oneof" json:"load_average_1m,omitempty"`
+	StorageUnavailable bool          `protobuf:"varint,11,opt,name=storage_unavailable,json=storageUnavailable,proto3" json:"storage_unavailable,omitempty"`
 	// Held reservations not yet reconciled since the last broker restart.
 	// They count toward occupied but do not block unrelated admissions.
-	UnreconciledReservations uint32 `protobuf:"varint,12,opt,name=unreconciled_reservations,json=unreconciledReservations,proto3" json:"unreconciled_reservations,omitempty"`
-	BackfillLimit            uint32 `protobuf:"varint,13,opt,name=backfill_limit,json=backfillLimit,proto3" json:"backfill_limit,omitempty"` // per-head bypass limit; 0 is strict FIFO
+	UnreconciledReservations uint32     `protobuf:"varint,12,opt,name=unreconciled_reservations,json=unreconciledReservations,proto3" json:"unreconciled_reservations,omitempty"`
+	BackfillLimit            uint32     `protobuf:"varint,13,opt,name=backfill_limit,json=backfillLimit,proto3" json:"backfill_limit,omitempty"`                     // per-head bypass limit; 0 is strict FIFO
+	QueueMode                QueueMode  `protobuf:"varint,14,opt,name=queue_mode,json=queueMode,proto3,enum=heavylock.v2.QueueMode" json:"queue_mode,omitempty"`     // since API 2.1
+	QueueState               QueueState `protobuf:"varint,15,opt,name=queue_state,json=queueState,proto3,enum=heavylock.v2.QueueState" json:"queue_state,omitempty"` // since API 2.1
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -2908,6 +3046,7 @@ func (x *BrokerStatus) GetOccupied() uint32 {
 	return 0
 }
 
+// Deprecated: Marked as deprecated in heavylock.proto.
 func (x *BrokerStatus) GetPaused() bool {
 	if x != nil {
 		return x.Paused
@@ -2985,6 +3124,20 @@ func (x *BrokerStatus) GetBackfillLimit() uint32 {
 	return 0
 }
 
+func (x *BrokerStatus) GetQueueMode() QueueMode {
+	if x != nil {
+		return x.QueueMode
+	}
+	return QueueMode_QUEUE_MODE_UNSPECIFIED
+}
+
+func (x *BrokerStatus) GetQueueState() QueueState {
+	if x != nil {
+		return x.QueueState
+	}
+	return QueueState_QUEUE_STATE_UNSPECIFIED
+}
+
 type GetQueueRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -3021,10 +3174,14 @@ func (*GetQueueRequest) Descriptor() ([]byte, []int) {
 	return file_heavylock_proto_rawDescGZIP(), []int{29}
 }
 
+// queue_state and head_blocked_reason are also in BrokerStatus. Each
+// queue_changed and status_changed event is projected when it commits, so a
+// client keeps the values from whichever of the two it received last.
 type Queue struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	Jobs              []*Job                 `protobuf:"bytes,1,rep,name=jobs,proto3" json:"jobs,omitempty"` // queue order; head first
 	HeadBlockedReason BlockedReason          `protobuf:"varint,2,opt,name=head_blocked_reason,json=headBlockedReason,proto3,enum=heavylock.v2.BlockedReason" json:"head_blocked_reason,omitempty"`
+	QueueState        QueueState             `protobuf:"varint,3,opt,name=queue_state,json=queueState,proto3,enum=heavylock.v2.QueueState" json:"queue_state,omitempty"` // since API 2.1
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -3071,6 +3228,13 @@ func (x *Queue) GetHeadBlockedReason() BlockedReason {
 		return x.HeadBlockedReason
 	}
 	return BlockedReason_BLOCKED_REASON_UNSPECIFIED
+}
+
+func (x *Queue) GetQueueState() QueueState {
+	if x != nil {
+		return x.QueueState
+	}
+	return QueueState_QUEUE_STATE_UNSPECIFIED
 }
 
 type ListJobsRequest struct {
@@ -4294,11 +4458,11 @@ const file_heavylock_proto_rawDesc = "" +
 	" \x01(\rR\bapiMinorB\x12\n" +
 	"\x10_recovery_detailB\x11\n" +
 	"\x0f_storage_detail\"\x12\n" +
-	"\x10GetStatusRequest\"\xf2\x04\n" +
+	"\x10GetStatusRequest\"\xe9\x05\n" +
 	"\fBrokerStatus\x12\x1a\n" +
 	"\bcapacity\x18\x01 \x01(\rR\bcapacity\x12\x1a\n" +
-	"\boccupied\x18\x02 \x01(\rR\boccupied\x12\x16\n" +
-	"\x06paused\x18\x03 \x01(\bR\x06paused\x12.\n" +
+	"\boccupied\x18\x02 \x01(\rR\boccupied\x12\x1a\n" +
+	"\x06paused\x18\x03 \x01(\bB\x02\x18\x01R\x06paused\x12.\n" +
 	"\x11paused_at_unix_ns\x18\x04 \x01(\x03H\x00R\x0epausedAtUnixNs\x88\x01\x01\x12\x1e\n" +
 	"\n" +
 	"recovering\x18\x05 \x01(\bR\n" +
@@ -4312,14 +4476,20 @@ const file_heavylock_proto_rawDesc = "" +
 	" \x01(\x01H\x02R\rloadAverage1m\x88\x01\x01\x12/\n" +
 	"\x13storage_unavailable\x18\v \x01(\bR\x12storageUnavailable\x12;\n" +
 	"\x19unreconciled_reservations\x18\f \x01(\rR\x18unreconciledReservations\x12%\n" +
-	"\x0ebackfill_limit\x18\r \x01(\rR\rbackfillLimitB\x14\n" +
+	"\x0ebackfill_limit\x18\r \x01(\rR\rbackfillLimit\x126\n" +
+	"\n" +
+	"queue_mode\x18\x0e \x01(\x0e2\x17.heavylock.v2.QueueModeR\tqueueMode\x129\n" +
+	"\vqueue_state\x18\x0f \x01(\x0e2\x18.heavylock.v2.QueueStateR\n" +
+	"queueStateB\x14\n" +
 	"\x12_paused_at_unix_nsB\x14\n" +
 	"\x12_free_memory_bytesB\x12\n" +
 	"\x10_load_average_1m\"\x11\n" +
-	"\x0fGetQueueRequest\"{\n" +
+	"\x0fGetQueueRequest\"\xb6\x01\n" +
 	"\x05Queue\x12%\n" +
 	"\x04jobs\x18\x01 \x03(\v2\x11.heavylock.v2.JobR\x04jobs\x12K\n" +
-	"\x13head_blocked_reason\x18\x02 \x01(\x0e2\x1b.heavylock.v2.BlockedReasonR\x11headBlockedReason\"\x88\x03\n" +
+	"\x13head_blocked_reason\x18\x02 \x01(\x0e2\x1b.heavylock.v2.BlockedReasonR\x11headBlockedReason\x129\n" +
+	"\vqueue_state\x18\x03 \x01(\x0e2\x18.heavylock.v2.QueueStateR\n" +
+	"queueState\"\x88\x03\n" +
 	"\x0fListJobsRequest\x12.\n" +
 	"\x06states\x18\x01 \x03(\x0e2\x16.heavylock.v2.JobStateR\x06states\x12#\n" +
 	"\n" +
@@ -4432,7 +4602,20 @@ const file_heavylock_proto_rawDesc = "" +
 	"\x19BLOCKED_REASON_RECOVERING\x10\x04\x12&\n" +
 	"\"BLOCKED_REASON_RUNNER_DISCONNECTED\x10\x05\x12&\n" +
 	"\"BLOCKED_REASON_STORAGE_UNAVAILABLE\x10\x06\x12*\n" +
-	"&BLOCKED_REASON_WEIGHT_EXCEEDS_CAPACITY\x10\a*\xf6\x05\n" +
+	"&BLOCKED_REASON_WEIGHT_EXCEEDS_CAPACITY\x10\a*V\n" +
+	"\tQueueMode\x12\x1a\n" +
+	"\x16QUEUE_MODE_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12QUEUE_MODE_ENABLED\x10\x01\x12\x15\n" +
+	"\x11QUEUE_MODE_PAUSED\x10\x02*\xbc\x01\n" +
+	"\n" +
+	"QueueState\x12\x1b\n" +
+	"\x17QUEUE_STATE_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10QUEUE_STATE_IDLE\x10\x01\x12\x17\n" +
+	"\x13QUEUE_STATE_RUNNING\x10\x02\x12\x17\n" +
+	"\x13QUEUE_STATE_BLOCKED\x10\x03\x12\x16\n" +
+	"\x12QUEUE_STATE_PAUSED\x10\x04\x12\x1a\n" +
+	"\x16QUEUE_STATE_RECOVERING\x10\x05\x12\x15\n" +
+	"\x11QUEUE_STATE_ERROR\x10\x06*\xf6\x05\n" +
 	"\vErrorReason\x12\x1c\n" +
 	"\x18ERROR_REASON_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -4509,7 +4692,7 @@ func file_heavylock_proto_rawDescGZIP() []byte {
 	return file_heavylock_proto_rawDescData
 }
 
-var file_heavylock_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
+var file_heavylock_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
 var file_heavylock_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
 var file_heavylock_proto_goTypes = []any{
 	(JobState)(0),                     // 0: heavylock.v2.JobState
@@ -4519,167 +4702,172 @@ var file_heavylock_proto_goTypes = []any{
 	(MeasurementCompleteness)(0),      // 4: heavylock.v2.MeasurementCompleteness
 	(ProcessRole)(0),                  // 5: heavylock.v2.ProcessRole
 	(BlockedReason)(0),                // 6: heavylock.v2.BlockedReason
-	(ErrorReason)(0),                  // 7: heavylock.v2.ErrorReason
-	(BrokerTermination_Reason)(0),     // 8: heavylock.v2.BrokerTermination.Reason
-	(*ClientInfo)(nil),                // 9: heavylock.v2.ClientInfo
-	(*Attribution)(nil),               // 10: heavylock.v2.Attribution
-	(*ProcessIdentity)(nil),           // 11: heavylock.v2.ProcessIdentity
-	(*RunnerIncarnation)(nil),         // 12: heavylock.v2.RunnerIncarnation
-	(*Grant)(nil),                     // 13: heavylock.v2.Grant
-	(*Outcome)(nil),                   // 14: heavylock.v2.Outcome
-	(*ResourceSummary)(nil),           // 15: heavylock.v2.ResourceSummary
-	(*Job)(nil),                       // 16: heavylock.v2.Job
-	(*BrokerTermination)(nil),         // 17: heavylock.v2.BrokerTermination
-	(*SubmitJobRequest)(nil),          // 18: heavylock.v2.SubmitJobRequest
-	(*SubmitJobResponse)(nil),         // 19: heavylock.v2.SubmitJobResponse
-	(*WatchJobRequest)(nil),           // 20: heavylock.v2.WatchJobRequest
-	(*RejoinJobRequest)(nil),          // 21: heavylock.v2.RejoinJobRequest
-	(*ClaimLaunchRequest)(nil),        // 22: heavylock.v2.ClaimLaunchRequest
-	(*ClaimLaunchResponse)(nil),       // 23: heavylock.v2.ClaimLaunchResponse
-	(*SealLaunchRequest)(nil),         // 24: heavylock.v2.SealLaunchRequest
-	(*JobEvent)(nil),                  // 25: heavylock.v2.JobEvent
-	(*QueuePositionChanged)(nil),      // 26: heavylock.v2.QueuePositionChanged
-	(*CancelRequested)(nil),           // 27: heavylock.v2.CancelRequested
-	(*Heartbeat)(nil),                 // 28: heavylock.v2.Heartbeat
-	(*AcknowledgeCancelRequest)(nil),  // 29: heavylock.v2.AcknowledgeCancelRequest
-	(*ReportCancelFailedRequest)(nil), // 30: heavylock.v2.ReportCancelFailedRequest
-	(*ReportStartedRequest)(nil),      // 31: heavylock.v2.ReportStartedRequest
-	(*ReportLaunchFailedRequest)(nil), // 32: heavylock.v2.ReportLaunchFailedRequest
-	(*ReportFinishedRequest)(nil),     // 33: heavylock.v2.ReportFinishedRequest
-	(*GetHealthRequest)(nil),          // 34: heavylock.v2.GetHealthRequest
-	(*Health)(nil),                    // 35: heavylock.v2.Health
-	(*GetStatusRequest)(nil),          // 36: heavylock.v2.GetStatusRequest
-	(*BrokerStatus)(nil),              // 37: heavylock.v2.BrokerStatus
-	(*GetQueueRequest)(nil),           // 38: heavylock.v2.GetQueueRequest
-	(*Queue)(nil),                     // 39: heavylock.v2.Queue
-	(*ListJobsRequest)(nil),           // 40: heavylock.v2.ListJobsRequest
-	(*ListJobsResponse)(nil),          // 41: heavylock.v2.ListJobsResponse
-	(*GetJobRequest)(nil),             // 42: heavylock.v2.GetJobRequest
-	(*GetSubmissionRequest)(nil),      // 43: heavylock.v2.GetSubmissionRequest
-	(*CancelJobRequest)(nil),          // 44: heavylock.v2.CancelJobRequest
-	(*MoveJobRequest)(nil),            // 45: heavylock.v2.MoveJobRequest
-	(*ForceStartJobRequest)(nil),      // 46: heavylock.v2.ForceStartJobRequest
-	(*PauseQueueRequest)(nil),         // 47: heavylock.v2.PauseQueueRequest
-	(*ResumeQueueRequest)(nil),        // 48: heavylock.v2.ResumeQueueRequest
-	(*DeleteJobRequest)(nil),          // 49: heavylock.v2.DeleteJobRequest
-	(*DeleteJobResponse)(nil),         // 50: heavylock.v2.DeleteJobResponse
-	(*DeleteHistoryRequest)(nil),      // 51: heavylock.v2.DeleteHistoryRequest
-	(*DeleteHistoryResponse)(nil),     // 52: heavylock.v2.DeleteHistoryResponse
-	(*WatchEventsRequest)(nil),        // 53: heavylock.v2.WatchEventsRequest
-	(*BrokerEvent)(nil),               // 54: heavylock.v2.BrokerEvent
-	(*BrokerSnapshot)(nil),            // 55: heavylock.v2.BrokerSnapshot
-	nil,                               // 56: heavylock.v2.Attribution.ExtraEntry
+	(QueueMode)(0),                    // 7: heavylock.v2.QueueMode
+	(QueueState)(0),                   // 8: heavylock.v2.QueueState
+	(ErrorReason)(0),                  // 9: heavylock.v2.ErrorReason
+	(BrokerTermination_Reason)(0),     // 10: heavylock.v2.BrokerTermination.Reason
+	(*ClientInfo)(nil),                // 11: heavylock.v2.ClientInfo
+	(*Attribution)(nil),               // 12: heavylock.v2.Attribution
+	(*ProcessIdentity)(nil),           // 13: heavylock.v2.ProcessIdentity
+	(*RunnerIncarnation)(nil),         // 14: heavylock.v2.RunnerIncarnation
+	(*Grant)(nil),                     // 15: heavylock.v2.Grant
+	(*Outcome)(nil),                   // 16: heavylock.v2.Outcome
+	(*ResourceSummary)(nil),           // 17: heavylock.v2.ResourceSummary
+	(*Job)(nil),                       // 18: heavylock.v2.Job
+	(*BrokerTermination)(nil),         // 19: heavylock.v2.BrokerTermination
+	(*SubmitJobRequest)(nil),          // 20: heavylock.v2.SubmitJobRequest
+	(*SubmitJobResponse)(nil),         // 21: heavylock.v2.SubmitJobResponse
+	(*WatchJobRequest)(nil),           // 22: heavylock.v2.WatchJobRequest
+	(*RejoinJobRequest)(nil),          // 23: heavylock.v2.RejoinJobRequest
+	(*ClaimLaunchRequest)(nil),        // 24: heavylock.v2.ClaimLaunchRequest
+	(*ClaimLaunchResponse)(nil),       // 25: heavylock.v2.ClaimLaunchResponse
+	(*SealLaunchRequest)(nil),         // 26: heavylock.v2.SealLaunchRequest
+	(*JobEvent)(nil),                  // 27: heavylock.v2.JobEvent
+	(*QueuePositionChanged)(nil),      // 28: heavylock.v2.QueuePositionChanged
+	(*CancelRequested)(nil),           // 29: heavylock.v2.CancelRequested
+	(*Heartbeat)(nil),                 // 30: heavylock.v2.Heartbeat
+	(*AcknowledgeCancelRequest)(nil),  // 31: heavylock.v2.AcknowledgeCancelRequest
+	(*ReportCancelFailedRequest)(nil), // 32: heavylock.v2.ReportCancelFailedRequest
+	(*ReportStartedRequest)(nil),      // 33: heavylock.v2.ReportStartedRequest
+	(*ReportLaunchFailedRequest)(nil), // 34: heavylock.v2.ReportLaunchFailedRequest
+	(*ReportFinishedRequest)(nil),     // 35: heavylock.v2.ReportFinishedRequest
+	(*GetHealthRequest)(nil),          // 36: heavylock.v2.GetHealthRequest
+	(*Health)(nil),                    // 37: heavylock.v2.Health
+	(*GetStatusRequest)(nil),          // 38: heavylock.v2.GetStatusRequest
+	(*BrokerStatus)(nil),              // 39: heavylock.v2.BrokerStatus
+	(*GetQueueRequest)(nil),           // 40: heavylock.v2.GetQueueRequest
+	(*Queue)(nil),                     // 41: heavylock.v2.Queue
+	(*ListJobsRequest)(nil),           // 42: heavylock.v2.ListJobsRequest
+	(*ListJobsResponse)(nil),          // 43: heavylock.v2.ListJobsResponse
+	(*GetJobRequest)(nil),             // 44: heavylock.v2.GetJobRequest
+	(*GetSubmissionRequest)(nil),      // 45: heavylock.v2.GetSubmissionRequest
+	(*CancelJobRequest)(nil),          // 46: heavylock.v2.CancelJobRequest
+	(*MoveJobRequest)(nil),            // 47: heavylock.v2.MoveJobRequest
+	(*ForceStartJobRequest)(nil),      // 48: heavylock.v2.ForceStartJobRequest
+	(*PauseQueueRequest)(nil),         // 49: heavylock.v2.PauseQueueRequest
+	(*ResumeQueueRequest)(nil),        // 50: heavylock.v2.ResumeQueueRequest
+	(*DeleteJobRequest)(nil),          // 51: heavylock.v2.DeleteJobRequest
+	(*DeleteJobResponse)(nil),         // 52: heavylock.v2.DeleteJobResponse
+	(*DeleteHistoryRequest)(nil),      // 53: heavylock.v2.DeleteHistoryRequest
+	(*DeleteHistoryResponse)(nil),     // 54: heavylock.v2.DeleteHistoryResponse
+	(*WatchEventsRequest)(nil),        // 55: heavylock.v2.WatchEventsRequest
+	(*BrokerEvent)(nil),               // 56: heavylock.v2.BrokerEvent
+	(*BrokerSnapshot)(nil),            // 57: heavylock.v2.BrokerSnapshot
+	nil,                               // 58: heavylock.v2.Attribution.ExtraEntry
 }
 var file_heavylock_proto_depIdxs = []int32{
 	2,  // 0: heavylock.v2.ClientInfo.os:type_name -> heavylock.v2.ClientOS
 	3,  // 1: heavylock.v2.ClientInfo.architecture:type_name -> heavylock.v2.ClientArchitecture
-	56, // 2: heavylock.v2.Attribution.extra:type_name -> heavylock.v2.Attribution.ExtraEntry
-	11, // 3: heavylock.v2.RunnerIncarnation.process:type_name -> heavylock.v2.ProcessIdentity
-	12, // 4: heavylock.v2.Grant.runner:type_name -> heavylock.v2.RunnerIncarnation
+	58, // 2: heavylock.v2.Attribution.extra:type_name -> heavylock.v2.Attribution.ExtraEntry
+	13, // 3: heavylock.v2.RunnerIncarnation.process:type_name -> heavylock.v2.ProcessIdentity
+	14, // 4: heavylock.v2.Grant.runner:type_name -> heavylock.v2.RunnerIncarnation
 	1,  // 5: heavylock.v2.Outcome.kind:type_name -> heavylock.v2.OutcomeKind
 	4,  // 6: heavylock.v2.ResourceSummary.completeness:type_name -> heavylock.v2.MeasurementCompleteness
 	0,  // 7: heavylock.v2.Job.state:type_name -> heavylock.v2.JobState
-	9,  // 8: heavylock.v2.Job.client:type_name -> heavylock.v2.ClientInfo
-	10, // 9: heavylock.v2.Job.attribution:type_name -> heavylock.v2.Attribution
-	13, // 10: heavylock.v2.Job.grant:type_name -> heavylock.v2.Grant
-	11, // 11: heavylock.v2.Job.process:type_name -> heavylock.v2.ProcessIdentity
-	14, // 12: heavylock.v2.Job.outcome:type_name -> heavylock.v2.Outcome
-	15, // 13: heavylock.v2.Job.resources:type_name -> heavylock.v2.ResourceSummary
-	17, // 14: heavylock.v2.Job.broker_termination:type_name -> heavylock.v2.BrokerTermination
+	11, // 8: heavylock.v2.Job.client:type_name -> heavylock.v2.ClientInfo
+	12, // 9: heavylock.v2.Job.attribution:type_name -> heavylock.v2.Attribution
+	15, // 10: heavylock.v2.Job.grant:type_name -> heavylock.v2.Grant
+	13, // 11: heavylock.v2.Job.process:type_name -> heavylock.v2.ProcessIdentity
+	16, // 12: heavylock.v2.Job.outcome:type_name -> heavylock.v2.Outcome
+	17, // 13: heavylock.v2.Job.resources:type_name -> heavylock.v2.ResourceSummary
+	19, // 14: heavylock.v2.Job.broker_termination:type_name -> heavylock.v2.BrokerTermination
 	6,  // 15: heavylock.v2.Job.blocked_reason:type_name -> heavylock.v2.BlockedReason
-	8,  // 16: heavylock.v2.BrokerTermination.reason:type_name -> heavylock.v2.BrokerTermination.Reason
-	9,  // 17: heavylock.v2.SubmitJobRequest.client:type_name -> heavylock.v2.ClientInfo
-	10, // 18: heavylock.v2.SubmitJobRequest.attribution:type_name -> heavylock.v2.Attribution
-	12, // 19: heavylock.v2.SubmitJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	16, // 20: heavylock.v2.SubmitJobResponse.job:type_name -> heavylock.v2.Job
-	12, // 21: heavylock.v2.WatchJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	12, // 22: heavylock.v2.RejoinJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	12, // 23: heavylock.v2.ClaimLaunchRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	13, // 24: heavylock.v2.ClaimLaunchResponse.grant:type_name -> heavylock.v2.Grant
-	12, // 25: heavylock.v2.SealLaunchRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	16, // 26: heavylock.v2.JobEvent.snapshot:type_name -> heavylock.v2.Job
-	26, // 27: heavylock.v2.JobEvent.queue_position_changed:type_name -> heavylock.v2.QueuePositionChanged
-	13, // 28: heavylock.v2.JobEvent.granted:type_name -> heavylock.v2.Grant
-	27, // 29: heavylock.v2.JobEvent.cancel_requested:type_name -> heavylock.v2.CancelRequested
-	16, // 30: heavylock.v2.JobEvent.finished:type_name -> heavylock.v2.Job
-	28, // 31: heavylock.v2.JobEvent.heartbeat:type_name -> heavylock.v2.Heartbeat
+	10, // 16: heavylock.v2.BrokerTermination.reason:type_name -> heavylock.v2.BrokerTermination.Reason
+	11, // 17: heavylock.v2.SubmitJobRequest.client:type_name -> heavylock.v2.ClientInfo
+	12, // 18: heavylock.v2.SubmitJobRequest.attribution:type_name -> heavylock.v2.Attribution
+	14, // 19: heavylock.v2.SubmitJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	18, // 20: heavylock.v2.SubmitJobResponse.job:type_name -> heavylock.v2.Job
+	14, // 21: heavylock.v2.WatchJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	14, // 22: heavylock.v2.RejoinJobRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	14, // 23: heavylock.v2.ClaimLaunchRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	15, // 24: heavylock.v2.ClaimLaunchResponse.grant:type_name -> heavylock.v2.Grant
+	14, // 25: heavylock.v2.SealLaunchRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	18, // 26: heavylock.v2.JobEvent.snapshot:type_name -> heavylock.v2.Job
+	28, // 27: heavylock.v2.JobEvent.queue_position_changed:type_name -> heavylock.v2.QueuePositionChanged
+	15, // 28: heavylock.v2.JobEvent.granted:type_name -> heavylock.v2.Grant
+	29, // 29: heavylock.v2.JobEvent.cancel_requested:type_name -> heavylock.v2.CancelRequested
+	18, // 30: heavylock.v2.JobEvent.finished:type_name -> heavylock.v2.Job
+	30, // 31: heavylock.v2.JobEvent.heartbeat:type_name -> heavylock.v2.Heartbeat
 	6,  // 32: heavylock.v2.QueuePositionChanged.head_blocked_reason:type_name -> heavylock.v2.BlockedReason
-	12, // 33: heavylock.v2.AcknowledgeCancelRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	12, // 34: heavylock.v2.ReportCancelFailedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	11, // 35: heavylock.v2.ReportStartedRequest.process:type_name -> heavylock.v2.ProcessIdentity
-	12, // 36: heavylock.v2.ReportStartedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	12, // 37: heavylock.v2.ReportLaunchFailedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	14, // 38: heavylock.v2.ReportFinishedRequest.outcome:type_name -> heavylock.v2.Outcome
-	12, // 39: heavylock.v2.ReportFinishedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
-	11, // 40: heavylock.v2.ReportFinishedRequest.process:type_name -> heavylock.v2.ProcessIdentity
+	14, // 33: heavylock.v2.AcknowledgeCancelRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	14, // 34: heavylock.v2.ReportCancelFailedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	13, // 35: heavylock.v2.ReportStartedRequest.process:type_name -> heavylock.v2.ProcessIdentity
+	14, // 36: heavylock.v2.ReportStartedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	14, // 37: heavylock.v2.ReportLaunchFailedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	16, // 38: heavylock.v2.ReportFinishedRequest.outcome:type_name -> heavylock.v2.Outcome
+	14, // 39: heavylock.v2.ReportFinishedRequest.runner:type_name -> heavylock.v2.RunnerIncarnation
+	13, // 40: heavylock.v2.ReportFinishedRequest.process:type_name -> heavylock.v2.ProcessIdentity
 	6,  // 41: heavylock.v2.BrokerStatus.head_blocked_reason:type_name -> heavylock.v2.BlockedReason
-	16, // 42: heavylock.v2.Queue.jobs:type_name -> heavylock.v2.Job
-	6,  // 43: heavylock.v2.Queue.head_blocked_reason:type_name -> heavylock.v2.BlockedReason
-	0,  // 44: heavylock.v2.ListJobsRequest.states:type_name -> heavylock.v2.JobState
-	16, // 45: heavylock.v2.ListJobsResponse.jobs:type_name -> heavylock.v2.Job
-	55, // 46: heavylock.v2.BrokerEvent.snapshot:type_name -> heavylock.v2.BrokerSnapshot
-	16, // 47: heavylock.v2.BrokerEvent.job_changed:type_name -> heavylock.v2.Job
-	39, // 48: heavylock.v2.BrokerEvent.queue_changed:type_name -> heavylock.v2.Queue
-	37, // 49: heavylock.v2.BrokerEvent.status_changed:type_name -> heavylock.v2.BrokerStatus
-	28, // 50: heavylock.v2.BrokerEvent.heartbeat:type_name -> heavylock.v2.Heartbeat
-	37, // 51: heavylock.v2.BrokerSnapshot.status:type_name -> heavylock.v2.BrokerStatus
-	39, // 52: heavylock.v2.BrokerSnapshot.queue:type_name -> heavylock.v2.Queue
-	16, // 53: heavylock.v2.BrokerSnapshot.active_jobs:type_name -> heavylock.v2.Job
-	18, // 54: heavylock.v2.RunnerService.SubmitJob:input_type -> heavylock.v2.SubmitJobRequest
-	18, // 55: heavylock.v2.RunnerService.TrySubmitAndWatch:input_type -> heavylock.v2.SubmitJobRequest
-	20, // 56: heavylock.v2.RunnerService.WatchJob:input_type -> heavylock.v2.WatchJobRequest
-	21, // 57: heavylock.v2.RunnerService.RejoinJob:input_type -> heavylock.v2.RejoinJobRequest
-	22, // 58: heavylock.v2.RunnerService.ClaimLaunch:input_type -> heavylock.v2.ClaimLaunchRequest
-	24, // 59: heavylock.v2.RunnerService.SealLaunch:input_type -> heavylock.v2.SealLaunchRequest
-	31, // 60: heavylock.v2.RunnerService.ReportStarted:input_type -> heavylock.v2.ReportStartedRequest
-	32, // 61: heavylock.v2.RunnerService.ReportLaunchFailed:input_type -> heavylock.v2.ReportLaunchFailedRequest
-	29, // 62: heavylock.v2.RunnerService.AcknowledgeCancel:input_type -> heavylock.v2.AcknowledgeCancelRequest
-	30, // 63: heavylock.v2.RunnerService.ReportCancelFailed:input_type -> heavylock.v2.ReportCancelFailedRequest
-	33, // 64: heavylock.v2.RunnerService.ReportFinished:input_type -> heavylock.v2.ReportFinishedRequest
-	34, // 65: heavylock.v2.ControlService.GetHealth:input_type -> heavylock.v2.GetHealthRequest
-	36, // 66: heavylock.v2.ControlService.GetStatus:input_type -> heavylock.v2.GetStatusRequest
-	38, // 67: heavylock.v2.ControlService.GetQueue:input_type -> heavylock.v2.GetQueueRequest
-	40, // 68: heavylock.v2.ControlService.ListJobs:input_type -> heavylock.v2.ListJobsRequest
-	42, // 69: heavylock.v2.ControlService.GetJob:input_type -> heavylock.v2.GetJobRequest
-	43, // 70: heavylock.v2.ControlService.GetSubmission:input_type -> heavylock.v2.GetSubmissionRequest
-	44, // 71: heavylock.v2.ControlService.CancelJob:input_type -> heavylock.v2.CancelJobRequest
-	45, // 72: heavylock.v2.ControlService.MoveJob:input_type -> heavylock.v2.MoveJobRequest
-	46, // 73: heavylock.v2.ControlService.ForceStartJob:input_type -> heavylock.v2.ForceStartJobRequest
-	47, // 74: heavylock.v2.ControlService.PauseQueue:input_type -> heavylock.v2.PauseQueueRequest
-	48, // 75: heavylock.v2.ControlService.ResumeQueue:input_type -> heavylock.v2.ResumeQueueRequest
-	49, // 76: heavylock.v2.ControlService.DeleteJob:input_type -> heavylock.v2.DeleteJobRequest
-	51, // 77: heavylock.v2.ControlService.DeleteHistory:input_type -> heavylock.v2.DeleteHistoryRequest
-	53, // 78: heavylock.v2.ControlService.WatchEvents:input_type -> heavylock.v2.WatchEventsRequest
-	19, // 79: heavylock.v2.RunnerService.SubmitJob:output_type -> heavylock.v2.SubmitJobResponse
-	25, // 80: heavylock.v2.RunnerService.TrySubmitAndWatch:output_type -> heavylock.v2.JobEvent
-	25, // 81: heavylock.v2.RunnerService.WatchJob:output_type -> heavylock.v2.JobEvent
-	16, // 82: heavylock.v2.RunnerService.RejoinJob:output_type -> heavylock.v2.Job
-	23, // 83: heavylock.v2.RunnerService.ClaimLaunch:output_type -> heavylock.v2.ClaimLaunchResponse
-	16, // 84: heavylock.v2.RunnerService.SealLaunch:output_type -> heavylock.v2.Job
-	16, // 85: heavylock.v2.RunnerService.ReportStarted:output_type -> heavylock.v2.Job
-	16, // 86: heavylock.v2.RunnerService.ReportLaunchFailed:output_type -> heavylock.v2.Job
-	16, // 87: heavylock.v2.RunnerService.AcknowledgeCancel:output_type -> heavylock.v2.Job
-	16, // 88: heavylock.v2.RunnerService.ReportCancelFailed:output_type -> heavylock.v2.Job
-	16, // 89: heavylock.v2.RunnerService.ReportFinished:output_type -> heavylock.v2.Job
-	35, // 90: heavylock.v2.ControlService.GetHealth:output_type -> heavylock.v2.Health
-	37, // 91: heavylock.v2.ControlService.GetStatus:output_type -> heavylock.v2.BrokerStatus
-	39, // 92: heavylock.v2.ControlService.GetQueue:output_type -> heavylock.v2.Queue
-	41, // 93: heavylock.v2.ControlService.ListJobs:output_type -> heavylock.v2.ListJobsResponse
-	16, // 94: heavylock.v2.ControlService.GetJob:output_type -> heavylock.v2.Job
-	16, // 95: heavylock.v2.ControlService.GetSubmission:output_type -> heavylock.v2.Job
-	16, // 96: heavylock.v2.ControlService.CancelJob:output_type -> heavylock.v2.Job
-	39, // 97: heavylock.v2.ControlService.MoveJob:output_type -> heavylock.v2.Queue
-	16, // 98: heavylock.v2.ControlService.ForceStartJob:output_type -> heavylock.v2.Job
-	37, // 99: heavylock.v2.ControlService.PauseQueue:output_type -> heavylock.v2.BrokerStatus
-	37, // 100: heavylock.v2.ControlService.ResumeQueue:output_type -> heavylock.v2.BrokerStatus
-	50, // 101: heavylock.v2.ControlService.DeleteJob:output_type -> heavylock.v2.DeleteJobResponse
-	52, // 102: heavylock.v2.ControlService.DeleteHistory:output_type -> heavylock.v2.DeleteHistoryResponse
-	54, // 103: heavylock.v2.ControlService.WatchEvents:output_type -> heavylock.v2.BrokerEvent
-	79, // [79:104] is the sub-list for method output_type
-	54, // [54:79] is the sub-list for method input_type
-	54, // [54:54] is the sub-list for extension type_name
-	54, // [54:54] is the sub-list for extension extendee
-	0,  // [0:54] is the sub-list for field type_name
+	7,  // 42: heavylock.v2.BrokerStatus.queue_mode:type_name -> heavylock.v2.QueueMode
+	8,  // 43: heavylock.v2.BrokerStatus.queue_state:type_name -> heavylock.v2.QueueState
+	18, // 44: heavylock.v2.Queue.jobs:type_name -> heavylock.v2.Job
+	6,  // 45: heavylock.v2.Queue.head_blocked_reason:type_name -> heavylock.v2.BlockedReason
+	8,  // 46: heavylock.v2.Queue.queue_state:type_name -> heavylock.v2.QueueState
+	0,  // 47: heavylock.v2.ListJobsRequest.states:type_name -> heavylock.v2.JobState
+	18, // 48: heavylock.v2.ListJobsResponse.jobs:type_name -> heavylock.v2.Job
+	57, // 49: heavylock.v2.BrokerEvent.snapshot:type_name -> heavylock.v2.BrokerSnapshot
+	18, // 50: heavylock.v2.BrokerEvent.job_changed:type_name -> heavylock.v2.Job
+	41, // 51: heavylock.v2.BrokerEvent.queue_changed:type_name -> heavylock.v2.Queue
+	39, // 52: heavylock.v2.BrokerEvent.status_changed:type_name -> heavylock.v2.BrokerStatus
+	30, // 53: heavylock.v2.BrokerEvent.heartbeat:type_name -> heavylock.v2.Heartbeat
+	39, // 54: heavylock.v2.BrokerSnapshot.status:type_name -> heavylock.v2.BrokerStatus
+	41, // 55: heavylock.v2.BrokerSnapshot.queue:type_name -> heavylock.v2.Queue
+	18, // 56: heavylock.v2.BrokerSnapshot.active_jobs:type_name -> heavylock.v2.Job
+	20, // 57: heavylock.v2.RunnerService.SubmitJob:input_type -> heavylock.v2.SubmitJobRequest
+	20, // 58: heavylock.v2.RunnerService.TrySubmitAndWatch:input_type -> heavylock.v2.SubmitJobRequest
+	22, // 59: heavylock.v2.RunnerService.WatchJob:input_type -> heavylock.v2.WatchJobRequest
+	23, // 60: heavylock.v2.RunnerService.RejoinJob:input_type -> heavylock.v2.RejoinJobRequest
+	24, // 61: heavylock.v2.RunnerService.ClaimLaunch:input_type -> heavylock.v2.ClaimLaunchRequest
+	26, // 62: heavylock.v2.RunnerService.SealLaunch:input_type -> heavylock.v2.SealLaunchRequest
+	33, // 63: heavylock.v2.RunnerService.ReportStarted:input_type -> heavylock.v2.ReportStartedRequest
+	34, // 64: heavylock.v2.RunnerService.ReportLaunchFailed:input_type -> heavylock.v2.ReportLaunchFailedRequest
+	31, // 65: heavylock.v2.RunnerService.AcknowledgeCancel:input_type -> heavylock.v2.AcknowledgeCancelRequest
+	32, // 66: heavylock.v2.RunnerService.ReportCancelFailed:input_type -> heavylock.v2.ReportCancelFailedRequest
+	35, // 67: heavylock.v2.RunnerService.ReportFinished:input_type -> heavylock.v2.ReportFinishedRequest
+	36, // 68: heavylock.v2.ControlService.GetHealth:input_type -> heavylock.v2.GetHealthRequest
+	38, // 69: heavylock.v2.ControlService.GetStatus:input_type -> heavylock.v2.GetStatusRequest
+	40, // 70: heavylock.v2.ControlService.GetQueue:input_type -> heavylock.v2.GetQueueRequest
+	42, // 71: heavylock.v2.ControlService.ListJobs:input_type -> heavylock.v2.ListJobsRequest
+	44, // 72: heavylock.v2.ControlService.GetJob:input_type -> heavylock.v2.GetJobRequest
+	45, // 73: heavylock.v2.ControlService.GetSubmission:input_type -> heavylock.v2.GetSubmissionRequest
+	46, // 74: heavylock.v2.ControlService.CancelJob:input_type -> heavylock.v2.CancelJobRequest
+	47, // 75: heavylock.v2.ControlService.MoveJob:input_type -> heavylock.v2.MoveJobRequest
+	48, // 76: heavylock.v2.ControlService.ForceStartJob:input_type -> heavylock.v2.ForceStartJobRequest
+	49, // 77: heavylock.v2.ControlService.PauseQueue:input_type -> heavylock.v2.PauseQueueRequest
+	50, // 78: heavylock.v2.ControlService.ResumeQueue:input_type -> heavylock.v2.ResumeQueueRequest
+	51, // 79: heavylock.v2.ControlService.DeleteJob:input_type -> heavylock.v2.DeleteJobRequest
+	53, // 80: heavylock.v2.ControlService.DeleteHistory:input_type -> heavylock.v2.DeleteHistoryRequest
+	55, // 81: heavylock.v2.ControlService.WatchEvents:input_type -> heavylock.v2.WatchEventsRequest
+	21, // 82: heavylock.v2.RunnerService.SubmitJob:output_type -> heavylock.v2.SubmitJobResponse
+	27, // 83: heavylock.v2.RunnerService.TrySubmitAndWatch:output_type -> heavylock.v2.JobEvent
+	27, // 84: heavylock.v2.RunnerService.WatchJob:output_type -> heavylock.v2.JobEvent
+	18, // 85: heavylock.v2.RunnerService.RejoinJob:output_type -> heavylock.v2.Job
+	25, // 86: heavylock.v2.RunnerService.ClaimLaunch:output_type -> heavylock.v2.ClaimLaunchResponse
+	18, // 87: heavylock.v2.RunnerService.SealLaunch:output_type -> heavylock.v2.Job
+	18, // 88: heavylock.v2.RunnerService.ReportStarted:output_type -> heavylock.v2.Job
+	18, // 89: heavylock.v2.RunnerService.ReportLaunchFailed:output_type -> heavylock.v2.Job
+	18, // 90: heavylock.v2.RunnerService.AcknowledgeCancel:output_type -> heavylock.v2.Job
+	18, // 91: heavylock.v2.RunnerService.ReportCancelFailed:output_type -> heavylock.v2.Job
+	18, // 92: heavylock.v2.RunnerService.ReportFinished:output_type -> heavylock.v2.Job
+	37, // 93: heavylock.v2.ControlService.GetHealth:output_type -> heavylock.v2.Health
+	39, // 94: heavylock.v2.ControlService.GetStatus:output_type -> heavylock.v2.BrokerStatus
+	41, // 95: heavylock.v2.ControlService.GetQueue:output_type -> heavylock.v2.Queue
+	43, // 96: heavylock.v2.ControlService.ListJobs:output_type -> heavylock.v2.ListJobsResponse
+	18, // 97: heavylock.v2.ControlService.GetJob:output_type -> heavylock.v2.Job
+	18, // 98: heavylock.v2.ControlService.GetSubmission:output_type -> heavylock.v2.Job
+	18, // 99: heavylock.v2.ControlService.CancelJob:output_type -> heavylock.v2.Job
+	41, // 100: heavylock.v2.ControlService.MoveJob:output_type -> heavylock.v2.Queue
+	18, // 101: heavylock.v2.ControlService.ForceStartJob:output_type -> heavylock.v2.Job
+	39, // 102: heavylock.v2.ControlService.PauseQueue:output_type -> heavylock.v2.BrokerStatus
+	39, // 103: heavylock.v2.ControlService.ResumeQueue:output_type -> heavylock.v2.BrokerStatus
+	52, // 104: heavylock.v2.ControlService.DeleteJob:output_type -> heavylock.v2.DeleteJobResponse
+	54, // 105: heavylock.v2.ControlService.DeleteHistory:output_type -> heavylock.v2.DeleteHistoryResponse
+	56, // 106: heavylock.v2.ControlService.WatchEvents:output_type -> heavylock.v2.BrokerEvent
+	82, // [82:107] is the sub-list for method output_type
+	57, // [57:82] is the sub-list for method input_type
+	57, // [57:57] is the sub-list for extension type_name
+	57, // [57:57] is the sub-list for extension extendee
+	0,  // [0:57] is the sub-list for field type_name
 }
 
 func init() { file_heavylock_proto_init() }
@@ -4726,7 +4914,7 @@ func file_heavylock_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_heavylock_proto_rawDesc), len(file_heavylock_proto_rawDesc)),
-			NumEnums:      9,
+			NumEnums:      11,
 			NumMessages:   48,
 			NumExtensions: 0,
 			NumServices:   2,

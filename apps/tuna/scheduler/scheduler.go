@@ -210,6 +210,9 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 
 func (s *Scheduler) ServiceRunID() int64 { return s.run }
 
+// Config returns the scheduler's fixed configuration.
+func (s *Scheduler) Config() Config { return s.cfg }
+
 // Ready reports whether normal admission is open (MarkReady committed and
 // the scheduler is not stopped).
 func (s *Scheduler) Ready() bool {
@@ -661,9 +664,9 @@ func (s *Scheduler) ForceStart(ctx context.Context, id string) (*pb.Job, []*pb.B
 	return job, events, nil
 }
 
-// Pause persistently stops or resumes normal admission. Running and already
-// reserved work is unaffected; force-start remains available.
-func (s *Scheduler) Pause(ctx context.Context, paused bool) ([]*pb.BrokerEvent, error) {
+// SetQueueMode persistently pauses or resumes normal admission. Running and
+// already reserved work is unaffected; force-start remains available.
+func (s *Scheduler) SetQueueMode(ctx context.Context, mode pb.QueueMode) ([]*pb.BrokerEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.usable(false); err != nil {
@@ -671,9 +674,9 @@ func (s *Scheduler) Pause(ctx context.Context, paused bool) ([]*pb.BrokerEvent, 
 	}
 	events, err := s.write(ctx, func(tx *storage.Tx) error {
 		tx.ProjectEvent = s.project(s.ready)
-		return tx.Pause(paused)
+		return tx.SetQueueMode(mode)
 	})
-	if err != nil || paused {
+	if err != nil || mode == pb.QueueMode_QUEUE_MODE_PAUSED {
 		return events, err
 	}
 	more, err := s.admitLocked(ctx)
@@ -778,7 +781,7 @@ func (s *Scheduler) state(r *storage.Reader, ready bool, sharing func() Sharing)
 
 func (s *Scheduler) stateOf(status *pb.BrokerStatus, queue *pb.Queue, ready bool, sharing func() Sharing) State {
 	state := State{Capacity: s.cfg.Capacity, BackfillLimit: s.cfg.BackfillLimit, Ready: ready,
-		Paused: status.Paused, Occupied: status.Occupied, Sharing: sharing}
+		Paused: status.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED, Occupied: status.Occupied, Sharing: sharing}
 	for _, j := range queue.Jobs {
 		state.Queue = append(state.Queue, Entry{JobID: j.JobId, Weight: j.Weight,
 			Connected: j.RunnerConnected && s.streams[j.JobId] != nil, BypassCount: j.BackfillBypassCount})

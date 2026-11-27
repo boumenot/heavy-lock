@@ -413,10 +413,24 @@ func (r *Reader) Queue() (*pb.Queue, error) {
 
 func (r *Reader) Status() (*pb.BrokerStatus, error) {
 	s := &pb.BrokerStatus{}
-	err := r.scan(`SELECT paused,paused_at_ns,
+	var mode string
+	err := r.scan(`SELECT queue_mode,paused_at_ns,
 		(SELECT coalesce(sum(weight),0) FROM reservations WHERE released_at_ns IS NULL),
 		(SELECT count(*) FROM queue_entries),
 		(SELECT count(*) FROM jobs WHERE state IN ('running','finishing')) FROM broker_state WHERE id=1`,
-		nil, &s.Paused, &s.PausedAtUnixNs, &s.Occupied, &s.QueuedJobs, &s.RunningJobs)
-	return s, err
+		nil, &mode, &s.PausedAtUnixNs, &s.Occupied, &s.QueuedJobs, &s.RunningJobs)
+	if err != nil {
+		return s, err
+	}
+	switch mode {
+	case "enabled":
+		s.QueueMode = pb.QueueMode_QUEUE_MODE_ENABLED
+	case "paused":
+		s.QueueMode = pb.QueueMode_QUEUE_MODE_PAUSED
+	default:
+		return s, fmt.Errorf("invalid queue mode %q", mode)
+	}
+	// Deprecated, but still set for older clients.
+	s.Paused = s.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED
+	return s, nil
 }
