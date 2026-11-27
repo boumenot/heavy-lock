@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -20,6 +21,41 @@ import (
 )
 
 var submittedJob = regexp.MustCompile(`submitted job ([0-9a-f-]{36})`)
+
+func TestServiceAdmissionSettings(t *testing.T) {
+	t.Setenv("TUNA_TEST_LOCK_DIR", filepath.Join(t.TempDir(), "singleton"))
+	port := freePort(t)
+	dir := filepath.Join(t.TempDir(), "state")
+	for _, tt := range []struct {
+		name     string
+		args     []string
+		capacity uint32
+		backfill uint32
+	}{
+		{name: "explicit strict FIFO", args: []string{"--capacity", "4", "--backfill-limit", "0"}, capacity: 4, backfill: 0},
+		{name: "restarted with different settings", args: []string{"--capacity", "2", "--backfill-limit", "3"}, capacity: 2, backfill: 3},
+		{name: "default backfill", args: []string{"--capacity", "3"}, capacity: 3, backfill: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			broker := startService(t, port, dir, tt.args...)
+			code, _, body := restCall(t, port, http.MethodGet, "/v1/status", nil)
+			if code != http.StatusOK {
+				t.Fatalf("status = %d: %s", code, body)
+			}
+			var status struct {
+				Capacity      uint32 `json:"capacity"`
+				BackfillLimit uint32 `json:"backfillLimit"`
+			}
+			if err := json.Unmarshal([]byte(body), &status); err != nil {
+				t.Fatal(err)
+			}
+			if status.Capacity != tt.capacity || status.BackfillLimit != tt.backfill {
+				t.Fatalf("status = %+v, want capacity %d and backfill %d", status, tt.capacity, tt.backfill)
+			}
+			broker.stop(t)
+		})
+	}
+}
 
 type runnerProcess struct {
 	fencedTestProcess

@@ -130,13 +130,13 @@ type serviceProcess struct {
 	exited bool
 }
 
-func startService(t *testing.T, port int, dir string) *serviceProcess {
+func startService(t *testing.T, port int, dir string, args ...string) *serviceProcess {
 	t.Helper()
 	if os.Getenv("TUNA_TEST_LOCK_DIR") == "" {
 		t.Fatal("test singleton directory is not set")
 	}
 	p := &serviceProcess{stderr: &syncBuffer{}, done: make(chan error, 1)}
-	p.cmd = tunaCommand(context.Background(), "service", "--port", fmt.Sprint(port), "--data-dir", dir)
+	p.cmd = tunaCommand(context.Background(), append([]string{"service", "--port", fmt.Sprint(port), "--data-dir", dir}, args...)...)
 	p.cmd.Stdout, p.cmd.Stderr = io.Discard, p.stderr
 	if err := p.cmd.Start(); err != nil {
 		t.Fatal(err)
