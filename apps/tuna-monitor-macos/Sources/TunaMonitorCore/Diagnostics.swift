@@ -89,8 +89,10 @@ public struct MonitorDiagnostics: Encodable, Equatable, Sendable {
     }
 
     public struct Queue: Encodable, Equatable, Sendable {
-        /// `enabled` or `paused` from the last status; nil before any.
-        public var mode: String?
+        /// `enabled` or `paused` while live and known; `unknown` otherwise.
+        public var mode: String
+        /// The last status's mode when not live; nil before any status or while live.
+        public var lastKnownMode: String?
         /// The state the status line and stop light show.
         public var state: String
         public var running: Int
@@ -229,8 +231,16 @@ public struct MonitorDiagnostics: Encodable, Equatable, Sendable {
         self.header = Header(
             title: banner.title, detail: banner.detail, tone: tone,
             statusLine: Presentation.statusLine(state), notice: state.notice, controlError: state.controlError)
+        let lastKnownMode = state.status.map { status in
+            switch status.queueMode {
+            case .enabled: "enabled"
+            case .paused: "paused"
+            default: "unknown"
+            }
+        }
         self.queue = Queue(
-            mode: state.status.map { $0.queueMode == .paused ? "paused" : "enabled" },
+            mode: state.isLive ? lastKnownMode ?? "unknown" : "unknown",
+            lastKnownMode: state.isLive ? nil : lastKnownMode,
             state: Presentation.queueStateName(state.currentQueueState).lowercased(),
             running: state.runningCount, queued: state.queuedCount, recentlyFinished: state.recent.count)
         let expected = DockTile(Presentation.dockTile(state))

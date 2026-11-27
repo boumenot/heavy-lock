@@ -690,7 +690,11 @@ gives for the monitor's current state, the same function the Dock uses;
 tile view and `NSDockTile`, and `dock.matchesExpected` compares them. The
 stop light is `go` (green), `stalled` (amber), `stopped` (red) or
 `unknown` (dark); the ring is `idle`, `running` or `notLive`. Window
-visibility and occlusion come from AppKit. Absent fields have no value.
+visibility and occlusion come from AppKit. `queue.mode` is `enabled` or
+`paused` only while the monitor is live and the mode is known; otherwise
+it is `unknown`. When not live, `queue.lastKnownMode` contains the mode
+from the retained status if there is one, including `unknown` for an
+unspecified or unrecognized mode. Other absent fields have no value.
 This verifies presentation state, not pixels: it cannot show that the
 Dock or window actually rendered as expected, so visual checks still
 need a person or a screenshot. It exposes no job commands, arguments,

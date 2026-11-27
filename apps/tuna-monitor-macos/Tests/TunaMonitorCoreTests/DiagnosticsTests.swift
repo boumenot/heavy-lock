@@ -68,6 +68,67 @@ import Testing
         #expect(!json.contains("\"r1\""))
     }
 
+    @Test func liveQueueModeDistinguishesKnownAndUnknownValues() throws {
+        var state = MonitorState()
+        state.connection = .live
+        #expect(try self.queueModes(state).mode == "unknown")
+
+        var brokerStatus = status()
+        let cases: [(Heavylock_V2_QueueMode, String)] = [
+            (.enabled, "enabled"), (.paused, "paused"), (.unspecified, "unknown"), (.UNRECOGNIZED(123), "unknown"),
+        ]
+        for (mode, expected) in cases {
+            brokerStatus.queueMode = mode
+            state.status = brokerStatus
+            let queue = try self.queueModes(state)
+            #expect(queue.mode == expected)
+            #expect(queue.lastKnownMode == nil)
+        }
+    }
+
+    @Test func nonLiveQueueModeSeparatesCurrentFromLastKnown() throws {
+        var state = MonitorState()
+        var brokerStatus = status()
+        let connections: [MonitorState.Connection] = [.unavailable("disconnected"), .brokerError("storage failed")]
+        for connection in connections {
+            state.connection = connection
+            state.status = nil
+            let noStatus = try self.queueModes(state)
+            #expect(noStatus.mode == "unknown")
+            #expect(noStatus.lastKnownMode == nil)
+
+            let cases: [(Heavylock_V2_QueueMode, String)] = [
+                (.enabled, "enabled"), (.paused, "paused"), (.unspecified, "unknown"),
+                (.UNRECOGNIZED(123), "unknown"),
+            ]
+            for (mode, expected) in cases {
+                brokerStatus.queueMode = mode
+                state.status = brokerStatus
+                let queue = try self.queueModes(state)
+                #expect(queue.mode == "unknown")
+                #expect(queue.lastKnownMode == expected)
+            }
+        }
+    }
+
+    private struct QueueModes: Decodable {
+        struct Queue: Decodable {
+            var mode: String?
+            var lastKnownMode: String?
+        }
+
+        var queue: Queue
+    }
+
+    private func queueModes(_ state: MonitorState) throws -> QueueModes.Queue {
+        let diagnostics = MonitorDiagnostics(
+            state: state, brokerPort: 1, now: self.now,
+            monitor: .init(pid: 1, version: nil, bundlePath: "/b", startedAt: self.now, diagnosticsPort: 2),
+            dock: .init(installed: false, shown: nil, badgeLabel: nil),
+            application: .init(active: false, hidden: false, windows: []))
+        return try JSONDecoder().decode(QueueModes.self, from: diagnostics.json()).queue
+    }
+
     @Test func dockMismatchIsReportedWhenAppKitShowsAnOlderTile() {
         var state = MonitorState()
         state.connection = .unavailable("connection refused")
