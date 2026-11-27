@@ -193,7 +193,8 @@ integration with an isolated test broker built first with
 scripted broker; the real-broker test does not inject those envelopes. Locked
 `dart tool/dev.dart check tuna` passed the Go suite and automated model cases;
 the focused orchestrator tests, Dart analyzer and formatter check also passed.
-A manual macOS visual check remains pending for the user-visible change.
+The user passed the macOS visual review of unavailable, stale and recovered
+states using an isolated simulated broker.
 
 These are bounded model and implementation checks, not a claim that arbitrary
 event histories, real timing, process supervision or the Swift code have
