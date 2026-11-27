@@ -39,17 +39,23 @@ processes or browser origins from using its loopback APIs.
 
 These are instructions, not an action performed by the build. Installing a
 service or changing an existing one requires separate permission. Run in a
-logged-in GUI session as the intended user, from this checkout, after building
-`build/tuna/tuna` through the shared broker:
+logged-in GUI session as the intended user, from this checkout. First build
+and test all supported apps through the shared broker, then separately
+authorize deployment, stop/drain any old broker and quit the monitor:
 
 ```sh
-/Users/boumenot/.local/bin/tuna --port 49783 -- nix develop -c dart tool/dev.dart build tuna
+/Users/boumenot/.local/bin/tuna --port 49783 -- nix develop -c dart tool/dev.dart check all
+nix develop -c dart tool/dev.dart install all
 ```
 
-On a machine without a running broker (first installation), build directly;
-nothing else can be admitted until the broker exists.
+These install the validated runner at `~/.local/bin/tuna` and monitor at
+`~/Applications/Tuna Monitor.app`; they do not install/load an agent. See the
+[artifact and replacement safeguards](../README.md#install-and-supervision).
+On a machine without a compatible running broker, first bootstrap/cutover
+requires explicit coordinated authorization. Do not run heavy work unlocked.
 
-The following installs a new agent only; it refuses existing named artifacts.
+The following installs a new agent only; it requires the installed runner
+and refuses an existing agent configuration.
 Choose another port if desired and use that same port explicitly for clients.
 Paths containing spaces are supported. `$HOME` must be the OS account's normal
 home for these installation paths.
@@ -58,13 +64,17 @@ home for these installation paths.
 set -eu
 umask 077
 label=com.github.boumenot.tuna
-bin="$HOME/Library/Application Support/tuna/bin/tuna"
+bin="$HOME/.local/bin/tuna"
 state="$HOME/Library/Application Support/tuna"
 plist="$HOME/Library/LaunchAgents/$label.plist"
 log="$state/service.log"
 port=49783
-if [ -e "$bin" ] || [ -L "$bin" ] || [ -e "$plist" ] || [ -L "$plist" ]; then
-  echo "An installation artifact already exists; inspect it first." >&2
+if [ ! -x "$bin" ] || [ -L "$bin" ]; then
+  echo "Run install all first; the runner must be a regular executable." >&2
+  exit 1
+fi
+if [ -e "$plist" ] || [ -L "$plist" ]; then
+  echo "An agent configuration already exists; inspect it first." >&2
   exit 1
 fi
 launchctl print "gui/$(id -u)" >/dev/null
@@ -72,8 +82,7 @@ if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
   echo "Agent already loaded; inspect it before proceeding." >&2
   exit 1
 fi
-mkdir -p -m 700 "$(dirname "$bin")" "$state" "$(dirname "$plist")"
-install -m 700 build/tuna/tuna "$bin"
+mkdir -p -m 700 "$state" "$(dirname "$plist")"
 : >> "$log"
 sh tool/render-tuna-launch-agent.sh "$bin" "$log" "$port" > "$plist"
 # Optional example: uncomment these four lines to set capacity 4 and strict FIFO.
@@ -87,9 +96,8 @@ launchctl print "gui/$(id -u)/$label"
 tail -n 50 "$log"
 ```
 
-Clients and the `tuna` skill run `/Users/boumenot/.local/bin/tuna`; link
-it to the installed executable once (`mkdir -p ~/.local/bin && ln -s "$bin"
-~/.local/bin/tuna`) when that path does not already exist.
+Clients, the `tuna` skill and this agent use the same regular executable
+at `/Users/boumenot/.local/bin/tuna`; no extra symlink is needed.
 
 The log must show `ready on 127.0.0.1:PORT`; `launchctl bootstrap` by itself
 does not prove readiness. If startup fails, inspect the log, the selected port
@@ -113,24 +121,30 @@ check below does not establish that a live upgrade is safe. Preserve the
 database and all sidecars. After a separately authorized upgrade and a new
 gated build, stop the job with
 `launchctl bootout "gui/$(id -u)" "$plist"`, save the previous executable,
-replace it atomically, and bootstrap the same plist again. For example, with
+replace it atomically, and bootstrap the same plist again. `install all`
+refuses a running broker or monitor; it does not perform the bootout/bootstrap
+steps. For example, with
 the variables above still set:
 
 ```sh
-if [ -e "$bin.previous" ] || [ -L "$bin.previous" ] || [ -e "$bin.new" ] || [ -L "$bin.new" ]; then
+set -eu
+if [ -e "$bin.previous" ] || [ -L "$bin.previous" ]; then
   echo "Upgrade artifact already exists; inspect it first." >&2
   exit 1
 fi
 cp -p "$bin" "$bin.previous"
-install -m 700 build/tuna/tuna "$bin.new"
-mv -f "$bin.new" "$bin"
+nix develop -c dart tool/dev.dart install all
 launchctl bootstrap "gui/$(id -u)" "$plist"
 launchctl print "gui/$(id -u)/$label"
 tail -n 50 "$log"
 ```
 
-If the upgrade fails, boot out the agent before restoring the saved executable
-and investigate the log. Database schema changes may make rollback unsafe;
+Before upgrading, also preserve the matching old monitor bundle if a rollback
+after service startup may be needed. If the artifact replacement fails, the
+installer restores both old apps; do not bootstrap after a failed install.
+If new service startup fails, boot out the agent before restoring the saved
+executable and matching monitor, and investigate the log. Database schema
+changes may make rollback unsafe;
 do not assume an older executable can read a newer database. Back up state
 only with the broker stopped and retain the database and sidecars together.
 
@@ -159,10 +173,17 @@ running:
 1. `launchctl bootout "gui/$(id -u)/com.github.boumenot.heavy-lock.tuna"` and
    move its plist out of `~/Library/LaunchAgents`.
 2. Quit any running Tuna Monitor.
-3. Build the new executable directly (no broker is running) and install it
-   with the [install](#install) commands above.
-4. Repoint `~/.local/bin/tuna` at the new executable and relaunch a monitor
-   built from the same commit.
+3. Obtain explicit authorization for the bootstrap build/test while no
+   compatible shared broker exists; the normal heavy gate and any freeze
+   cannot be bypassed implicitly. Produce the new validated app set with
+   `check all`.
+4. Inspect and deliberately remove the old `~/.local/bin/tuna` symlink
+   (never its target or broker state) with separate permission, run
+   `install all`, and create the new agent with the [install](#install)
+   commands above. An agent already pointing at an older executable needs
+   separately authorized reconfiguration to `~/.local/bin/tuna`.
+5. Verify new broker readiness, then relaunch the newly installed matching
+   monitor.
 
 The old state directory, including its lock and database, is left untouched;
 archive or remove it only deliberately, after the old broker has stopped.

@@ -1,7 +1,10 @@
 // Repository build orchestration: explicit per-application build, test and
 // check targets. Uses only `dart:` libraries so `tool/dev.dart`
 // runs without `pub get`.
+import 'dart:convert';
 import 'dart:io';
+
+part 'install.dart';
 
 const usageExitCode = 64;
 const unavailableExitCode = 69;
@@ -14,12 +17,19 @@ Commands:
   build <app|all>              Compile into build/<app>/. Does not run tests.
   test <app|all>               Run the application's tests.
   check <app|all>              Build, then test; reports both results.
+  install all                 Install the unchanged artifacts from check all.
 
 `all` selects the applications implemented for this host.''';
 
 /// Runs external commands. Abstracted so tests can observe the sequence of
 /// commands without compiling anything.
 abstract class Shell {
+  Future<ProcessResult> capture(
+    String executable,
+    List<String> arguments, {
+    String? workingDirectory,
+  });
+
   /// Runs a command with inherited output and returns its exit code.
   Future<int> run(
     String executable,
@@ -31,6 +41,13 @@ abstract class Shell {
 
 class ProcessShell implements Shell {
   const ProcessShell();
+
+  @override
+  Future<ProcessResult> capture(
+    String executable,
+    List<String> arguments, {
+    String? workingDirectory,
+  }) => Process.run(executable, arguments, workingDirectory: workingDirectory);
 
   @override
   Future<int> run(
@@ -61,6 +78,7 @@ class DevContext {
     required this.root,
     required this.os,
     required this.dart,
+    this.home,
     this.shell = const ProcessShell(),
     StringSink? out,
     StringSink? err,
@@ -71,11 +89,13 @@ class DevContext {
     root: root,
     os: Platform.operatingSystem,
     dart: Platform.resolvedExecutable,
+    home: Platform.environment['HOME'],
   );
 
   final String root;
   final String os;
   final String dart;
+  final String? home;
   final Shell shell;
   final StringSink out;
   final StringSink err;
@@ -92,6 +112,7 @@ abstract class App {
   String get name;
   String get description;
   Support get support => Support.implemented;
+  bool get installable => true;
 
   /// Hosts on which this application can be built and tested.
   Set<String> get hosts;
@@ -123,10 +144,37 @@ Future<int> runDev(List<String> arguments, DevContext context) async {
       _list(context);
       return 0;
     case 'build' || 'test' || 'check' when rest.length == 1:
-      return _forTargets(context, command, rest.single);
+      return _withArtifactsLock(
+        context,
+        () => _forTargets(context, command, rest.single),
+      );
+    case 'install' when rest.length == 1:
+      return _withArtifactsLock(context, () => _install(context, rest.single));
   }
   context.err.writeln(_usage);
   return usageExitCode;
+}
+
+Future<int> _withArtifactsLock(
+  DevContext context,
+  Future<int> Function() action,
+) async {
+  RandomAccessFile? lock;
+  try {
+    await Directory(context.buildRoot).create(recursive: true);
+    lock = await File('${context.buildRoot}/.dev.lock')
+        .open(mode: FileMode.append);
+    await lock.lock(FileLock.exclusive);
+    return await action();
+  } on FileSystemException catch (error) {
+    context.err.writeln(
+      'Orchestrator failed: ${error.message}. '
+      'Another command may be active; do not remove its lock file.',
+    );
+    return 1;
+  } finally {
+    await lock?.close();
+  }
 }
 
 void _list(DevContext context) {
@@ -157,6 +205,15 @@ Future<int> _forTargets(
             app.hosts.contains(context.os))
           app,
     ];
+    for (final app in apps.where((app) => !selected.contains(app))) {
+      context.out.writeln(
+        'Skipping ${app.name}: ${app.support == Support.future ? 'not implemented' : 'unsupported on ${context.os}'}.',
+      );
+    }
+    if (selected.isEmpty) {
+      context.err.writeln('No supported applications on ${context.os}.');
+      return unavailableExitCode;
+    }
   } else {
     final matches = apps.where((app) => app.name == target);
     if (matches.isEmpty) {
@@ -181,6 +238,9 @@ Future<int> _forTargets(
     selected = [app];
   }
 
+  // A failed or partial recheck must not authorize installation of old output.
+  final receipt = File('${context.buildRoot}/validated-apps.json');
+  if (await receipt.exists()) await receipt.delete();
   final failures = <String>[];
   for (final app in selected) {
     final steps = switch (command) {
@@ -200,6 +260,24 @@ Future<int> _forTargets(
   if (failures.isNotEmpty) {
     context.err.writeln('Failed: ${failures.join(', ')}');
     return 1;
+  }
+  if (command == 'check' && target == 'all') {
+    if (!_checkInstallTargets(context)) return unavailableExitCode;
+    try {
+      await _validateArtifacts(context, context.buildRoot);
+      final checksums = await _checksums(context, context.buildRoot);
+      await receipt.writeAsString(
+        jsonEncode({'os': context.os, 'checksums': checksums}),
+        flush: true,
+      );
+      context.out.writeln('Validated app set: ready for install all.');
+    } on FileSystemException catch (error) {
+      context.err.writeln('Cannot validate app set: ${error.message}');
+      return 1;
+    } on ProcessException catch (error) {
+      context.err.writeln('Cannot validate app set: ${error.message}');
+      return 1;
+    }
   }
   return 0;
 }
@@ -345,6 +423,8 @@ class SwiftContractApp extends App {
   String get name => 'tuna-contract-swift';
   @override
   String get description => 'Tuna contract Swift bindings (library)';
+  @override
+  bool get installable => false;
   @override
   Set<String> get hosts => const {'macos'};
 

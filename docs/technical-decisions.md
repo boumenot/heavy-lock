@@ -58,17 +58,22 @@ that must pass all gates.
 **Decision.** Shipped applications live under `apps/` and libraries under
 `packages/`. Development tooling lives in `tool/`: an SDK-only Dart
 orchestrator (`dart tool/dev.dart`) with one adapter per application and the
-commands `list`, `build`, `test` and `check`. `build` never runs tests,
-`test` never builds, and `check` runs both and reports each failure. `all`
-selects the applications implemented for the host. Unknown targets exit 64;
-host-unsupported targets exit 69 and never report success. Outputs go to
-`build/<app>/`. The root `pubspec.yaml` is a pub workspace over `tool`.
-Installation is a documented manual step
-([supervision](supervision.md#install)), not an orchestrator command.
+commands `list`, `build`, `test`, `check` and `install`. `build` never runs
+tests, `test` never builds, and `check` runs both and reports each failure.
+`all` selects the applications implemented for the host. Unknown targets
+exit 64; host-unsupported targets exit 69 and never report success. Outputs
+go to `build/<app>/`. A successful `check all` validates and fingerprints the
+installable app set; `install all` installs only that unchanged set, staging
+and validating both applications before replacement and rolling back on
+failure. The Swift contract package is a library, not an install target. The
+root `pubspec.yaml` is a pub workspace over `tool`.
 
-**Alternatives/limits.** A shell dispatcher risks drift between platform
-implementations; a task runner such as `just` adds a dependency and still
-needs adapters. The orchestrator requires Dart (provided by the Nix shell).
+**Rationale and alternatives.** The user considered replacing the Dart-only
+orchestrator with a cross-platform task runner, but chose to retain Dart.
+This keeps orchestration, host selection, install validation, and their
+focused tests in one implementation rather than splitting them between a
+task-file and a second-language installer helper. Dart remains a
+tooling-only dependency in the Nix shell; it is not shipped with Tuna.
 A running monitor keeps its old code until it is quit and reopened.
 
 ## Toolchain, layout and contract bindings
