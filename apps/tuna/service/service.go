@@ -154,6 +154,7 @@ func Run(ctx context.Context, o Options) (err error) {
 		Sampler:        o.Sampler,
 		Publish:        hub.Publish,
 		Processes:      procid.Probe{},
+		Terminator:     procid.Terminator{},
 		Warnf:          logf,
 	})
 	if err != nil {
@@ -229,7 +230,7 @@ func maintain(ctx context.Context, sched *scheduler.Scheduler, b *composite, log
 			}
 			active[j.JobId] = true
 			if !warned[j.JobId] {
-				logf("job %s: takeover %s cannot signal without verified identity-bound signaling and coordination; reservation remains held",
+				logf("job %s: takeover %s; force-stopping tracked processes with fingerprint-checked signals, reservation held until exit is verified",
 					j.JobId, j.BrokerTermination.Reason)
 			}
 		}
@@ -255,6 +256,9 @@ func maintain(ctx context.Context, sched *scheduler.Scheduler, b *composite, log
 			logf("release reconciliation: %v", err)
 		}
 		warnTakeovers()
+		if err := sched.Terminate(ctx); err != nil && ctx.Err() == nil {
+			logf("takeover termination: %v", err)
+		}
 		if err := b.maintain(ctx); err != nil && ctx.Err() == nil {
 			logf("event retention: %v", err)
 		}

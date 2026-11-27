@@ -143,6 +143,9 @@ claiming unverified platform or durability guarantees.
   identity-bound observation and signaling. Determine how the runner
   serializes spawning with a no-future-launch seal, and how the broker
   safely coordinates or takes over when a live runner blocks it.
+  *(Signalling resolved in #46: fingerprint-checked best-effort signals
+  with an accepted check-to-signal race and no termination interlock; see
+  the design's section 3.)*
 - Exercise root and known-descendant enumeration, exit and stopped-process
   handling, including permissions, PID reuse, reparenting, races and
   restart. Identify how an unknown root or an unverifiable reservation is

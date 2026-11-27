@@ -536,8 +536,8 @@ func (a *attempt) cancel(ctx context.Context) (result, bool) {
 	case a.running:
 		a.r.logf("job %s cancelled; stopping the command", a.jobID)
 		jobID, grant, r := a.jobID, a.grant.GetGrantId(), a.r
-		// Only the unreaped root can be targeted safely by this runner.
-		if err := r.killChild(a.cmd.Process); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if err := r.stopTree(a.cmd.Process, a.proc); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			r.logf("job %s: cancellation incomplete: %v", jobID, err)
 			a.report("cancellation failure", func() (*pb.Job, error) {
 				return retry(ctx, r.o.ReconnectWindow, func(c context.Context) (*pb.Job, error) {
 					return r.client.ReportCancelFailed(c, &pb.ReportCancelFailedRequest{JobId: jobID, GrantId: grant, Runner: r.inc, Error: err.Error()})

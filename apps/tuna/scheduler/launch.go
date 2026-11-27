@@ -23,7 +23,7 @@ const (
 
 const launchInvestigationDetail = "launch investigation expired without a reported root or no-launch proof"
 
-const takeoverBlockedDetail = "broker takeover is blocked: verified identity-bound signaling and coordination are unavailable"
+const takeoverDetail = "broker takeover: force-stopping tracked job processes with fingerprint-checked signals; the reservation is held until their exit is verified"
 
 // probeTimeout bounds one OS process check inside a release transaction.
 const probeTimeout = 2 * time.Second
@@ -385,7 +385,7 @@ func (s *Scheduler) Reconcile(ctx context.Context) ([]*pb.BrokerEvent, error) {
 						if err := tx.RecordTermination(j.JobId, reason); err != nil {
 							return err
 						}
-						if err := markUnknown(tx, current, takeoverBlockedDetail); err != nil {
+						if err := markUnknown(tx, current, takeoverDetail); err != nil {
 							return err
 						}
 					}

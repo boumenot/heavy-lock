@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/boumenot/heavy-lock/apps/tuna/procid"
 )
 
 type tableProcess struct {
@@ -109,22 +109,16 @@ func (s DarwinSource) Snapshot(ctx context.Context) (Snapshot, error) {
 }
 
 func darwinProcessTable() ([]tableProcess, error) {
-	processes, err := unix.SysctlKinfoProcSlice("kern.proc.all")
+	entries, err := procid.Table()
 	if err != nil {
 		return nil, err
 	}
-	result := make([]tableProcess, 0, len(processes))
-	for _, process := range processes {
-		p := process.Proc
-		var start int64
-		if p.P_starttime.Sec > 0 && p.P_starttime.Usec >= 0 && p.P_starttime.Usec < 1_000_000 &&
-			p.P_starttime.Sec <= (math.MaxInt64-int64(p.P_starttime.Usec)*1_000)/1_000_000_000 {
-			start = int64(p.P_starttime.Sec)*1_000_000_000 + int64(p.P_starttime.Usec)*1_000
-		}
+	result := make([]tableProcess, 0, len(entries))
+	for _, e := range entries {
 		result = append(result, tableProcess{
-			identity: Identity{PID: int64(p.P_pid), StartTimeUnixNs: start},
-			parent:   int64(process.Eproc.Ppid),
-			zombie:   p.P_stat == 5,
+			identity: Identity{PID: e.PID, StartTimeUnixNs: e.StartTimeUnixNs},
+			parent:   e.ParentPID,
+			zombie:   e.Zombie,
 		})
 	}
 	return result, nil

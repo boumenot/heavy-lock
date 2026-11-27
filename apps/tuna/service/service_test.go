@@ -670,6 +670,44 @@ func TestCancelRunningJobForcesCommand(t *testing.T) {
 	}
 }
 
+func TestCancelRunningJobStopsDescendants(t *testing.T) {
+	b := startBroker(t, 2)
+	pidFile := filepath.Join(t.TempDir(), "child-pid")
+	inv := b.start(t, nil, "/bin/sh", "-c", `/bin/sleep 30 & echo $! > "$0"; wait`, pidFile)
+	id := inv.log.jobID(t)
+	b.waitState(t, id, pb.JobState_JOB_STATE_RUNNING)
+	var child *pb.ProcessIdentity
+	deadline := time.Now().Add(10 * time.Second)
+	for child == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("workload did not report its descendant PID")
+		}
+		if data, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 {
+				if child, err = procid.Of(pid); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := b.sched.Cancel(context.Background(), id, nil); err != nil {
+		t.Fatal(err)
+	}
+	if code := inv.wait(t); code != 128+int(syscall.SIGKILL) {
+		t.Fatalf("exit %d; log:\n%s", code, inv.log.String())
+	}
+	// The runner stopped the descendant itself, well before any broker
+	// cancellation deadline could take over.
+	if exited, err := procid.Exited(child); err != nil || !exited {
+		t.Fatalf("descendant survived cancellation: exited=%v err=%v; log:\n%s", exited, err, inv.log.String())
+	}
+	if j := b.waitState(t, id, pb.JobState_JOB_STATE_FINISHED); j.BrokerTermination != nil {
+		t.Fatalf("cancellation needed a broker takeover: %v", j)
+	}
+}
+
 func TestQueuedRunnerInterruptAndCancel(t *testing.T) {
 	b := startBroker(t, 2)
 	holder := b.start(t, nil, "/bin/sleep", "30")
