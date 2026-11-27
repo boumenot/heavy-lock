@@ -402,3 +402,32 @@ would duplicate scheduling policy and could not tell blocked from running.
 A single enum that merged mode and state would lose a pause during recovery
 or storage failure. The TLA+ model keeps its boolean `paused` abstraction,
 which is equivalent to the mode.
+
+## v2 monitor curl diagnostics
+
+**Decision.** The user asked for "an HTTP endpoint into the swift app or
+something else to better facilitate testing" and "curl support so
+integration testing can be done". The v2 monitor serves `GET /diagnostics`
+as JSON on `127.0.0.1:N` only when `--diagnostics-port N` or
+`TUNA_MONITOR_DIAGNOSTICS_PORT` is given. It is a hand-written HTTP/1.1
+responder over Network.framework, adding no dependency.
+
+- **Same source as the UI.** The header and Dock fields come from the
+  session's `MonitorState` through the `Presentation` functions the window
+  and Dock use; `dock.shown` and the badge are read back from the installed
+  Dock tile view and `NSDockTile`, so a Dock that stopped updating shows as
+  `matchesExpected: false` instead of a second broker query that would
+  always agree. It reports presentation state, not rendered pixels.
+- **Identity.** Pid, bundle path, start time, the broker address and the
+  broker's `Health` version and start time distinguish monitor and broker
+  instances.
+- **Exposure.** Loopback only, read-only, no job commands, arguments, cwds
+  or history, `Cache-Control: no-store`, no CORS, and a `Host` check against
+  DNS rebinding. An explicit port is required (no port 0), so a test knows
+  where to connect; an invalid or busy port is shown in the window and on
+  stderr and the monitor continues without the endpoint.
+
+**Alternatives.** Querying the broker with `curl` or `tuna status` cannot
+show what the monitor presents. Accessibility or screenshot automation was
+unreliable (black frames, `escape unavailable`) and slower. A file dump
+would need polling and cleanup and is harder to tie to one instance.

@@ -96,7 +96,10 @@ Analyzers and formatting run directly. Targeted checks can precede the full
 release gates. Monitor UI changes also need a manual launch check
 (`open "build/monitor-macos/Heavy Lock Status.app"`, or for the v2 monitor
 `open "build/tuna-monitor-macos/Tuna Monitor.app" --args --port PORT`
-against a temporary broker).
+against a temporary broker). Adding `--diagnostics-port N` lets
+`curl http://127.0.0.1:N/diagnostics` check the v2 monitor's presented
+connection, status and Dock state; that is not evidence of rendered
+pixels, so it does not replace a required visual check.
 
 Check CLI exit propagation, admission/no-wait, nesting, cancellation and the
 same default gate when changing runner behavior. Use temporary gates only
