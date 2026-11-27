@@ -7,9 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	"github.com/boumenot/heavy-lock/apps/tuna/contract"
 	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
 	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
