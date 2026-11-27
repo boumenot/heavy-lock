@@ -10,7 +10,7 @@ import (
 
 // SchemaVersion is the version schema.sql creates and every opened database
 // is migrated to.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // A migration upgrades a database from version-1 to version inside the
 // caller's transaction. expected holds the current schema's object
@@ -25,6 +25,7 @@ type migration struct {
 // the same versions and descriptions for a new database.
 var migrations = []migration{
 	{version: 2, description: "explicit queue mode", apply: migrateQueueMode},
+	{version: 3, description: "client OS version", apply: migrateClientOSVersion},
 }
 
 // migrate upgrades an older database in one immediate transaction and
@@ -107,4 +108,12 @@ func migrateQueueMode(ctx context.Context, conn *sql.Conn, expected map[string]s
 	return rebuildTable(ctx, conn, expected, "broker_state",
 		"id, queue_mode, paused_at_ns, next_queue_seq, last_event_seq, event_floor_seq",
 		"id, CASE paused WHEN 1 THEN 'paused' ELSE 'enabled' END, paused_at_ns, next_queue_seq, last_event_seq, event_floor_seq")
+}
+
+// migrateClientOSVersion adds the nullable client OS version; existing jobs
+// keep it unknown. ADD COLUMN keeps the foreign keys and triggers that
+// reference jobs, and schema.sql spells the column as SQLite rewrites it.
+func migrateClientOSVersion(ctx context.Context, conn *sql.Conn, _ map[string]string) error {
+	_, err := conn.ExecContext(ctx, "ALTER TABLE jobs ADD COLUMN client_os_version TEXT")
+	return err
 }

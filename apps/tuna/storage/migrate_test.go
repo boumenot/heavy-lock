@@ -13,9 +13,19 @@ import (
 //go:embed testdata/schema_v1.sql
 var schemaV1 string
 
+//go:embed testdata/schema_v2.sql
+var schemaV2 string
+
 // v1Database creates a database exactly as the version-1 broker did and
 // applies setup to it.
 func v1Database(t *testing.T, setup string) string {
+	t.Helper()
+	return oldDatabase(t, schemaV1, setup)
+}
+
+// oldDatabase creates a database from an earlier schema.sql and applies
+// setup to it.
+func oldDatabase(t *testing.T, schema, setup string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "state.db")
 	db, err := sql.Open("sqlite", path)
@@ -23,7 +33,7 @@ func v1Database(t *testing.T, setup string) string {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(schemaV1); err != nil {
+	if _, err := db.Exec(schema); err != nil {
 		t.Fatal(err)
 	}
 	if setup != "" {
@@ -110,5 +120,36 @@ func TestMigrateRejectsDriftedV1Unchanged(t *testing.T) {
 	}
 	if version != 1 || paused != 1 || migrations != 1 {
 		t.Fatalf("drifted database changed: version=%d paused=%d migrations=%d", version, paused, migrations)
+	}
+}
+
+func TestMigrateV2AddsClientOSVersion(t *testing.T) {
+	path := oldDatabase(t, schemaV2, "UPDATE broker_state SET next_queue_seq=7")
+	store, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	err = store.View(context.Background(), func(r *Reader) error {
+		var version, migrations, next, columns int64
+		if err := r.scan("PRAGMA user_version", nil, &version); err != nil {
+			return err
+		}
+		if err := r.scan("SELECT count(*) FROM schema_migrations", nil, &migrations); err != nil {
+			return err
+		}
+		if err := r.scan("SELECT next_queue_seq FROM broker_state", nil, &next); err != nil {
+			return err
+		}
+		if err := r.scan("SELECT count(*) FROM pragma_table_info('jobs') WHERE name = 'client_os_version'", nil, &columns); err != nil {
+			return err
+		}
+		if version != SchemaVersion || migrations != SchemaVersion || next != 7 || columns != 1 {
+			t.Fatalf("migrated version=%d migrations=%d next=%d columns=%d", version, migrations, next, columns)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

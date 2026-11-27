@@ -1,4 +1,4 @@
--- heavy-lock v2 SQLite schema (schema version 2).
+-- heavy-lock v2 SQLite schema (schema version 3).
 --
 -- A new database is created at the current version and records every
 -- migration version it includes. Older databases are migrated in place by
@@ -63,6 +63,9 @@ CREATE TABLE service_runs (
   clean_shutdown   INTEGER NOT NULL DEFAULT 0 CHECK (clean_shutdown IN (0, 1))
 ) STRICT;
 
+-- client_os_version (schema v3, e.g. '26.1', explicitly reported only)
+-- follows outcome_detail exactly as ALTER TABLE ... ADD COLUMN writes it,
+-- because migrated databases must match this text.
 CREATE TABLE jobs (
   -- Identity -------------------------------------------------------------
   id                  TEXT    PRIMARY KEY
@@ -144,7 +147,6 @@ CREATE TABLE jobs (
                       -- explicitly reported only, e.g. 'macos'
   client_architecture TEXT CHECK (client_architecture IN ('arm64', 'amd64', 'other')),
                       -- explicitly reported only, e.g. 'arm64'
-  client_os_version   TEXT,     -- e.g. '26.1'; explicitly reported only
   service_version     TEXT    NOT NULL,  -- broker version at submission, e.g. '2.0.0'
 
   -- Explicit attribution; NULL when not supplied, never inferred ----------
@@ -177,7 +179,7 @@ CREATE TABLE jobs (
                       -- native code; POSIX e.g. 1, Windows e.g. 3221225477 (0xC0000005)
   signal_number       INTEGER CHECK (signal_number >= 1),  -- POSIX only, e.g. 9
   signal_name         TEXT,     -- POSIX only, e.g. 'SIGKILL'
-  outcome_detail      TEXT,     -- e.g. 'process tree not found during recovery'
+  outcome_detail      TEXT, client_os_version TEXT,     -- e.g. 'process tree not found during recovery'
 
   -- State consistency (presence only; wall-clock values are not compared) --
   CHECK (started_at_ns IS NULL OR admitted_at_ns IS NOT NULL),
@@ -456,7 +458,8 @@ INSERT INTO schema_migrations (version, applied_at_ns, description)
              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) * 1000000,
          description
   FROM (SELECT 1 AS version, 'initial v2 schema' AS description
-        UNION ALL SELECT 2, 'explicit queue mode');
-PRAGMA user_version = 2;
+        UNION ALL SELECT 2, 'explicit queue mode'
+        UNION ALL SELECT 3, 'client OS version');
+PRAGMA user_version = 3;
 
 COMMIT;

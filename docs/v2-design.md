@@ -1531,8 +1531,9 @@ Host checks are **not authentication** and do not block the intentionally
 permitted cross-origin access.
 
 **Delegated decision: service compatibility.** The `GetHealth` contract reports
-`service_identity = "heavylock.v2"`, API major/minor `2.1`, and a nonempty
-service version. Minor 1 added `ClientInfo.os_version`; runners require a
+`service_identity = "heavylock.v2"`, API major/minor `2.2`, and a nonempty
+service version. Minor 1 added explicit queue mode and state (#32); minor 2 added
+`ClientInfo.os_version` (#33). Runners require a
 broker of at least their own minor, because older brokers reject unknown
 submission fields. Go and Swift compatibility helpers require the identity,
 major 2, at least the minor they need, a nonblank service version and
@@ -2456,7 +2457,7 @@ message ClientInfo {
   ClientOS os = 3;
   ClientArchitecture architecture = 4;
   // Human-readable OS release, e.g. "26.1" on macOS; absent when unknown.
-  optional string os_version = 5;
+  optional string os_version = 5;  // since API 2.2
 }
 
 message Attribution {
@@ -2955,7 +2956,7 @@ string sorted by key's UTF-8 bytes; a runner-presence byte, its incarnation
 ID and a process-presence byte followed by PID/start time when present;
 then optional `retry_of_job_id`. Fields added after canonical-v1 follow only
 when present, each as its name string then its value string, so earlier
-submissions keep their hash: `client.os_version` (API minor 1). Missing client/attribution messages are
+submissions keep their hash: `client.os_version` (API minor 2). Missing client/attribution messages are
 equivalent to empty ones; missing runner/process messages are distinct from
 present empty messages. Reject unknown protobuf fields and populated newer
 fields not explicitly covered by this encoding. Evolve the encoding and
@@ -2984,7 +2985,7 @@ replace `NOT NULL`, `CHECK`, enabled foreign keys or broker-side
 validation; the schema uses all of them.
 
 ```sql
--- heavy-lock v2 SQLite schema (schema version 2).
+-- heavy-lock v2 SQLite schema (schema version 3).
 --
 -- A new database is created at the current version and records every
 -- migration version it includes. Older databases are migrated in place by
@@ -3049,6 +3050,9 @@ CREATE TABLE service_runs (
   clean_shutdown   INTEGER NOT NULL DEFAULT 0 CHECK (clean_shutdown IN (0, 1))
 ) STRICT;
 
+-- client_os_version (schema v3, e.g. '26.1', explicitly reported only)
+-- follows outcome_detail exactly as ALTER TABLE ... ADD COLUMN writes it,
+-- because migrated databases must match this text.
 CREATE TABLE jobs (
   -- Identity -------------------------------------------------------------
   id                  TEXT    PRIMARY KEY
@@ -3130,7 +3134,6 @@ CREATE TABLE jobs (
                       -- explicitly reported only, e.g. 'macos'
   client_architecture TEXT CHECK (client_architecture IN ('arm64', 'amd64', 'other')),
                       -- explicitly reported only, e.g. 'arm64'
-  client_os_version   TEXT,     -- e.g. '26.1'; explicitly reported only
   service_version     TEXT    NOT NULL,  -- broker version at submission, e.g. '2.0.0'
 
   -- Explicit attribution; NULL when not supplied, never inferred ----------
@@ -3163,7 +3166,7 @@ CREATE TABLE jobs (
                       -- native code; POSIX e.g. 1, Windows e.g. 3221225477 (0xC0000005)
   signal_number       INTEGER CHECK (signal_number >= 1),  -- POSIX only, e.g. 9
   signal_name         TEXT,     -- POSIX only, e.g. 'SIGKILL'
-  outcome_detail      TEXT,     -- e.g. 'process tree not found during recovery'
+  outcome_detail      TEXT, client_os_version TEXT,     -- e.g. 'process tree not found during recovery'
 
   -- State consistency (presence only; wall-clock values are not compared) --
   CHECK (started_at_ns IS NULL OR admitted_at_ns IS NOT NULL),
@@ -3442,8 +3445,9 @@ INSERT INTO schema_migrations (version, applied_at_ns, description)
              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) * 1000000,
          description
   FROM (SELECT 1 AS version, 'initial v2 schema' AS description
-        UNION ALL SELECT 2, 'explicit queue mode');
-PRAGMA user_version = 2;
+        UNION ALL SELECT 2, 'explicit queue mode'
+        UNION ALL SELECT 3, 'client OS version');
+PRAGMA user_version = 3;
 
 COMMIT;
 ```
@@ -3791,7 +3795,11 @@ one version; the transaction commits only when the result matches
 `schema.sql`'s object definitions exactly, so a drifted or partial database
 is left unchanged. Schema version 2 (#32) replaces `broker_state.paused`
 with the durable `queue_mode` text column, preserving a committed pause and
-its timestamp. Migration is one-way: an older broker refuses the upgraded
+its timestamp. Schema version 3 (#33) adds the nullable
+`jobs.client_os_version` with `ALTER TABLE ... ADD COLUMN`, which keeps the
+foreign keys and triggers that reference `jobs`; `schema.sql` places the
+column exactly where SQLite writes it, after `outcome_detail`, so new and
+migrated databases match. Existing jobs keep it `NULL`. Migration is one-way: an older broker refuses the upgraded
 database.
 
 ## 12. TLA+ concurrency and recovery review

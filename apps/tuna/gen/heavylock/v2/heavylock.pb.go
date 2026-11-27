@@ -759,7 +759,7 @@ type ClientInfo struct {
 	Os           ClientOS               `protobuf:"varint,3,opt,name=os,proto3,enum=heavylock.v2.ClientOS" json:"os,omitempty"`
 	Architecture ClientArchitecture     `protobuf:"varint,4,opt,name=architecture,proto3,enum=heavylock.v2.ClientArchitecture" json:"architecture,omitempty"`
 	// Human-readable OS release, e.g. "26.1" on macOS; absent when unknown.
-	OsVersion     *string `protobuf:"bytes,5,opt,name=os_version,json=osVersion,proto3,oneof" json:"os_version,omitempty"`
+	OsVersion     *string `protobuf:"bytes,5,opt,name=os_version,json=osVersion,proto3,oneof" json:"os_version,omitempty"` // since API 2.2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
