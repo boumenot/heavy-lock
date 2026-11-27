@@ -64,7 +64,6 @@ public struct MonitorDiagnostics: Encodable, Equatable, Sendable {
         /// From the last compatible `Health`, if any.
         public var serviceIdentity: String?
         public var serviceVersion: String?
-        public var apiVersion: String?
         public var startedAt: Date?
     }
 
@@ -208,10 +207,7 @@ public struct MonitorDiagnostics: Encodable, Equatable, Sendable {
             address: "127.0.0.1:\(brokerPort)",
             serviceIdentity: health?.serviceIdentity,
             serviceVersion: health?.serviceVersion,
-            apiVersion: health.map { "\($0.apiMajor).\($0.apiMinor)" },
-            startedAt: health.flatMap {
-                $0.startedAtUnixNs > 0 ? Date(timeIntervalSince1970: Double($0.startedAtUnixNs) / 1e9) : nil
-            })
+            startedAt: health.flatMap { $0.hasStartedAt ? $0.startedAt.date : nil })
         let (name, message): (String, String?) =
             switch state.connection {
             case .connecting: ("connecting", nil)

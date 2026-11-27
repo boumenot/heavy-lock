@@ -29,7 +29,7 @@ import Testing
     @Test func snapshotReportsWhatTheWindowAndDockPresentWithoutJobDetails() throws {
         var state = MonitorState()
         var health = FakeBroker.liveHealth()
-        health.startedAtUnixNs = 2_000_000_000_000
+        health.startedAt = .init(date: Date(timeIntervalSince1970: 2_000))
         state.health = health
         var paused = status(capacity: 2)
         paused.queueMode = .paused
@@ -50,7 +50,8 @@ import Testing
             dock: .init(installed: true, shown: expected, badgeLabel: expected.badge),
             application: .init(active: false, hidden: false, windows: []))
         #expect(diagnostics.broker.address == "127.0.0.1:49917")
-        #expect(diagnostics.broker.serviceVersion == "test")
+        #expect(diagnostics.broker.serviceVersion == FakeBroker.liveHealth().serviceVersion)
+        #expect(diagnostics.broker.startedAt == Date(timeIntervalSince1970: 2_000))
         #expect(diagnostics.connection.state == "live")
         #expect(diagnostics.header.title == Presentation.banner(state, port: 49917, now: self.now).title)
         #expect(diagnostics.header.statusLine == Presentation.statusLine(state))
