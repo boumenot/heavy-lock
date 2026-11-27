@@ -119,8 +119,9 @@ func waitJobState(t *testing.T, port, id, state string) {
 // TestExecutableRunnerWithControls drives #13's runner with #14's controls
 // through one real broker process.
 func TestExecutableRunnerWithControls(t *testing.T) {
+	t.Setenv("TUNA_TEST_LOCK_DIR", filepath.Join(t.TempDir(), "singleton"))
 	port := freePort(t)
-	startService(t, port, t.TempDir())
+	startService(t, port, filepath.Join(t.TempDir(), "state"))
 	ps := fmt.Sprint(port)
 
 	if code, out, errOut := tuna(t, "pause", "--port", ps); code != 0 {
@@ -171,7 +172,8 @@ func TestExecutableRunnerWithControls(t *testing.T) {
 }
 
 func TestBrokerRestartPreservesLiveRunnerAndReservation(t *testing.T) {
-	port, dir := freePort(t), t.TempDir()
+	t.Setenv("TUNA_TEST_LOCK_DIR", filepath.Join(t.TempDir(), "singleton"))
+	port, dir := freePort(t), filepath.Join(t.TempDir(), "state")
 	service := startService(t, port, dir)
 	ps := fmt.Sprint(port)
 	marker := filepath.Join(t.TempDir(), "launches")

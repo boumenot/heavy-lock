@@ -481,32 +481,57 @@ class TunaApp extends App {
   @override
   bool get installable => false;
 
+  /// Broker for integration tests outside the Go test binary, such as the
+  /// monitor's. Its build tag requires `TUNA_TEST_LOCK_DIR`, so it never
+  /// takes the account's real singleton lock; the production executable
+  /// has no such override.
+  static const testBroker = 'tuna-test-broker';
+  static const testBrokerTag = 'tuna_test_broker';
+
   String _package(DevContext context) => '${context.root}/apps/tuna';
 
   @override
   Future<int> build(DevContext context) async {
     final output = Directory('${context.buildRoot}/tuna');
     await output.create(recursive: true);
-    final temporary = File('${output.path}/.tuna.$pid.tmp');
+    final executables = <String, List<String>>{
+      'tuna': const [],
+      testBroker: const ['-tags', testBrokerTag],
+    };
+    final staged = <String, String>{};
     try {
-      final code = await context.shell.run('go', [
-        'build',
-        '-trimpath',
-        '-o',
-        temporary.path,
-        '.',
-      ], workingDirectory: this._package(context));
-      if (code != 0 || !await temporary.exists()) {
-        context.err.writeln(
-          'Build failed; existing executable was not replaced.',
-        );
-        return code == 0 ? 1 : code;
+      for (final MapEntry(key: executable, value: flags)
+          in executables.entries) {
+        final temporary = '${output.path}/.$executable.$pid.tmp';
+        staged[executable] = temporary;
+        final code = await context.shell.run('go', [
+          'build',
+          '-trimpath',
+          '-o',
+          temporary,
+          ...flags,
+          '.',
+        ], workingDirectory: this._package(context));
+        if (code != 0 || !await File(temporary).exists()) {
+          context.err.writeln(
+            'Build failed; existing executables were not replaced.',
+          );
+          return code == 0 ? 1 : code;
+        }
       }
-      await temporary.rename('${output.path}/tuna');
+      for (final MapEntry(key: executable, value: temporary)
+          in staged.entries) {
+        await File(temporary).rename('${output.path}/$executable');
+      }
     } finally {
-      if (await temporary.exists()) await temporary.delete();
+      for (final temporary in staged.values) {
+        final file = File(temporary);
+        if (await file.exists()) await file.delete();
+      }
     }
-    context.out.writeln('Built: ${output.path}/tuna');
+    for (final executable in executables.keys) {
+      context.out.writeln('Built: ${output.path}/$executable');
+    }
     return 0;
   }
 
@@ -615,11 +640,11 @@ class TunaMonitorApp extends App {
     swiftArguments: const [SwiftContractApp.resolvedOnly],
   );
 
-  /// Runs the integration test against `build/tuna/tuna` when it has been
-  /// built (`check all` builds tuna first); it is skipped otherwise.
+  /// Runs the integration test against the isolated test broker when it has
+  /// been built (`check all` builds tuna first); it is skipped otherwise.
   @override
   Future<int> test(DevContext context) async {
-    final tuna = File('${context.buildRoot}/tuna/tuna');
+    final tuna = File('${context.buildRoot}/tuna/${TunaApp.testBroker}');
     final integration = await tuna.exists();
     if (!integration) {
       context.out.writeln(

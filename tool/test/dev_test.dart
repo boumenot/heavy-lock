@@ -10,6 +10,7 @@ class FakeShell implements Shell {
   final calls = <List<String>>[];
   final environments = <Map<String, String>?>[];
   final failing = <String>{};
+  final failingArguments = <String>{};
 
   @override
   Future<int> run(
@@ -22,7 +23,10 @@ class FakeShell implements Shell {
     this.calls.add(call);
     this.environments.add(environment);
     final key = call.take(2).join(' ');
-    if (this.failing.contains(key)) return 3;
+    if (this.failing.contains(key) ||
+        call.any(this.failingArguments.contains)) {
+      return 3;
+    }
     if (key == 'dart compile') {
       await File(arguments.last).writeAsString('binary ${arguments[4]}');
     } else if (key == 'go build') {
@@ -224,15 +228,24 @@ void main() {
 
     test('tuna builds atomically and is never installed', () async {
       expect(await dev(['build', 'tuna']), 0, reason: '$err');
-      expect(shell.steps, ['go build']);
+      expect(shell.steps, ['go build', 'go build']);
+      expect(shell.calls.first, isNot(contains('-tags')));
+      expect(
+        shell.calls.last,
+        containsAllInOrder(['-tags', TunaApp.testBrokerTag]),
+      );
       expect(await File('$root/build/tuna/tuna').readAsString(), 'tuna');
-      expect(await Directory('$root/build/tuna').list().length, 1);
+      expect(
+        await File('$root/build/tuna/${TunaApp.testBroker}').exists(),
+        isTrue,
+      );
+      expect(await Directory('$root/build/tuna').list().length, 2);
 
       shell.failing.add('go build');
       await File('$root/build/tuna/tuna').writeAsString('previous');
       expect(await dev(['build', 'tuna']), isNot(0));
       expect(await File('$root/build/tuna/tuna').readAsString(), 'previous');
-      expect(await Directory('$root/build/tuna').list().length, 1);
+      expect(await Directory('$root/build/tuna').list().length, 2);
 
       shell.calls.clear();
       expect(await dev(['install', 'tuna']), unavailableExitCode);
@@ -240,6 +253,22 @@ void main() {
       expect(await dev(['install', 'heavylock-v2-swift']), unavailableExitCode);
       expect(await dev(['install', 'tuna-monitor-macos']), unavailableExitCode);
       expect(shell.calls, isEmpty);
+    });
+
+    test('a failed test broker build keeps both previous binaries', () async {
+      final output = Directory('$root/build/tuna');
+      await output.create(recursive: true);
+      final production = File('${output.path}/tuna');
+      final broker = File('${output.path}/${TunaApp.testBroker}');
+      await production.writeAsString('previous tuna');
+      await broker.writeAsString('previous test broker');
+      shell.failingArguments.add(TunaApp.testBrokerTag);
+
+      expect(await dev(['build', 'tuna']), isNot(0));
+      expect(await production.readAsString(), 'previous tuna');
+      expect(await broker.readAsString(), 'previous test broker');
+      expect(await output.list().length, 2);
+      expect('$err', contains('existing executables were not replaced'));
     });
 
     test(
@@ -274,14 +303,19 @@ void main() {
       expect(shell.environments.single, isNull);
       expect('$out', contains('Skipping the broker integration test'));
 
+      // A production broker would take the account's real singleton lock.
       await File('$root/build/tuna/tuna').create(recursive: true);
+      shell.environments.clear();
+      expect(await dev(['test', 'tuna-monitor-macos']), 0);
+      expect(shell.environments.single, isNull);
+
+      final broker = '$root/build/tuna/${TunaApp.testBroker}';
+      await File(broker).create(recursive: true);
       shell.environments.clear();
       expect(await dev(['test', 'tuna-monitor-macos']), 0);
       expect(shell.steps.last, 'swift test');
       expect(shell.calls.last, contains(SwiftContractApp.resolvedOnly));
-      expect(shell.environments.single, {
-        'TUNA_MONITOR_TEST_TUNA': '$root/build/tuna/tuna',
-      });
+      expect(shell.environments.single, {'TUNA_MONITOR_TEST_TUNA': broker});
     });
 
     test('install all skips applications that are not installable', () async {

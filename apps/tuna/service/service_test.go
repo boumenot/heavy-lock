@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -760,7 +761,7 @@ func TestBrokerLossKeepsCommandAndReservation(t *testing.T) {
 }
 
 func TestSingletonLock(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "private")
 	lock, err := AcquireLock(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -778,13 +779,161 @@ func TestSingletonLock(t *testing.T) {
 	_ = again.Release()
 }
 
-func TestRunServesRunnersAndExcludesSecondBroker(t *testing.T) {
+func TestDefaultDirectoryIgnoresHomeEnvironment(t *testing.T) {
+	if os.Getenv("TUNA_TEST_ACCOUNT_HOME") == "1" {
+		dir, err := DefaultDataDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, dir)
+		os.Exit(0)
+	}
+	var paths []string
+	for range 2 {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestDefaultDirectoryIgnoresHomeEnvironment$")
+		cmd.Env = append(os.Environ(), "TUNA_TEST_ACCOUNT_HOME=1", "HOME="+t.TempDir())
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("resolve directory: %v: %s", err, output)
+		}
+		paths = append(paths, string(output))
+	}
+	if paths[0] != paths[1] {
+		t.Fatalf("different HOME values changed the per-user directory: %q, %q", paths[0], paths[1])
+	}
+}
+
+func TestRunExcludesBrokerWithDifferentDataDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	lock, err := AcquireLock(filepath.Join(home, "Library", "Application Support", "heavy-lock", "v2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err = Run(ctx, Options{Port: freePort(t), DataDir: filepath.Join(t.TempDir(), "private"), LockDir: filepath.Join(home, "Library", "Application Support", "heavy-lock", "v2"), Capacity: 2, ServiceVersion: "test", Sampler: idleSampler{}})
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("different data directory: got %v, want ErrLocked", err)
+	}
+}
+
+func TestSingletonRejectsNonPrivateDirectory(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireLock(dir)
+	if err == nil {
+		lock.Release()
+		t.Fatal("lock accepted a directory accessible by other users")
+	}
+}
+
+func TestSingletonRejectsDirectoryACL(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("/bin/chmod", "+a", "everyone allow list,search", dir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("add test ACL: %v: %s", err, output)
+	}
+	lock, err := AcquireLock(dir)
+	if err == nil {
+		lock.Release()
+		t.Fatal("lock accepted a directory with an ACL")
+	}
+}
+
+func TestSingletonAcceptsPrivateDirectoryWithNewline(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "line\nbreak")
+	lock, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStorageRejectsACL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "broker.db-wal")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("/bin/chmod", "+a", "everyone allow read", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("add test ACL: %v: %s", err, output)
+	}
+	if err := privateStorageFiles(dir); err == nil {
+		t.Fatal("accepted a sidecar with an ACL")
+	}
+}
+
+func TestRunRejectsInsecureStorageWithoutReplacingIt(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "broker.db")
+	content := []byte("existing database")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Run(context.Background(), Options{Port: freePort(t), DataDir: dir,
+		LockDir: filepath.Join(t.TempDir(), "singleton"), Capacity: 2, Sampler: idleSampler{}})
+	if err == nil || !strings.Contains(err.Error(), "private regular file") {
+		t.Fatalf("insecure database: %v", err)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(actual, content) {
+		t.Fatalf("database changed: %q, %v", actual, err)
+	}
+}
+
+func TestStorageRejectsSymlinkAndInsecureSidecars(t *testing.T) {
+	for _, name := range []string{"broker.db", "broker.db-wal", "broker.db-shm"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, name)
+			if err := os.Symlink(filepath.Join(dir, "target"), path); err != nil {
+				t.Fatal(err)
+			}
+			if err := privateStorageFiles(dir); err == nil {
+				t.Fatal("accepted a symlink")
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := privateStorageFiles(dir); err == nil {
+				t.Fatal("accepted a non-private file")
+			}
+		})
+	}
+}
+
+func TestRunServesRunnersAndExcludesSecondBroker(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "private")
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	ready := make(chan int, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, Options{Port: freePort(t), DataDir: dir, Capacity: 2, ServiceVersion: contract.ServiceVersion,
+		done <- Run(ctx, Options{Port: freePort(t), DataDir: dir, LockDir: dir, Capacity: 2, ServiceVersion: contract.ServiceVersion,
 			Sampler: idleSampler{}, Ready: func(port int) { ready <- port }})
 	}()
 	var port int
@@ -793,13 +942,19 @@ func TestRunServesRunnersAndExcludesSecondBroker(t *testing.T) {
 	case err := <-done:
 		t.Fatal(err)
 	}
+	for _, name := range []string{"broker.lock", "broker.db", "broker.db-wal", "broker.db-shm"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil || info.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("%s not private: %v %v", name, info, err)
+		}
+	}
 	var log bytes.Buffer
 	code := runner.Run(context.Background(), runner.Options{Port: port, Version: contract.ServiceVersion, Env: cleanEnv(), Log: &log,
 		Command: []string{"/bin/sh", "-c", "exit 3"}, Stdin: strings.NewReader("")})
 	if code != 3 {
 		t.Fatalf("exit %d; log: %s", code, log.String())
 	}
-	if err := Run(context.Background(), Options{Port: freePort(t), DataDir: dir, Capacity: 2, Sampler: idleSampler{}}); !errors.Is(err, ErrLocked) {
+	if err := Run(context.Background(), Options{Port: freePort(t), DataDir: dir, LockDir: dir, Capacity: 2, Sampler: idleSampler{}}); !errors.Is(err, ErrLocked) {
 		t.Fatalf("second broker err = %v, want ErrLocked", err)
 	}
 	cancel()
