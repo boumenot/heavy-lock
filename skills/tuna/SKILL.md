@@ -8,11 +8,6 @@ description: Run heavy builds, full or coverage test suites, integration tests, 
 Development sessions in this account share one Tuna broker. Run heavy work
 through its installed runner so concurrent jobs are admitted together.
 
-**Cutover freeze:** Until the coordinated cutover is cleared and this
-repository's heavy-work instructions and invokers use this broker or are
-safely disabled, do not run real heavy workloads under any gate. Report the
-migration blocker. Installing this skill alone does not clear the freeze.
-
 ## What counts as heavy
 
 Run through the broker:
