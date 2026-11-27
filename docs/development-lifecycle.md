@@ -80,6 +80,20 @@ monitor's broker integration test runs when
 target also runs the bounded descendant-discovery, finish-report and monitor
 freshness models and their witnesses; TLC logs go under `build/tuna-model`.
 Focused tests run directly, e.g. `cd tool && dart test` for the orchestrator.
+The two host-wide operations are
+`/Users/boumenot/.local/bin/tuna --port 49783 -- nix develop -c dart tool/dev.dart check all`
+(brokered build and test), then
+`nix develop -c dart tool/dev.dart install all` (deploy the unchanged validated
+artifacts, without builds/tests). Installation is not a verification gate
+and requires separate deployment authorization; use temporary destinations
+in tooling tests. It stages the runner at `~/.local/bin/tuna` and the monitor
+at `~/Applications/Tuna Monitor.app`, refuses running apps and legacy
+symlinks, and never manages launchd, login settings or state. Stop/drain and
+restart steps remain explicit; see [installation](../README.md#install-and-supervision).
+Record unperformed live-install/restart checks separately from focused
+installer tests. An unavailable/incompatible shared broker blocks heavy
+validation; bootstrap/cutover exceptions must be explicitly authorized,
+never inferred from another worklog.
 Regenerate contract bindings with `/Users/boumenot/.local/bin/tuna --port 49783 -- nix develop -c tool/generate.sh`,
 or add `--check` to verify them. The opt-in Swift gRPC interoperability probe
 in the [README](../README.md#contract-bindings) is an

@@ -36,10 +36,12 @@ targets:
 | `dart tool/dev.dart build <app\|all>` | Compile into `build/<app>/`; runs no tests |
 | `dart tool/dev.dart test <app\|all>` | Run the application's tests; builds nothing |
 | `dart tool/dev.dart check <app\|all>` | Build, then test; reports every failure |
+| `dart tool/dev.dart install all` | Install the unchanged, validated app set; builds/tests nothing |
 
 `all` means the applications implemented for this host. Unknown targets exit
-64; host-unsupported targets exit 69. A failed build keeps the previous
-artifact.
+64; host-unsupported targets (including an empty `all`) exit 69. Aggregate
+commands report skipped unsupported/unimplemented targets. A failed build
+keeps the previous artifact.
 
 | App | Build output |
 |---|---|
@@ -51,18 +53,57 @@ The orchestrator does not take part in admission itself. Run builds and test
 suites through the shared broker:
 
 ```bash
-nix develop
-dart pub get
-/Users/boumenot/.local/bin/tuna --port 49783 -- dart tool/dev.dart check all
+/Users/boumenot/.local/bin/tuna --port 49783 -- nix develop -c dart tool/dev.dart check all
 ```
 
 ## Install and supervision
 
-Installation is a deliberate manual step: the broker runs as a per-user
-launchd agent, and clients use `/Users/boumenot/.local/bin/tuna`. Follow the
+The two user-facing operations on the current Apple Silicon macOS host are
+the brokered `check all` command above (build and test all three targets) and:
+
+```bash
+nix develop -c dart tool/dev.dart install all
+```
+
+`install all` installs `build/tuna/tuna` as the regular executable
+`~/.local/bin/tuna` and the signed monitor bundle under
+`~/Applications/Tuna Monitor.app`. It never installs the contract library or
+the test-only broker. No compilation, manual bundle copying or per-app
+installation is needed. Prerequisites are the pinned Nix dev shell, system
+Xcode tools, an absolute normal account `$HOME`, writable destinations and
+an unchanged app set from a successful `check all`. That check writes
+`build/validated-apps.json` with the host and SHA-256 hashes of both apps;
+any later build/test/check invalidates it. Missing, modified, wrong-host or
+invalid artifacts require another brokered `check all`. The installer checks
+native executable format/permissions, the plist and the app signature both
+before and after copying to destination-local staging.
+
+Installation is deliberate and requires separate deployment authorization.
+Drain jobs, stop the broker's launchd agent with separate permission, and quit
+the monitor before installing; keep both stopped until it finishes. The
+installer refuses detected running `tuna`/`TunaMonitor` processes and never
+kills them, starts/restarts a service, changes broker data or login settings.
+It stages both apps before replacing either and rolls both back on replacement
+failure. A crash/power loss or failed rollback can leave a partial swap:
+destination-local `.tuna-install-*` directories retain `previous` artifacts
+and the next installation refuses to proceed. Keep apps stopped and inspect/
+restore the previous pair before retrying; never delete recovery directories
+blindly. OS file locks serialize orchestrators in this checkout and installers
+at this home; leave their `.dev.lock`/`.tuna-install.lock` files intact.
+
+Legacy runner symlinks are deliberately refused rather than following them
+and silently replacing a launchd executable elsewhere. Reconfiguring an older
+agent/symlink requires separate authorization. After installation, explicitly
+start the broker using `~/.local/bin/tuna`, verify readiness on its configured
+port, then open `~/Applications/Tuna Monitor.app`. Both prerelease apps must
+come from the same validated set. Follow the
 [supervision and installation guide](docs/supervision.md), including
 [migrating an earlier installation](docs/supervision.md#migrating-an-earlier-installation)
 when replacing a broker built before the current contract.
+
+An unavailable or incompatible shared broker is a build/test blocker, not
+permission to build unlocked. A first bootstrap or incompatible-version
+cutover needs explicit coordinated authorization.
 
 ## Usage
 
