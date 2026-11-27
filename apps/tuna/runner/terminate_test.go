@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/procid"
+	"github.com/boumenot/tuna/apps/tuna/procid"
 )
 
 func TestDescendantsFollowOnlyKnownIncarnations(t *testing.T) {

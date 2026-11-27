@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	tunapb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
@@ -20,11 +20,11 @@ import (
 )
 
 type recordingBroker struct {
-	heavylockv2.UnimplementedRunnerServiceServer
-	heavylockv2.UnimplementedControlServiceServer
+	tunapb.UnimplementedRunnerServiceServer
+	tunapb.UnimplementedControlServiceServer
 	called  string
 	request proto.Message
-	job     *heavylockv2.Job
+	job     *tunapb.Job
 }
 
 func (b *recordingBroker) record(name string, request proto.Message) {
@@ -32,60 +32,60 @@ func (b *recordingBroker) record(name string, request proto.Message) {
 	b.request = proto.Clone(request)
 }
 
-func (b *recordingBroker) GetHealth(_ context.Context, r *heavylockv2.GetHealthRequest) (*heavylockv2.Health, error) {
+func (b *recordingBroker) GetHealth(_ context.Context, r *tunapb.GetHealthRequest) (*tunapb.Health, error) {
 	b.record("GetHealth", r)
-	return &heavylockv2.Health{Live: true, StartedAt: contract.Timestamp(1764121200000000000)}, nil
+	return &tunapb.Health{Live: true, StartedAt: contract.Timestamp(1764121200000000000)}, nil
 }
-func (b *recordingBroker) GetStatus(_ context.Context, r *heavylockv2.GetStatusRequest) (*heavylockv2.BrokerStatus, error) {
+func (b *recordingBroker) GetStatus(_ context.Context, r *tunapb.GetStatusRequest) (*tunapb.BrokerStatus, error) {
 	b.record("GetStatus", r)
-	return &heavylockv2.BrokerStatus{}, nil
+	return &tunapb.BrokerStatus{}, nil
 }
-func (b *recordingBroker) GetQueue(_ context.Context, r *heavylockv2.GetQueueRequest) (*heavylockv2.Queue, error) {
+func (b *recordingBroker) GetQueue(_ context.Context, r *tunapb.GetQueueRequest) (*tunapb.Queue, error) {
 	b.record("GetQueue", r)
-	return &heavylockv2.Queue{}, nil
+	return &tunapb.Queue{}, nil
 }
-func (b *recordingBroker) ListJobs(_ context.Context, r *heavylockv2.ListJobsRequest) (*heavylockv2.ListJobsResponse, error) {
+func (b *recordingBroker) ListJobs(_ context.Context, r *tunapb.ListJobsRequest) (*tunapb.ListJobsResponse, error) {
 	b.record("ListJobs", r)
-	return &heavylockv2.ListJobsResponse{}, nil
+	return &tunapb.ListJobsResponse{}, nil
 }
-func (b *recordingBroker) GetJob(_ context.Context, r *heavylockv2.GetJobRequest) (*heavylockv2.Job, error) {
+func (b *recordingBroker) GetJob(_ context.Context, r *tunapb.GetJobRequest) (*tunapb.Job, error) {
 	b.record("GetJob", r)
 	if b.job != nil {
-		return proto.Clone(b.job).(*heavylockv2.Job), nil
+		return proto.Clone(b.job).(*tunapb.Job), nil
 	}
-	return &heavylockv2.Job{JobId: r.JobId}, nil
+	return &tunapb.Job{JobId: r.JobId}, nil
 }
-func (b *recordingBroker) GetSubmission(_ context.Context, r *heavylockv2.GetSubmissionRequest) (*heavylockv2.Job, error) {
+func (b *recordingBroker) GetSubmission(_ context.Context, r *tunapb.GetSubmissionRequest) (*tunapb.Job, error) {
 	b.record("GetSubmission", r)
-	return &heavylockv2.Job{IdempotencyKey: r.IdempotencyKey}, nil
+	return &tunapb.Job{IdempotencyKey: r.IdempotencyKey}, nil
 }
-func (b *recordingBroker) CancelJob(_ context.Context, r *heavylockv2.CancelJobRequest) (*heavylockv2.Job, error) {
+func (b *recordingBroker) CancelJob(_ context.Context, r *tunapb.CancelJobRequest) (*tunapb.Job, error) {
 	b.record("CancelJob", r)
-	return &heavylockv2.Job{JobId: r.JobId}, nil
+	return &tunapb.Job{JobId: r.JobId}, nil
 }
-func (b *recordingBroker) MoveJob(_ context.Context, r *heavylockv2.MoveJobRequest) (*heavylockv2.Queue, error) {
+func (b *recordingBroker) MoveJob(_ context.Context, r *tunapb.MoveJobRequest) (*tunapb.Queue, error) {
 	b.record("MoveJob", r)
-	return &heavylockv2.Queue{}, nil
+	return &tunapb.Queue{}, nil
 }
-func (b *recordingBroker) ForceStartJob(_ context.Context, r *heavylockv2.ForceStartJobRequest) (*heavylockv2.Job, error) {
+func (b *recordingBroker) ForceStartJob(_ context.Context, r *tunapb.ForceStartJobRequest) (*tunapb.Job, error) {
 	b.record("ForceStartJob", r)
-	return &heavylockv2.Job{JobId: r.JobId}, nil
+	return &tunapb.Job{JobId: r.JobId}, nil
 }
-func (b *recordingBroker) PauseQueue(_ context.Context, r *heavylockv2.PauseQueueRequest) (*heavylockv2.BrokerStatus, error) {
+func (b *recordingBroker) PauseQueue(_ context.Context, r *tunapb.PauseQueueRequest) (*tunapb.BrokerStatus, error) {
 	b.record("PauseQueue", r)
-	return &heavylockv2.BrokerStatus{}, nil
+	return &tunapb.BrokerStatus{}, nil
 }
-func (b *recordingBroker) ResumeQueue(_ context.Context, r *heavylockv2.ResumeQueueRequest) (*heavylockv2.BrokerStatus, error) {
+func (b *recordingBroker) ResumeQueue(_ context.Context, r *tunapb.ResumeQueueRequest) (*tunapb.BrokerStatus, error) {
 	b.record("ResumeQueue", r)
-	return &heavylockv2.BrokerStatus{}, nil
+	return &tunapb.BrokerStatus{}, nil
 }
-func (b *recordingBroker) DeleteJob(_ context.Context, r *heavylockv2.DeleteJobRequest) (*heavylockv2.DeleteJobResponse, error) {
+func (b *recordingBroker) DeleteJob(_ context.Context, r *tunapb.DeleteJobRequest) (*tunapb.DeleteJobResponse, error) {
 	b.record("DeleteJob", r)
-	return &heavylockv2.DeleteJobResponse{}, nil
+	return &tunapb.DeleteJobResponse{}, nil
 }
-func (b *recordingBroker) DeleteHistory(_ context.Context, r *heavylockv2.DeleteHistoryRequest) (*heavylockv2.DeleteHistoryResponse, error) {
+func (b *recordingBroker) DeleteHistory(_ context.Context, r *tunapb.DeleteHistoryRequest) (*tunapb.DeleteHistoryResponse, error) {
 	b.record("DeleteHistory", r)
-	return &heavylockv2.DeleteHistoryResponse{}, nil
+	return &tunapb.DeleteHistoryResponse{}, nil
 }
 
 func TestRESTUnaryMappings(t *testing.T) {
@@ -96,24 +96,24 @@ func TestRESTUnaryMappings(t *testing.T) {
 		call    string
 		request proto.Message
 	}{
-		{http.MethodGet, "/v1/health", "", "GetHealth", &heavylockv2.GetHealthRequest{}},
-		{http.MethodGet, "/v1/status", "", "GetStatus", &heavylockv2.GetStatusRequest{}},
-		{http.MethodGet, "/v1/queue", "", "GetQueue", &heavylockv2.GetQueueRequest{}},
-		{http.MethodGet, "/v1/jobs?states=JOB_STATE_QUEUED&states=JOB_STATE_RUNNING&repository=repo&clientName=cli&queuedAfter=1970-01-01T00:00:00.000000042Z&queuedBefore=1970-01-01T00:00:00.000000099Z&pageSize=50&pageToken=next",
-			"", "ListJobs", &heavylockv2.ListJobsRequest{
-				States:     []heavylockv2.JobState{heavylockv2.JobState_JOB_STATE_QUEUED, heavylockv2.JobState_JOB_STATE_RUNNING},
+		{http.MethodGet, "/health", "", "GetHealth", &tunapb.GetHealthRequest{}},
+		{http.MethodGet, "/status", "", "GetStatus", &tunapb.GetStatusRequest{}},
+		{http.MethodGet, "/queue", "", "GetQueue", &tunapb.GetQueueRequest{}},
+		{http.MethodGet, "/jobs?states=JOB_STATE_QUEUED&states=JOB_STATE_RUNNING&repository=repo&clientName=cli&queuedAfter=1970-01-01T00:00:00.000000042Z&queuedBefore=1970-01-01T00:00:00.000000099Z&pageSize=50&pageToken=next",
+			"", "ListJobs", &tunapb.ListJobsRequest{
+				States:     []tunapb.JobState{tunapb.JobState_JOB_STATE_QUEUED, tunapb.JobState_JOB_STATE_RUNNING},
 				Repository: proto.String("repo"), ClientName: proto.String("cli"), QueuedAfter: contract.Timestamp(42),
 				QueuedBefore: contract.Timestamp(99), PageSize: 50, PageToken: "next",
 			}},
-		{http.MethodGet, "/v1/jobs/job-1", "", "GetJob", &heavylockv2.GetJobRequest{JobId: "job-1"}},
-		{http.MethodGet, "/v1/submissions/key-1", "", "GetSubmission", &heavylockv2.GetSubmissionRequest{IdempotencyKey: "key-1"}},
-		{http.MethodPost, "/v1/jobs/job-1/cancel", `{"reason":"stop"}`, "CancelJob", &heavylockv2.CancelJobRequest{JobId: "job-1", Reason: proto.String("stop")}},
-		{http.MethodPost, "/v1/jobs/job-1/move", `{"toFront":true}`, "MoveJob", &heavylockv2.MoveJobRequest{JobId: "job-1", Target: &heavylockv2.MoveJobRequest_ToFront{ToFront: true}}},
-		{http.MethodPost, "/v1/jobs/job-1/force-start", "{}", "ForceStartJob", &heavylockv2.ForceStartJobRequest{JobId: "job-1"}},
-		{http.MethodPost, "/v1/queue/pause", "", "PauseQueue", &heavylockv2.PauseQueueRequest{}},
-		{http.MethodPost, "/v1/queue/resume", "{}", "ResumeQueue", &heavylockv2.ResumeQueueRequest{}},
-		{http.MethodDelete, "/v1/jobs/job-1", "", "DeleteJob", &heavylockv2.DeleteJobRequest{JobId: "job-1"}},
-		{http.MethodDelete, "/v1/history?finishedBefore=1970-01-01T00:00:00.000000042Z", "", "DeleteHistory", &heavylockv2.DeleteHistoryRequest{FinishedBefore: contract.Timestamp(42)}},
+		{http.MethodGet, "/jobs/job-1", "", "GetJob", &tunapb.GetJobRequest{JobId: "job-1"}},
+		{http.MethodGet, "/submissions/key-1", "", "GetSubmission", &tunapb.GetSubmissionRequest{IdempotencyKey: "key-1"}},
+		{http.MethodPost, "/jobs/job-1/cancel", `{"reason":"stop"}`, "CancelJob", &tunapb.CancelJobRequest{JobId: "job-1", Reason: proto.String("stop")}},
+		{http.MethodPost, "/jobs/job-1/move", `{"toFront":true}`, "MoveJob", &tunapb.MoveJobRequest{JobId: "job-1", Target: &tunapb.MoveJobRequest_ToFront{ToFront: true}}},
+		{http.MethodPost, "/jobs/job-1/force-start", "{}", "ForceStartJob", &tunapb.ForceStartJobRequest{JobId: "job-1"}},
+		{http.MethodPost, "/queue/pause", "", "PauseQueue", &tunapb.PauseQueueRequest{}},
+		{http.MethodPost, "/queue/resume", "{}", "ResumeQueue", &tunapb.ResumeQueueRequest{}},
+		{http.MethodDelete, "/jobs/job-1", "", "DeleteJob", &tunapb.DeleteJobRequest{JobId: "job-1"}},
+		{http.MethodDelete, "/history?finishedBefore=1970-01-01T00:00:00.000000042Z", "", "DeleteHistory", &tunapb.DeleteHistoryRequest{FinishedBefore: contract.Timestamp(42)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.call, func(t *testing.T) {
@@ -145,14 +145,14 @@ func TestRESTJSONGoldenShapes(t *testing.T) {
 	}{
 		{
 			name:   "health defaults",
-			path:   "/v1/health",
+			path:   "/health",
 			broker: &recordingBroker{},
 			golden: `{"live":true,"ready":false,"serviceVersion":"","startedAt":"2025-11-26T01:40:00Z",
 				"schemaVersion":"0","serviceIdentity":""}`,
 		},
 		{
 			name:   "status defaults and absent optionals",
-			path:   "/v1/status",
+			path:   "/status",
 			broker: &recordingBroker{},
 			golden: `{"capacity":0,"occupied":0,"paused":false,"recovering":false,"queuedJobs":0,"runningJobs":0,
 				"headBlockedReason":"BLOCKED_REASON_UNSPECIFIED","storageUnavailable":false,
@@ -161,10 +161,10 @@ func TestRESTJSONGoldenShapes(t *testing.T) {
 		},
 		{
 			name: "timestamp and duration presence",
-			path: "/v1/jobs/job",
-			broker: &recordingBroker{job: &heavylockv2.Job{
+			path: "/jobs/job",
+			broker: &recordingBroker{job: &tunapb.Job{
 				JobId: "job", QueuedAt: contract.Timestamp(1764121200123456789),
-				Resources: &heavylockv2.ResourceSummary{Elapsed: contract.MillisecondDuration(0), CpuTime: contract.MillisecondDuration(1234)},
+				Resources: &tunapb.ResourceSummary{Elapsed: contract.MillisecondDuration(0), CpuTime: contract.MillisecondDuration(1234)},
 			}},
 			golden: `{"jobId":"job","idempotencyKey":"","state":"JOB_STATE_UNSPECIFIED","command":"","weight":0,
 				"forced":false,"serviceVersion":"","queuedAt":"2025-11-26T01:40:00.123456789Z",
@@ -199,14 +199,14 @@ func TestRESTReadableTimestampsAndDefaults(t *testing.T) {
 		absent []string
 	}{
 		{
-			path: "/v1/health",
+			path: "/health",
 			values: map[string]any{
 				"live": true, "ready": false, "startedAt": "2025-11-26T01:40:00Z",
 			},
 			absent: []string{"startedAtUnixNs", "recoveryDetail", "storageDetail"},
 		},
 		{
-			path: "/v1/status",
+			path: "/status",
 			values: map[string]any{
 				"paused": false, "occupied": float64(0), "queuedJobs": float64(0),
 			},
@@ -248,7 +248,7 @@ func TestRESTRFC3339QueryTimes(t *testing.T) {
 	}{
 		{
 			method: http.MethodGet,
-			path:   "/v1/jobs",
+			path:   "/jobs",
 			query: url.Values{
 				"queuedAfter":  {"2026-11-26T23:30:00.123456789+01:30"},
 				"queuedBefore": {"2026-11-26T22:01:00Z"},
@@ -259,7 +259,7 @@ func TestRESTRFC3339QueryTimes(t *testing.T) {
 		},
 		{
 			method: http.MethodDelete,
-			path:   "/v1/history",
+			path:   "/history",
 			query:  url.Values{"finishedBefore": {"2026-11-26T22:00:00Z"}},
 			want:   map[string]string{"finishedBefore": "2026-11-26T22:00:00Z"},
 		},
@@ -311,11 +311,11 @@ func errorReason(t *testing.T, response *httptest.ResponseRecorder) (codes.Code,
 	}
 	for _, detail := range result.Details {
 		var info errdetails.ErrorInfo
-		if err := detail.UnmarshalTo(&info); err == nil && info.Domain == "heavylock.v2" {
+		if err := detail.UnmarshalTo(&info); err == nil && info.Domain == "tuna" {
 			return codes.Code(result.Code), info.Reason, info.Metadata
 		}
 	}
-	t.Fatalf("missing heavylock ErrorInfo in %s", response.Body.String())
+	t.Fatalf("missing tuna ErrorInfo in %s", response.Body.String())
 	return codes.Unknown, "", nil
 }
 
@@ -328,21 +328,21 @@ func TestRESTRejectsAmbiguousAndUnsupportedRequests(t *testing.T) {
 		contentType string
 		httpCode    int
 		grpcCode    codes.Code
-		reason      heavylockv2.ErrorReason
+		reason      tunapb.ErrorReason
 		field       string
 	}{
-		{"unknown route", http.MethodGet, "/v1/nope", "", "", 404, codes.NotFound, heavylockv2.ErrorReason_HTTP_ROUTE_NOT_FOUND, ""},
-		{"runner is gRPC-only", http.MethodPost, "/v1/runner/submit", "", "", 404, codes.NotFound, heavylockv2.ErrorReason_HTTP_ROUTE_NOT_FOUND, ""},
-		{"method", http.MethodPost, "/v1/status", "", "", 405, codes.Unimplemented, heavylockv2.ErrorReason_HTTP_METHOD_NOT_ALLOWED, ""},
-		{"duplicate query", http.MethodGet, "/v1/jobs?pageSize=1&pageSize=2", "", "", 400, codes.InvalidArgument, heavylockv2.ErrorReason_INVALID_ARGUMENT_FIELD, "pageSize"},
-		{"unknown query", http.MethodGet, "/v1/jobs?unknown=1", "", "", 400, codes.InvalidArgument, heavylockv2.ErrorReason_INVALID_ARGUMENT_FIELD, "unknown"},
-		{"overflow", http.MethodDelete, "/v1/history?finishedBefore=2262-04-11T23:47:16.854775808Z", "", "", 400, codes.InvalidArgument, heavylockv2.ErrorReason_INVALID_ARGUMENT_FIELD, "finishedBefore"},
-		{"subnanosecond", http.MethodGet, "/v1/jobs?queuedAfter=2026-11-26T22:00:00.1234567891Z", "", "", 400, codes.InvalidArgument, heavylockv2.ErrorReason_INVALID_ARGUMENT_FIELD, "queuedAfter"},
-		{"invalid timestamp", http.MethodGet, "/v1/jobs?queuedBefore=not-a-time", "", "", 400, codes.InvalidArgument, heavylockv2.ErrorReason_INVALID_ARGUMENT_FIELD, "queuedBefore"},
-		{"path conflict", http.MethodPost, "/v1/jobs/job-1/cancel", `{"jobId":"job-2"}`, "application/json", 400, codes.InvalidArgument, heavylockv2.ErrorReason_INVALID_ARGUMENT_FIELD, "jobId"},
-		{"oneof conflict", http.MethodPost, "/v1/jobs/job-1/move", `{"toFront":true,"toBack":true}`, "application/json", 400, codes.InvalidArgument, heavylockv2.ErrorReason_INVALID_ARGUMENT_FIELD, "body"},
-		{"content type", http.MethodPost, "/v1/jobs/job-1/cancel", `{"reason":"x"}`, "text/plain", 415, codes.InvalidArgument, heavylockv2.ErrorReason_HTTP_UNSUPPORTED_MEDIA_TYPE, ""},
-		{"body limit", http.MethodPost, "/v1/queue/pause", strings.Repeat("x", maxRESTBodyBytes+1), "application/json", 413, codes.ResourceExhausted, heavylockv2.ErrorReason_HTTP_REQUEST_TOO_LARGE, ""},
+		{"unknown route", http.MethodGet, "/nope", "", "", 404, codes.NotFound, tunapb.ErrorReason_HTTP_ROUTE_NOT_FOUND, ""},
+		{"runner is gRPC-only", http.MethodPost, "/runner/submit", "", "", 404, codes.NotFound, tunapb.ErrorReason_HTTP_ROUTE_NOT_FOUND, ""},
+		{"method", http.MethodPost, "/status", "", "", 405, codes.Unimplemented, tunapb.ErrorReason_HTTP_METHOD_NOT_ALLOWED, ""},
+		{"duplicate query", http.MethodGet, "/jobs?pageSize=1&pageSize=2", "", "", 400, codes.InvalidArgument, tunapb.ErrorReason_INVALID_ARGUMENT_FIELD, "pageSize"},
+		{"unknown query", http.MethodGet, "/jobs?unknown=1", "", "", 400, codes.InvalidArgument, tunapb.ErrorReason_INVALID_ARGUMENT_FIELD, "unknown"},
+		{"overflow", http.MethodDelete, "/history?finishedBefore=2262-04-11T23:47:16.854775808Z", "", "", 400, codes.InvalidArgument, tunapb.ErrorReason_INVALID_ARGUMENT_FIELD, "finishedBefore"},
+		{"subnanosecond", http.MethodGet, "/jobs?queuedAfter=2026-11-26T22:00:00.1234567891Z", "", "", 400, codes.InvalidArgument, tunapb.ErrorReason_INVALID_ARGUMENT_FIELD, "queuedAfter"},
+		{"invalid timestamp", http.MethodGet, "/jobs?queuedBefore=not-a-time", "", "", 400, codes.InvalidArgument, tunapb.ErrorReason_INVALID_ARGUMENT_FIELD, "queuedBefore"},
+		{"path conflict", http.MethodPost, "/jobs/job-1/cancel", `{"jobId":"job-2"}`, "application/json", 400, codes.InvalidArgument, tunapb.ErrorReason_INVALID_ARGUMENT_FIELD, "jobId"},
+		{"oneof conflict", http.MethodPost, "/jobs/job-1/move", `{"toFront":true,"toBack":true}`, "application/json", 400, codes.InvalidArgument, tunapb.ErrorReason_INVALID_ARGUMENT_FIELD, "body"},
+		{"content type", http.MethodPost, "/jobs/job-1/cancel", `{"reason":"x"}`, "text/plain", 415, codes.InvalidArgument, tunapb.ErrorReason_HTTP_UNSUPPORTED_MEDIA_TYPE, ""},
+		{"body limit", http.MethodPost, "/queue/pause", strings.Repeat("x", maxRESTBodyBytes+1), "application/json", 413, codes.ResourceExhausted, tunapb.ErrorReason_HTTP_REQUEST_TOO_LARGE, ""},
 	}
 
 	for _, tt := range tests {
@@ -372,7 +372,7 @@ func TestRESTRejectsAmbiguousAndUnsupportedRequests(t *testing.T) {
 func TestRESTInvalidFieldSelectionIsDeterministic(t *testing.T) {
 	handler := newHandler(&recordingBroker{}, DefaultPort)
 	for i := 0; i < 32; i++ {
-		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:49783/v1/jobs?z=1&a=1", nil)
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:49783/jobs?z=1&a=1", nil)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		_, _, metadata := errorReason(t, response)

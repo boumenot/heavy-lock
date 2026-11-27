@@ -5,17 +5,17 @@ import (
 	"errors"
 	"fmt"
 
-	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	tunapb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func Error(code codes.Code, reason heavylockv2.ErrorReason, message string, metadata map[string]string) error {
-	if code == codes.OK || reason == heavylockv2.ErrorReason_ERROR_REASON_UNSPECIFIED {
+func Error(code codes.Code, reason tunapb.ErrorReason, message string, metadata map[string]string) error {
+	if code == codes.OK || reason == tunapb.ErrorReason_ERROR_REASON_UNSPECIFIED {
 		return fmt.Errorf("invalid broker error code %v or reason %v", code, reason)
 	}
-	if _, ok := heavylockv2.ErrorReason_name[int32(reason)]; !ok {
+	if _, ok := tunapb.ErrorReason_name[int32(reason)]; !ok {
 		return fmt.Errorf("unknown broker error reason %d", reason)
 	}
 	result, err := status.New(code, message).WithDetails(&errdetails.ErrorInfo{
@@ -39,25 +39,25 @@ func NormalizeError(err error) error {
 		if !ok || info.Domain != ServiceIdentity {
 			continue
 		}
-		if reason, ok := heavylockv2.ErrorReason_value[info.Reason]; ok && reason != 0 {
+		if reason, ok := tunapb.ErrorReason_value[info.Reason]; ok && reason != 0 {
 			return result.Err()
 		}
 	}
 	if errors.Is(err, context.Canceled) {
-		return Error(codes.Canceled, heavylockv2.ErrorReason_REQUEST_CANCELLED, err.Error(), nil)
+		return Error(codes.Canceled, tunapb.ErrorReason_REQUEST_CANCELLED, err.Error(), nil)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return Error(codes.DeadlineExceeded, heavylockv2.ErrorReason_DEADLINE_EXCEEDED, err.Error(), nil)
+		return Error(codes.DeadlineExceeded, tunapb.ErrorReason_DEADLINE_EXCEEDED, err.Error(), nil)
 	}
 	switch result.Code() {
 	case codes.Unimplemented:
-		return Error(codes.Unimplemented, heavylockv2.ErrorReason_OPERATION_NOT_IMPLEMENTED, result.Message(), nil)
+		return Error(codes.Unimplemented, tunapb.ErrorReason_OPERATION_NOT_IMPLEMENTED, result.Message(), nil)
 	case codes.Canceled:
-		return Error(codes.Canceled, heavylockv2.ErrorReason_REQUEST_CANCELLED, result.Message(), nil)
+		return Error(codes.Canceled, tunapb.ErrorReason_REQUEST_CANCELLED, result.Message(), nil)
 	case codes.DeadlineExceeded:
-		return Error(codes.DeadlineExceeded, heavylockv2.ErrorReason_DEADLINE_EXCEEDED, result.Message(), nil)
+		return Error(codes.DeadlineExceeded, tunapb.ErrorReason_DEADLINE_EXCEEDED, result.Message(), nil)
 	default:
-		return Error(codes.Internal, heavylockv2.ErrorReason_INTERNAL_ERROR,
+		return Error(codes.Internal, tunapb.ErrorReason_INTERNAL_ERROR,
 			"broker returned an unstructured error: "+err.Error(), nil)
 	}
 }

@@ -1,0 +1,817 @@
+// Tuna broker API.
+//
+// Conventions:
+// - Timestamps are UTC protobuf Timestamps with nanosecond precision. SQLite
+//   stores them as integer Unix nanoseconds. Durations use protobuf Duration;
+//   measurements use monotonic clocks, never wall-clock subtraction. Stored
+//   resource durations retain their existing millisecond precision.
+//   Wall-clock timestamps are informational: the system clock can move
+//   backwards, so they never order events or validate transitions.
+// - IDs are lowercase canonical UUIDv4 strings.
+// - Errors use standard gRPC status codes. Each non-OK status carries a
+//   google.rpc.ErrorInfo detail with domain "tuna" and reason set to
+//   the ErrorReason enum value name (for example "JOB_NOT_WAITING").
+// - The API is unauthenticated. Every RPC trusts the local caller.
+syntax = "proto3";
+
+package tuna;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/boumenot/tuna/apps/tuna/gen/tunapb;tunapb";
+
+// RunnerService is used by the runner process that executes a job.
+// Mutations are acknowledged only after durable commit; storage failure is
+// reported explicitly rather than acknowledged as a successful transition.
+// While not ready, no new reservation or claim is issued. An original runner
+// may still spawn under a claim that committed before recovery or failure;
+// its reservation stays held and counted until reconciled or fenced.
+// Recovery becomes ready once durable accounting is trusted and complete;
+// unreconciled reservations remain held and counted but do not block
+// unrelated admissions. They are never released or re-claimed by recovery.
+service RunnerService {
+  // Enqueue a job. Idempotent on idempotency_key: the same key with an
+  // equivalent payload returns the existing job with created = false; the
+  // same key with a different payload fails with ALREADY_EXISTS /
+  // IDEMPOTENCY_KEY_REUSED. Fails with UNAVAILABLE while recovery runs or
+  // durable storage is unavailable.
+  // Once ready, check the key and payload before retry eligibility. A
+  // matching existing retry is returned even if its predecessor's history
+  // has been deleted or its predecessor has already recorded a retry.
+  // An opt-in retry is a new submission with a new idempotency key and
+  // retry_of_job_id set. It is accepted only when the predecessor still
+  // exists, is FINISHED with OUTCOME_KIND_EXITED and a non-zero exit code,
+  // was not force-started and has no cancellation request, its reservation
+  // was released by the approved checks, no retry was previously committed
+  // for it, and the attempt limit is not exceeded;
+  // otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
+  // retry was submitted and inserting/enqueueing it are one transaction.
+  // The retry joins the back of the queue and never reuses the earlier grant
+  // or claim. Only the runner retries; the broker never resubmits or
+  // relaunches work. Deleting a job's history retains a permanent key-only
+  // tombstone: a later submission with that key, with any payload, fails with
+  // FAILED_PRECONDITION / IDEMPOTENCY_KEY_DELETED and never creates a job.
+  // A deletion event and surviving retry lineage may separately retain its ID.
+  // The runner must not resubmit automatically under a new key.
+  // A weight above the configured capacity fails with FAILED_PRECONDITION /
+  // WEIGHT_EXCEEDS_CAPACITY; it is never clamped.
+  // A key previously rejected by TrySubmitAndWatch returns
+  // FAILED_PRECONDITION / ADMISSION_BUSY, regardless of payload.
+  // The queue entry commits unregistered: grace starts at this commit and
+  // the job is never reserved until the submitting incarnation's WatchJob
+  // registers. A retransmitted SubmitJob does not reset grace.
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+
+  // --no-wait: register this stream and make exactly one immediate normal
+  // admission decision, as if appended to the current queue. A successful
+  // decision atomically commits the job, reservation and any backfill count,
+  // without a durable queue entry, before the first snapshot and grant.
+  // A connected earlier eligible job has priority; all normal pause,
+  // readiness, capacity, resource and bounded-backfill checks apply.
+  // A definite busy decision atomically retains only the idempotency key and
+  // fails with FAILED_PRECONDITION / ADMISSION_BUSY; the CLI exits 75. A
+  // duplicate of that key returns ADMISSION_BUSY once the broker is ready,
+  // even through SubmitJob and regardless of the remaining payload. A new
+  // attempt needs a new key. A matching duplicate of a committed job returns
+  // its existing snapshot; admission mode is part of payload equivalence.
+  // A busy retry does not consume its predecessor. Invalid fresh requests,
+  // recovery, storage failures and ambiguous stream loss are not
+  // ADMISSION_BUSY. An ambiguous response may follow a committed reservation;
+  // never infer rejection or automatically use a new key.
+  // A stream known disconnected or superseded before the decision aborts
+  // without creating a reservation or busy marker. Observing a live stream
+  // cannot rule out a concurrent undetected disconnect; normal reservation,
+  // one-shot claim and recovery rules still apply.
+  rpc TrySubmitAndWatch(SubmitJobRequest) returns (stream JobEvent);
+
+  // Server-streaming job channel (push, not polling). Every call, including
+  // a reconnect, starts with a snapshot of the job's current durable state;
+  // there is no per-job resume token. Subsequent messages are pushed state
+  // changes: queue position, grant, cancellation and terminal state. The
+  // runner treats the snapshot as level-triggered: a present grant calls for
+  // a durable ClaimLaunch, not a spawn by itself. A present
+  // cancel_requested_at means cancel; a claimed runner then calls
+  // AcknowledgeCancel. The first call by the submitting incarnation
+  // registers the queue entry, like a reconnect. Newer registrations
+  // supersede older ones; an older stream's disconnect cannot unregister
+  // the newer one. An open current stream is the
+  // runner's connection signal for the queued-runner grace period, and the
+  // broker sends a heartbeat at least every heartbeat_interval so the
+  // runner can detect a silent broker. Grace begins when the broker detects
+  // the queued stream's disconnection, not when a heartbeat is missed; a
+  // successful queued reconnect resets it. It never releases a
+  // reserved or running job's capacity. Existing jobs may reconnect during
+  // recovery; snapshots do not transfer a claim.
+  rpc WatchJob(WatchJobRequest) returns (stream JobEvent);
+
+  // Rejoin an existing job without obtaining permission to launch. Valid
+  // rejoin and lifecycle reports are accepted during recovery; submission,
+  // ClaimLaunch and new admissions remain unavailable.
+  rpc RejoinJob(RejoinJobRequest) returns (Job);
+
+  // Persist the one-shot claim before replying. The grant is bound to the
+  // specified runner process incarnation, and a replacement cannot claim it.
+  // A retry by the same incarnation returns the same claim, not a second
+  // launch allowance. No claim is accepted during recovery or storage failure.
+  rpc ClaimLaunch(ClaimLaunchRequest) returns (ClaimLaunchResponse);
+
+  // Acknowledge that this runner has fenced all future spawns under the
+  // grant. The acknowledgement must be serialized with the actual spawn.
+  // True no_command_spawned additionally attests that no spawn occurred.
+  // Idempotent and accepted for an existing grant during recovery.
+  rpc SealLaunch(SealLaunchRequest) returns (Job);
+
+  // Confirm the root was launched under the claimed grant. Matching retries
+  // are idempotent, including after an earlier ReportFinished recorded the
+  // start; conflicting process identities are rejected.
+  rpc ReportStarted(ReportStartedRequest) returns (Job);
+
+  // Report that the command was not launched under grant_id, either because
+  // launching failed or because cancellation was requested first. A report
+  // alone does not release capacity; the accepted no-launch or process
+  // verification conditions must first be established.
+  rpc ReportLaunchFailed(ReportLaunchFailedRequest) returns (Job);
+
+  // Acknowledge receipt of a cancellation request for a claimed grant. Only
+  // the assigned incarnation is accepted; idempotent, and accepted during
+  // recovery. Starts the completion deadline; it is not completion.
+  // ReportCancelFailed and ReportLaunchFailed with cancelled = true also
+  // acknowledge; a delayed ordinary finish or seal does not prove receipt.
+  rpc AcknowledgeCancel(AcknowledgeCancelRequest) returns (Job);
+
+  // Report that the runner's termination attempt failed. Implies
+  // acknowledgment and makes the broker immediately eligible to take over
+  // while termination is still needed. The first valid detail is retained;
+  // identical retries are idempotent and conflicting retries fail. A late
+  // failure after completion is diagnostic, not a new takeover trigger.
+  // Never releases capacity or implies that processes exited.
+  rpc ReportCancelFailed(ReportCancelFailedRequest) returns (Job);
+
+  // Report the observed outcome together with runner and root identities. If
+  // start is missing, validate against the claim and store start and outcome
+  // atomically. Matching retries are idempotent; conflicting reports fail.
+  // A valid late report can replace UNKNOWN, including in retained terminal
+  // history, but never changes the recorded takeover or release evidence.
+  // Deletion wins over a late report: a deleted job is NOT_FOUND.
+  // Capacity remains held until the agreed release checks pass.
+  rpc ReportFinished(ReportFinishedRequest) returns (Job);
+}
+
+// ControlService carries broker operations shared by runners, the monitor
+// and other clients. Every functional REST endpoint maps to exactly one RPC
+// here; transport-level CORS preflights do not map to RPCs.
+// All unary ControlService queries and controls also have REST endpoints.
+// WatchEvents is gRPC-only; REST clients poll the query endpoints.
+service ControlService {
+  rpc GetHealth(GetHealthRequest) returns (Health);
+  // While durable storage is unavailable, GetStatus still answers with
+  // storage_unavailable, queue_state ERROR, queue_mode UNSPECIFIED and the
+  // configured capacity and backfill limit; durable counts are then zero
+  // and unknown. Other queries fail with UNAVAILABLE / STORAGE_UNAVAILABLE.
+  rpc GetStatus(GetStatusRequest) returns (BrokerStatus);
+  rpc GetQueue(GetQueueRequest) returns (Queue);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  rpc GetJob(GetJobRequest) returns (Job);
+
+  // Read-only diagnosis by idempotency key. A retained job is returned;
+  // a committed no-wait rejection reports ADMISSION_BUSY, a deleted job
+  // reports IDEMPOTENCY_KEY_DELETED, and an absent key reports
+  // JOB_NOT_FOUND. Absence is only a point-in-time observation: an earlier
+  // in-flight request may still commit. Never treat it as permission to
+  // submit automatically under a different key. Untrusted storage is an
+  // explicit error, not absence.
+  rpc GetSubmission(GetSubmissionRequest) returns (Job);
+
+  // Cancel a queued job (removes it from the queue and finishes it as
+  // CANCELLED_BEFORE_START). For a reserved or running job, record the
+  // request and push CancelRequested to the runner, which attempts
+  // termination first. Separate configurable runner acknowledgment and
+  // termination-completion deadlines apply; acknowledgment is not completion.
+  // An outcome report alone does not establish that known descendants exited
+  // or that no further launch is possible. Keep the deadline and reservation
+  // until the applicable outcome and release checks are established.
+  // Configurable, unmeasured starting defaults: 5 s acknowledgment and
+  // 30 s completion after acknowledgment. Job termination immediately
+  // force-stops verified job processes, with no graceful-shutdown phase;
+  // a force attempt is not proof of exit and untracked descendants may
+  // survive. An unclaimed grant is closed atomically instead (no deadline).
+  // The acknowledgment clock starts when the cancellation commits; the
+  // completion clock when the acknowledgment commits. Both are monotonic
+  // within one broker run and restart in full once a restarted broker is
+  // ready; no takeover starts during recovery or storage failure.
+  // Reconnects and repeated CancelJob calls never reset them.
+  // If either expires, or runner death is verified, the broker may fall back
+  // on verified process identities, subject to safe coordination.
+  // Expiry proves neither runner death nor process exit and never permits
+  // release. If a still-live runner blocks safe coordination, the broker may
+  // attempt to terminate that verified runner incarnation and takes over
+  // only after its death is verified; otherwise it waits with the
+  // reservation held. A takeover is durably recorded before signalling and
+  // is not revoked by a late runner report. Its first eligible reason is
+  // retained; simultaneous triggers are ordered as specified in the design.
+  // ReportCancelFailed allows takeover immediately but is never an outcome.
+  // Coordination with a still-live runner and kill
+  // mechanisms are not yet specified. A granted command may already be
+  // running, so neither the request, a termination attempt nor a report
+  // alone releases its reservation; the approved release checks still apply.
+  // Disconnection never stops a job. After OS-verified death of the
+  // assigned runner incarnation (never a disconnect or timeout alone), the
+  // broker force-stops the job's verified processes through the same path,
+  // without a CancelJob call; see the design record.
+  // The monitor confirms every cancellation (any state) before sending this;
+  // confirmation is a client UI responsibility and is not enforced here.
+  // Terminal jobs: FAILED_PRECONDITION / JOB_TERMINAL. Repeated cancellation
+  // of the same job is a no-op success.
+  rpc CancelJob(CancelJobRequest) returns (Job);
+
+  // Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+  // The monitor does not require confirmation for reordering.
+  rpc MoveJob(MoveJobRequest) returns (Queue);
+
+  // Admit a waiting job immediately, bypassing queue order, backfill limits
+  // and resource checks, including a weight above current capacity. Its
+  // weight counts toward occupied capacity, so occupancy may
+  // exceed capacity. Confirmation is a client UI responsibility. It never
+  // bypasses recovery, storage failure or launch-safety checks.
+  // A confirmed force-start is allowed while normal admissions are paused.
+  rpc ForceStartJob(ForceStartJobRequest) returns (Job);
+
+  // Pause and resume commit durably before acknowledgement. Pause sets
+  // queue_mode PAUSED and survives broker restarts and recovery until an
+  // explicit resume sets ENABLED; it does not revoke reservations. Both are
+  // idempotent. They commit status_changed and queue_changed events.
+  // The monitor does not require confirmation for pause or resume.
+  rpc PauseQueue(PauseQueueRequest) returns (BrokerStatus);
+  rpc ResumeQueue(ResumeQueueRequest) returns (BrokerStatus);
+
+  // Delete one terminal job's history. FAILED_PRECONDITION / JOB_NOT_TERMINAL
+  // or PROCESSES_UNRECONCILED when deletion is unsafe. Deleting a predecessor
+  // never deletes or updates its retry; the retry retains the predecessor ID.
+  // Deletion and first-time retry submission serialize as described above.
+  rpc DeleteJob(DeleteJobRequest) returns (DeleteJobResponse);
+
+  // Delete terminal job history finished before a cutoff. Non-terminal and
+  // unreconciled jobs are skipped and counted, never deleted. Retained
+  // retries keep their predecessor IDs and are never changed by this deletion.
+  rpc DeleteHistory(DeleteHistoryRequest) returns (DeleteHistoryResponse);
+
+  // Server-streaming broker event feed for monitors. Resumable by sequence.
+  // Before announcing ready after a restart, commit status_changed and
+  // queue_changed events with the current capacity and recomputed blocked
+  // reasons; publish them only after the ready transition commits.
+  // Replayed events describe past state, not proof the broker is live.
+  rpc WatchEvents(WatchEventsRequest) returns (stream BrokerEvent);
+}
+
+// ---------------------------------------------------------------- enums
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_QUEUED = 1;    // waiting in queue order
+  JOB_STATE_RESERVED = 2;  // capacity durably reserved; grant issued
+  JOB_STATE_RUNNING = 3;   // runner reported the launched process
+  JOB_STATE_FINISHING = 4; // outcome reported; awaiting verified process exit
+  JOB_STATE_FINISHED = 5;  // terminal; see outcome
+}
+
+enum OutcomeKind {
+  OUTCOME_KIND_UNSPECIFIED = 0;
+  OUTCOME_KIND_EXITED = 1;                 // process exited; exit_code set
+  OUTCOME_KIND_SIGNALED = 2;               // POSIX signal termination
+  OUTCOME_KIND_CANCELLED_BEFORE_START = 3; // cancelled while queued, or reserved
+                                           // with confirmed no launch
+  OUTCOME_KIND_REMOVED_DISCONNECTED = 4;   // grace period expired while queued
+  OUTCOME_KIND_LAUNCH_FAILED = 5;          // grant issued, launch failed
+  OUTCOME_KIND_UNKNOWN = 6;                // outcome is uncertain; may remain held
+}
+
+enum ClientOS {
+  CLIENT_OS_UNSPECIFIED = 0; // not reported; stored as NULL
+  CLIENT_OS_MACOS = 1;
+  CLIENT_OS_LINUX = 2;
+  CLIENT_OS_WINDOWS = 3;
+  CLIENT_OS_OTHER = 4;
+}
+
+enum ClientArchitecture {
+  CLIENT_ARCHITECTURE_UNSPECIFIED = 0; // not reported; stored as NULL
+  CLIENT_ARCHITECTURE_ARM64 = 1;
+  CLIENT_ARCHITECTURE_AMD64 = 2;
+  CLIENT_ARCHITECTURE_OTHER = 3;
+}
+
+enum MeasurementCompleteness {
+  MEASUREMENT_COMPLETENESS_UNSPECIFIED = 0;
+  MEASUREMENT_COMPLETENESS_COMPLETE = 1;
+  MEASUREMENT_COMPLETENESS_PARTIAL = 2;
+  MEASUREMENT_COMPLETENESS_UNAVAILABLE = 3;
+}
+
+enum ProcessRole {
+  PROCESS_ROLE_UNSPECIFIED = 0;
+  PROCESS_ROLE_RUNNER = 1;
+  PROCESS_ROLE_COMMAND = 2;
+  PROCESS_ROLE_DESCENDANT = 3;
+}
+
+enum BlockedReason {
+  BLOCKED_REASON_UNSPECIFIED = 0; // head is not blocked or queue is empty
+  BLOCKED_REASON_PAUSED = 1;
+  BLOCKED_REASON_INSUFFICIENT_SLOTS = 2;
+  BLOCKED_REASON_RESOURCE_CHECK = 3;
+  BLOCKED_REASON_RECOVERING = 4;
+  BLOCKED_REASON_RUNNER_DISCONNECTED = 5;
+  BLOCKED_REASON_STORAGE_UNAVAILABLE = 6;
+  // Per job, not head: weight exceeds the current capacity (lowered across a
+  // restart). Skipped by normal admission; force-start or cancel to resolve.
+  BLOCKED_REASON_WEIGHT_EXCEEDS_CAPACITY = 7;
+}
+
+// Durable admission mode: the operator's intent for normal admission. It
+// survives broker restarts, recovery and storage failure; only an explicit
+// pause or resume changes it.
+enum QueueMode {
+  QUEUE_MODE_UNSPECIFIED = 0;      // unknown, e.g. durable state unreadable
+  QUEUE_MODE_ENABLED = 1;
+  QUEUE_MODE_PAUSED = 2;
+}
+
+// Operational queue state derived by the broker from its mode, readiness,
+// storage and the current normal-admission decision. Exactly one applies,
+// chosen by the first matching rule in this precedence:
+//   ERROR       durable storage is unavailable; mode and counts are unknown
+//   RECOVERING  the broker is not ready; queue_mode still reports a pause
+//   PAUSED      queue_mode is PAUSED; existing reservations continue
+//   BLOCKED     queued work exists but no queued job can be admitted now,
+//               including through bounded backfill; head_blocked_reason
+//               gives the head's reason (UNSPECIFIED when every queued job
+//               is oversized), even while other work runs
+//   RUNNING     capacity is held (occupied > 0) or a queued job can start
+//   IDLE        nothing is queued and no capacity is held
+// A blocked head is not BLOCKED while backfill can admit a follower.
+// Clients that cannot obtain a trustworthy current state, such as a monitor
+// without a live connection, display it as unknown rather than reusing the
+// last value. Resource checks use the last live sample, so the state can lag
+// a change in free memory or load until the next admission decision.
+enum QueueState {
+  QUEUE_STATE_UNSPECIFIED = 0;     // unknown; older brokers do not set it
+  QUEUE_STATE_IDLE = 1;
+  QUEUE_STATE_RUNNING = 2;
+  QUEUE_STATE_BLOCKED = 3;
+  QUEUE_STATE_PAUSED = 4;
+  QUEUE_STATE_RECOVERING = 5;
+  QUEUE_STATE_ERROR = 6;
+}
+
+enum ErrorReason {
+  ERROR_REASON_UNSPECIFIED = 0;
+  RECOVERING = 1;                  // UNAVAILABLE
+  INVALID_ARGUMENT_FIELD = 2;      // INVALID_ARGUMENT; ErrorInfo.metadata["field"]
+  IDEMPOTENCY_KEY_REUSED = 3;      // ALREADY_EXISTS
+  JOB_NOT_FOUND = 4;               // NOT_FOUND
+  JOB_NOT_WAITING = 5;             // FAILED_PRECONDITION
+  JOB_TERMINAL = 6;                // FAILED_PRECONDITION
+  JOB_NOT_TERMINAL = 7;            // FAILED_PRECONDITION
+  GRANT_MISMATCH = 8;              // FAILED_PRECONDITION
+  PROCESSES_UNRECONCILED = 9;      // FAILED_PRECONDITION
+  WEIGHT_EXCEEDS_CAPACITY = 10;    // FAILED_PRECONDITION; depends on configuration
+  RESERVED_METADATA_KEY = 11;      // INVALID_ARGUMENT
+  METADATA_TOO_LARGE = 12;         // RESOURCE_EXHAUSTED
+  EVENTS_EXPIRED = 13;             // OUT_OF_RANGE; resume with a fresh snapshot
+  INVALID_PAGE_TOKEN = 14;         // INVALID_ARGUMENT
+  CLAIM_MISMATCH = 15;             // FAILED_PRECONDITION; wrong incarnation
+  GRANT_FENCED = 16;               // FAILED_PRECONDITION
+  REPORT_CONFLICT = 17;            // FAILED_PRECONDITION
+  STORAGE_UNAVAILABLE = 18;        // UNAVAILABLE; durable state cannot be trusted
+  STORAGE_CORRUPT = 19;            // DATA_LOSS; never auto-replace the database
+  RETRY_NOT_ELIGIBLE = 20;         // FAILED_PRECONDITION
+  IDEMPOTENCY_KEY_DELETED = 21;    // FAILED_PRECONDITION; that job's history was deleted
+  ADMISSION_BUSY = 22;             // FAILED_PRECONDITION; durable no-wait refusal
+  HTTP_ROUTE_NOT_FOUND = 23;       // NOT_FOUND; no REST route matches
+  HTTP_METHOD_NOT_ALLOWED = 24;    // UNIMPLEMENTED; method is not supported on the REST route
+  HTTP_UNSUPPORTED_MEDIA_TYPE = 25; // INVALID_ARGUMENT; REST body is not JSON
+  HTTP_REQUEST_TOO_LARGE = 26;     // RESOURCE_EXHAUSTED; REST request body exceeds the limit
+  OPERATION_NOT_IMPLEMENTED = 27;  // UNIMPLEMENTED
+  INTERNAL_ERROR = 28;             // INTERNAL; non-contract broker error
+  REQUEST_CANCELLED = 29;          // CANCELLED
+  DEADLINE_EXCEEDED = 30;          // DEADLINE_EXCEEDED
+}
+
+// ---------------------------------------------------------------- shared
+
+message ClientInfo {
+  optional string name = 1;
+  optional string version = 2;
+  ClientOS os = 3;
+  ClientArchitecture architecture = 4;
+  // Human-readable OS release, e.g. "26.1" on macOS; absent when unknown.
+  optional string os_version = 5;  // since API 2.2
+}
+
+message Attribution {
+  // Known keys stored in dedicated columns. Absent means unknown; an empty
+  // string is rejected (INVALID_ARGUMENT_FIELD).
+  optional string repository = 1;
+  optional string branch = 2;
+  optional string worklog = 3;
+  optional string agent_session = 4;
+  optional string purpose = 5;
+  optional string commit_sha = 6;
+  optional string build_target = 7;
+  optional string build_configuration = 8;
+  // Extra string metadata stored as validated JSON. Keys must match
+  // ^[a-z][a-z0-9_.-]{0,63}$, must not equal a known key or reserved field,
+  // values are at most 1024 bytes, and the encoded object at most 16 KiB.
+  map<string, string> extra = 9;
+}
+
+message ProcessIdentity {
+  int64 pid = 1;
+  // Platform process start time; with pid it
+  // helps distinguish PID reuse. Precision is platform-dependent; ambiguous
+  // identity is not proof of death. Compare only values derived by the same
+  // platform method.
+  google.protobuf.Timestamp start_time = 2;
+}
+
+// Each runner process generates a fresh UUIDv4 and pairs it with its OS
+// process identity. Reconnection by the same process keeps the UUID; a
+// restarted process generates a new one. Neither field authenticates it.
+message RunnerIncarnation {
+  string incarnation_id = 1; // lowercase canonical UUIDv4
+  ProcessIdentity process = 2;
+}
+
+message Grant {
+  string grant_id = 1;
+  uint32 weight = 2;
+  bool forced = 3;
+  google.protobuf.Timestamp granted_at = 4;
+  // Investigation timeout duration, measured by the broker from the durable
+  // reservation commit. Expiry alone never establishes fencing, no launch
+  // or process exit.
+  google.protobuf.Duration launch_timeout = 5;
+  RunnerIncarnation runner = 6;
+}
+
+message Outcome {
+  OutcomeKind kind = 1;
+  // Native exit code: POSIX 0..255 or Windows unsigned 32-bit value.
+  optional int64 exit_code = 2;
+  optional int32 signal_number = 3;   // POSIX only
+  optional string signal_name = 4;    // POSIX only, e.g. "SIGKILL"
+  optional string detail = 5;         // human-readable broker explanation
+}
+
+message ResourceSummary {
+  // Root-command runtime from process start to exit; unknown if unrecoverable.
+  google.protobuf.Duration elapsed = 1;
+  // Observed process-tree CPU time; distinct from the root wait CPU time.
+  google.protobuf.Duration cpu_time = 2;
+  // Peak interval CPU: 100% per logical CPU; may exceed 100%.
+  optional double peak_cpu_percent = 3;
+  // Maximum per-sample sum of observed process RSS in bytes.
+  optional int64 peak_combined_rss_bytes = 4;
+  uint32 sample_count = 5;
+  MeasurementCompleteness completeness = 6;
+  optional string incompleteness_reason = 7;
+}
+
+message Job {
+  string job_id = 1;
+  string idempotency_key = 2;
+  JobState state = 3;
+  string command = 4;
+  optional string cwd = 5;
+  uint32 weight = 6;
+  bool forced = 7;
+  ClientInfo client = 8;
+  Attribution attribution = 9;
+  string service_version = 10;
+
+  // Submission commit; a no-wait job may have no durable queue entry.
+  google.protobuf.Timestamp queued_at = 11;
+  google.protobuf.Timestamp admitted_at = 12;
+  google.protobuf.Timestamp started_at = 13;  // root process start, once recorded
+  google.protobuf.Timestamp finished_at = 14;
+  google.protobuf.Timestamp cancel_requested_at = 15;
+
+  // Present only while QUEUED; 0 is the head.
+  optional uint32 queue_position = 16;
+  bool runner_connected = 17;
+  google.protobuf.Duration grace_remaining = 18;
+
+  optional Grant grant = 19;
+  optional ProcessIdentity process = 20;
+  optional int64 free_memory_at_admission_bytes = 21;
+  optional Outcome outcome = 22;
+  optional ResourceSummary resources = 23;
+  optional string cancel_reason = 24;
+
+  // True when admitted by bounded backfill past a capacity-blocked head.
+  bool admitted_by_backfill = 25;
+  // Times later jobs were backfilled past this job while it was the
+  // capacity-blocked head; bounded by the configured backfill limit.
+  uint32 backfill_bypass_count = 26;
+  // Immutable logical predecessor ID, even if its history was deleted.
+  // Attempt is 1 for an original submission and at most 4 after 3 retries.
+  optional string retry_of_job_id = 27;
+  uint32 attempt = 28;
+
+  // Cancellation progress for a claimed grant; see ControlService.CancelJob.
+  google.protobuf.Timestamp cancel_acknowledged_at = 29;
+  optional string cancel_failure_detail = 30;
+  optional BrokerTermination broker_termination = 31;
+  // Set while QUEUED and skipped by normal admission, e.g. oversized.
+  // Oversized takes precedence here even if paused or disconnected; clients
+  // display those independent conditions from status and runner_connected.
+  BlockedReason blocked_reason = 32;
+}
+
+message BrokerTermination {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    REASON_CANCEL_ACK_DEADLINE = 1;
+    REASON_CANCEL_COMPLETION_DEADLINE = 2;
+    REASON_CANCEL_RUNNER_FAILED = 3;
+    REASON_RUNNER_DEAD = 4;        // verified assigned runner death
+  }
+  google.protobuf.Timestamp started_at = 1; // committed before the first signal
+  Reason reason = 2;               // first committed trigger; never rewritten
+}
+
+// ---------------------------------------------------------------- runner
+
+message SubmitJobRequest {
+  string idempotency_key = 1;      // UUIDv4, stable across submission retransmissions
+  string command = 2;              // full command line, recorded verbatim
+  optional string cwd = 3;
+  uint32 weight = 4;               // 1..capacity at submission
+  ClientInfo client = 5;
+  Attribution attribution = 6;
+  RunnerIncarnation runner = 7;
+  // Set only for an opt-in retry of a still-retained, failed, released
+  // earlier attempt. The predecessor may be deleted after this job commits.
+  optional string retry_of_job_id = 8;
+}
+
+message SubmitJobResponse {
+  Job job = 1;
+  bool created = 2;
+}
+
+message WatchJobRequest {
+  string job_id = 1;
+  RunnerIncarnation runner = 2;
+}
+
+message RejoinJobRequest {
+  string job_id = 1;
+  RunnerIncarnation runner = 2;
+}
+
+message ClaimLaunchRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  RunnerIncarnation runner = 3;
+}
+
+message ClaimLaunchResponse {
+  Grant grant = 1;
+  bool already_claimed = 2;       // same claim, not another spawn allowance
+}
+
+message SealLaunchRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  RunnerIncarnation runner = 3;
+  bool no_command_spawned = 4;
+}
+
+message JobEvent {
+  // Broker-wide sequence of the last committed change reflected by this
+  // message. Per-job streams are filtered, so values are not contiguous.
+  // Snapshots and heartbeats reuse the current value rather than allocating.
+  int64 event_seq = 1;
+  google.protobuf.Timestamp at = 2;
+  oneof event {
+    Job snapshot = 10;             // always first on every call
+    QueuePositionChanged queue_position_changed = 11;
+    Grant granted = 12;
+    CancelRequested cancel_requested = 13;
+    Job finished = 14;             // terminal; the broker closes the stream after it
+    Heartbeat heartbeat = 15;
+  }
+}
+
+message QueuePositionChanged {
+  uint32 position = 1;
+  uint32 queue_length = 2;
+  BlockedReason head_blocked_reason = 3;
+}
+
+message CancelRequested {
+  // When true, the runner must terminate its process tree and then call
+  // ReportFinished with the observed outcome.
+  bool terminate_running = 1;
+  optional string reason = 2;
+}
+
+message Heartbeat {
+  google.protobuf.Duration heartbeat_interval = 1;
+}
+
+message AcknowledgeCancelRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  RunnerIncarnation runner = 3;
+}
+
+message ReportCancelFailedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  RunnerIncarnation runner = 3;
+  string error = 4;                // stored as cancel_failure_detail
+}
+
+message ReportStartedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  ProcessIdentity process = 3;     // the command process
+  RunnerIncarnation runner = 4;   // the runner process that owns the claim
+}
+
+message ReportLaunchFailedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  string error = 3;                // stored as outcome_detail
+  // True when the runner did not launch because cancellation was requested;
+  // the outcome is then CANCELLED_BEFORE_START instead of LAUNCH_FAILED.
+  bool cancelled = 4;
+  RunnerIncarnation runner = 5;
+}
+
+message ReportFinishedRequest {
+  string job_id = 1;
+  string grant_id = 2;
+  Outcome outcome = 3;             // kind EXITED or SIGNALED
+  RunnerIncarnation runner = 4;
+  ProcessIdentity process = 5;     // root, even if ReportStarted was lost
+  // Runner-observed monotonic start-to-exit duration; absent when unknown.
+  google.protobuf.Duration elapsed = 6;
+  // CPU time returned by the root's wait operation; absent when unknown.
+  google.protobuf.Duration root_cpu_time = 7;
+}
+
+// ---------------------------------------------------------------- control
+
+message GetHealthRequest {}
+
+message Health {
+  bool live = 1;
+  bool ready = 2;                  // false during recovery or storage failure
+  // SemVer: stable clients require the same major and their minimum minor;
+  // if either peer is a prerelease, their complete versions must match.
+  string service_version = 3;
+  google.protobuf.Timestamp started_at = 4;
+  int64 schema_version = 5;
+  optional string recovery_detail = 6;
+  optional string storage_detail = 7; // untrusted/unavailable durable state
+  string service_identity = 8;     // "tuna"; not authentication
+  reserved 9, 10;
+  reserved "api_major", "api_minor";
+}
+
+message GetStatusRequest {}
+
+message BrokerStatus {
+  uint32 capacity = 1;
+  uint32 occupied = 2;             // may exceed capacity after force-start
+  // Deprecated since API 2.1: use queue_mode. Still set, to queue_mode ==
+  // QUEUE_MODE_PAUSED, for older clients.
+  bool paused = 3 [deprecated = true];
+  google.protobuf.Timestamp paused_at = 4; // set while queue_mode is PAUSED
+  bool recovering = 5;
+  uint32 queued_jobs = 6;
+  uint32 running_jobs = 7;
+  BlockedReason head_blocked_reason = 8;
+  optional int64 free_memory_bytes = 9;
+  optional double load_average_1m = 10; // only this interval controls admission
+  bool storage_unavailable = 11;
+  // Held reservations not yet reconciled since the last broker restart.
+  // They count toward occupied but do not block unrelated admissions.
+  uint32 unreconciled_reservations = 12;
+  uint32 backfill_limit = 13;      // per-head bypass limit; 0 is strict FIFO
+  QueueMode queue_mode = 14;       // since API 2.1
+  QueueState queue_state = 15;     // since API 2.1
+  optional double load_average_5m = 16;  // informational
+  optional double load_average_15m = 17; // informational
+}
+
+message GetQueueRequest {}
+
+// queue_state and head_blocked_reason are also in BrokerStatus. Each
+// queue_changed and status_changed event is projected when it commits, so a
+// client keeps the values from whichever of the two it received last.
+message Queue {
+  repeated Job jobs = 1;           // queue order; head first
+  BlockedReason head_blocked_reason = 2;
+  QueueState queue_state = 3;      // since API 2.1
+}
+
+message ListJobsRequest {
+  repeated JobState states = 1;            // empty means all
+  optional string repository = 2;
+  optional string client_name = 3;
+  google.protobuf.Timestamp queued_after = 4; // inclusive
+  google.protobuf.Timestamp queued_before = 5; // exclusive
+  uint32 page_size = 6;                    // 0 means 50; maximum 500
+  string page_token = 7;
+}
+
+message ListJobsResponse {
+  // Newest first by (queued_at, job_id). Keyset pagination: the
+  // token encodes the last key and filters, avoiding offset shifts. It is
+  // not a snapshot: concurrent inserts, updates or deletes may affect
+  // later pages.
+  repeated Job jobs = 1;
+  string next_page_token = 2;              // empty when no more pages
+}
+
+message GetJobRequest {
+  string job_id = 1;
+}
+
+message GetSubmissionRequest {
+  string idempotency_key = 1;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+  optional string reason = 2;
+}
+
+message MoveJobRequest {
+  string job_id = 1;
+  oneof target {
+    bool to_front = 2;
+    bool to_back = 3;
+    string before_job_id = 4;
+    string after_job_id = 5;
+  }
+}
+
+message ForceStartJobRequest {
+  string job_id = 1;
+}
+
+message PauseQueueRequest {}
+message ResumeQueueRequest {}
+
+message DeleteJobRequest {
+  string job_id = 1;
+}
+
+message DeleteJobResponse {}
+
+message DeleteHistoryRequest {
+  google.protobuf.Timestamp finished_before = 1;
+}
+
+message DeleteHistoryResponse {
+  uint32 deleted = 1;
+  uint32 skipped = 2;
+}
+
+message WatchEventsRequest {
+  // 0 means start with a snapshot. Otherwise resume after this sequence.
+  // Replay defaults to at most 24 hours and the newest 100,000 events.
+  // OUT_OF_RANGE / EVENTS_EXPIRED if any event after it is no longer
+  // retained (the sequence is below the broker's event floor, raised by
+  // pruning and history deletion) or if it is beyond the last issued
+  // sequence (for example, a replaced database). The client then restarts
+  // from 0. Sequences are never reused.
+  int64 after_event_seq = 1;
+}
+
+message BrokerEvent {
+  // Equals the stored event's sequence; snapshots and heartbeats carry the
+  // last committed sequence they reflect.
+  int64 event_seq = 1;
+  google.protobuf.Timestamp at = 2;
+  oneof event {
+    BrokerSnapshot snapshot = 10;
+    Job job_changed = 11;
+    Queue queue_changed = 12;
+    BrokerStatus status_changed = 13;
+    string job_deleted = 14;       // job_id
+    Heartbeat heartbeat = 15;
+  }
+}
+
+message BrokerSnapshot {
+  BrokerStatus status = 1;
+  Queue queue = 2;
+  repeated Job active_jobs = 3;    // RESERVED, RUNNING and FINISHING
+}

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Config is fixed for one broker run; v2 has no live capacity change.
+// Config is fixed for one broker run; there is no live capacity change.
 type Config struct {
 	Capacity uint32
 	// BackfillLimit (K) is broker-wide; 0 is strict FIFO.
@@ -31,7 +31,7 @@ type Config struct {
 	CancelCompletionTimeout time.Duration
 }
 
-// DefaultCapacity is v1's min(processors/3, totalMemoryGiB/4), clamped to 2..8.
+// DefaultCapacity is min(processors/3, totalMemoryGiB/4), clamped to 2..8.
 func DefaultCapacity(processors int, totalMemoryBytes uint64) uint32 {
 	capacity := min(uint64(max(processors, 0)/3), totalMemoryBytes/(1<<30)/4)
 	return uint32(min(max(capacity, 2), 8))
@@ -99,7 +99,7 @@ type Sampler interface {
 }
 
 // SharingRefusal returns why a job that would not run alone must wait, or
-// an empty string to allow sharing. It keeps v1's order and semantics.
+// an empty string to allow sharing.
 func (c Config) SharingRefusal(sample *Sample, sinceLastAdmission time.Duration) string {
 	if sinceLastAdmission < c.Settle {
 		return "letting the previous admission settle"
@@ -113,8 +113,8 @@ func (c Config) SharingRefusal(sample *Sample, sinceLastAdmission time.Duration)
 	return ""
 }
 
-// DarwinSampler reads `sysctl -n hw.memsize vm.loadavg kern.memorystatus_level`,
-// as v1 does on macOS.
+// DarwinSampler reads `sysctl -n hw.memsize vm.loadavg kern.memorystatus_level`
+// on macOS.
 type DarwinSampler struct{}
 
 func (DarwinSampler) Sample(ctx context.Context) (Sample, error) {

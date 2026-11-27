@@ -12,9 +12,10 @@ Provide the request, intended behavior, base/head or diff, relevant tests and
 their actual results, and known limitations. Ask for high-confidence bugs and
 missing behavior, not unrelated redesigns.
 
-For heavy-lock, prioritize same-gate compatibility, OS-lock lifetime,
-admission/sharing, nested runs, signal cleanup, process identity, exit codes,
-status error visibility and cross-repository attribution. Review docs and
+For Tuna, prioritize contract compatibility, the singleton broker lock,
+durable state and recovery, admission/sharing, nested runs, process-tree
+cleanup, process identity, exit codes, stale-versus-live status and
+cross-repository attribution. Review docs and
 skills against the commands they instruct consumers to run.
 
 Handle clear in-scope findings, record deferred/out-of-scope ideas, rerun

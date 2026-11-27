@@ -1,9 +1,7 @@
 .dart_tool/
 build/
-apps/monitor-macos/.build/
-apps/monitor-macos/.swiftpm/
-packages/heavylock-v2-swift/.build/
-packages/heavylock-v2-swift/.swiftpm/
+packages/tuna-contract-swift/.build/
+packages/tuna-contract-swift/.swiftpm/
 apps/tuna-monitor-macos/.build/
 apps/tuna-monitor-macos/.swiftpm/
 .DS_Store

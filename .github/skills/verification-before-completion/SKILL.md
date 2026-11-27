@@ -8,10 +8,10 @@ description: Verify fresh evidence before claiming a fix, passing gates, a succe
 1. Identify what proves the claim: reproduce the original behavior, run a
    focused regression, inspect the required output, or build the executable.
 2. Run the complete applicable command and read its output and exit code.
-   Use the shared heavy lock for full suites and compiles.
+   Use the shared broker for full suites and compiles.
 3. Confirm the result actually covers the requirement. Analyzer success is
-   not a build, a status record is not live lock ownership, and macOS
-   execution is not Linux/Windows validation.
+   not a build, a stale status view is not live broker state, and a
+   diagnostics read is not a rendered-UI check.
 4. Fix failures, rerun affected checks, and inspect the diff for unrelated
    changes and missing docs.
 5. Report what was verified and what remains uncertain. Never replace an

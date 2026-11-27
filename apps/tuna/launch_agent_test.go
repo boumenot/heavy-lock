@@ -42,7 +42,7 @@ func TestLaunchAgentConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 			for key, want := range map[string]string{
-				"Label":              "com.github.boumenot.heavy-lock.tuna",
+				"Label":              "com.github.boumenot.tuna",
 				"ProgramArguments.0": binary, "ProgramArguments.1": "service",
 				"ProgramArguments.2": "--port", "ProgramArguments.3": tc.port,
 				"StandardErrorPath": log, "RunAtLoad": "true", "KeepAlive": "true",

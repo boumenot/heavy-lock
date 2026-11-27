@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
-	"github.com/boumenot/heavy-lock/apps/tuna/transport"
+	"github.com/boumenot/tuna/apps/tuna/attribution"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
+	"github.com/boumenot/tuna/apps/tuna/transport"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -108,8 +108,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, clientVer
 	client := pb.NewControlServiceClient(conn)
 	health, err := client.GetHealth(ctx, &pb.GetHealthRequest{})
 	if err == nil {
-		// Status and queue output use the explicit state introduced in API 2.1.
-		err = contract.CheckService(health, clientVersion, 1)
+		err = contract.CheckService(health, clientVersion, 0)
 	}
 	if err != nil {
 		return fail(70, fmt.Errorf("broker unavailable or incompatible: %w", err))

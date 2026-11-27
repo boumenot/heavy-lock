@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	tunapb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -47,7 +47,7 @@ func newRESTHandler(broker Broker) http.Handler {
 			}
 			handler, ok := methods[r.Method]
 			if !ok {
-				writeRESTError(w, contract.Error(codes.Unimplemented, heavylockv2.ErrorReason_HTTP_METHOD_NOT_ALLOWED,
+				writeRESTError(w, contract.Error(codes.Unimplemented, tunapb.ErrorReason_HTTP_METHOD_NOT_ALLOWED,
 					"method is not supported on this route", nil), http.StatusMethodNotAllowed)
 				return
 			}
@@ -67,13 +67,13 @@ func newRESTHandler(broker Broker) http.Handler {
 				return
 			}
 			if result == nil || !result.ProtoReflect().IsValid() {
-				writeRESTError(w, contract.Error(codes.Internal, heavylockv2.ErrorReason_INTERNAL_ERROR,
+				writeRESTError(w, contract.Error(codes.Internal, tunapb.ErrorReason_INTERNAL_ERROR,
 					"broker returned an empty response", nil), 0)
 				return
 			}
 			data, err := (protojson.MarshalOptions{EmitDefaultValues: true}).Marshal(result)
 			if err != nil {
-				writeRESTError(w, contract.Error(codes.Internal, heavylockv2.ErrorReason_INTERNAL_ERROR,
+				writeRESTError(w, contract.Error(codes.Internal, tunapb.ErrorReason_INTERNAL_ERROR,
 					"cannot encode broker response: "+err.Error(), nil), 0)
 				return
 			}
@@ -85,72 +85,72 @@ func newRESTHandler(broker Broker) http.Handler {
 		})
 	}
 
-	register("/v1/health", map[string]endpoint{http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
-		return broker.GetHealth(r.Context(), &heavylockv2.GetHealthRequest{})
+	register("/health", map[string]endpoint{http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
+		return broker.GetHealth(r.Context(), &tunapb.GetHealthRequest{})
 	}}})
-	register("/v1/status", map[string]endpoint{http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
-		return broker.GetStatus(r.Context(), &heavylockv2.GetStatusRequest{})
+	register("/status", map[string]endpoint{http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
+		return broker.GetStatus(r.Context(), &tunapb.GetStatusRequest{})
 	}}})
-	register("/v1/queue", map[string]endpoint{http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
-		return broker.GetQueue(r.Context(), &heavylockv2.GetQueueRequest{})
+	register("/queue", map[string]endpoint{http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
+		return broker.GetQueue(r.Context(), &tunapb.GetQueueRequest{})
 	}}})
-	register("/v1/jobs", map[string]endpoint{http.MethodGet: {allowQuery: true, call: func(r *http.Request) (proto.Message, error) {
+	register("/jobs", map[string]endpoint{http.MethodGet: {allowQuery: true, call: func(r *http.Request) (proto.Message, error) {
 		request, err := listJobsRequest(r)
 		if err != nil {
 			return nil, err
 		}
 		return broker.ListJobs(r.Context(), request)
 	}}})
-	register("/v1/jobs/{job_id}", map[string]endpoint{
+	register("/jobs/{job_id}", map[string]endpoint{
 		http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
-			return broker.GetJob(r.Context(), &heavylockv2.GetJobRequest{JobId: r.PathValue("job_id")})
+			return broker.GetJob(r.Context(), &tunapb.GetJobRequest{JobId: r.PathValue("job_id")})
 		}},
 		http.MethodDelete: {call: func(r *http.Request) (proto.Message, error) {
-			return broker.DeleteJob(r.Context(), &heavylockv2.DeleteJobRequest{JobId: r.PathValue("job_id")})
+			return broker.DeleteJob(r.Context(), &tunapb.DeleteJobRequest{JobId: r.PathValue("job_id")})
 		}},
 	})
-	register("/v1/submissions/{idempotency_key}", map[string]endpoint{http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
-		return broker.GetSubmission(r.Context(), &heavylockv2.GetSubmissionRequest{IdempotencyKey: r.PathValue("idempotency_key")})
+	register("/submissions/{idempotency_key}", map[string]endpoint{http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
+		return broker.GetSubmission(r.Context(), &tunapb.GetSubmissionRequest{IdempotencyKey: r.PathValue("idempotency_key")})
 	}}})
-	register("/v1/jobs/{job_id}/cancel", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
-		request := &heavylockv2.CancelJobRequest{}
+	register("/jobs/{job_id}/cancel", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
+		request := &tunapb.CancelJobRequest{}
 		if err := decodeBody(r, request, "reason"); err != nil {
 			return nil, err
 		}
 		request.JobId = r.PathValue("job_id")
 		return broker.CancelJob(r.Context(), request)
 	}}})
-	register("/v1/jobs/{job_id}/move", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
-		request := &heavylockv2.MoveJobRequest{}
+	register("/jobs/{job_id}/move", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
+		request := &tunapb.MoveJobRequest{}
 		if err := decodeBody(r, request, "toFront", "toBack", "beforeJobId", "afterJobId"); err != nil {
 			return nil, err
 		}
 		request.JobId = r.PathValue("job_id")
 		return broker.MoveJob(r.Context(), request)
 	}}})
-	register("/v1/jobs/{job_id}/force-start", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
-		request := &heavylockv2.ForceStartJobRequest{}
+	register("/jobs/{job_id}/force-start", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
+		request := &tunapb.ForceStartJobRequest{}
 		if err := decodeBody(r, request); err != nil {
 			return nil, err
 		}
 		request.JobId = r.PathValue("job_id")
 		return broker.ForceStartJob(r.Context(), request)
 	}}})
-	register("/v1/queue/pause", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
-		request := &heavylockv2.PauseQueueRequest{}
+	register("/queue/pause", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
+		request := &tunapb.PauseQueueRequest{}
 		if err := decodeBody(r, request); err != nil {
 			return nil, err
 		}
 		return broker.PauseQueue(r.Context(), request)
 	}}})
-	register("/v1/queue/resume", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
-		request := &heavylockv2.ResumeQueueRequest{}
+	register("/queue/resume", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
+		request := &tunapb.ResumeQueueRequest{}
 		if err := decodeBody(r, request); err != nil {
 			return nil, err
 		}
 		return broker.ResumeQueue(r.Context(), request)
 	}}})
-	register("/v1/history", map[string]endpoint{http.MethodDelete: {allowQuery: true, call: func(r *http.Request) (proto.Message, error) {
+	register("/history", map[string]endpoint{http.MethodDelete: {allowQuery: true, call: func(r *http.Request) (proto.Message, error) {
 		query, err := parseQuery(r, map[string]bool{"finishedBefore": false})
 		if err != nil {
 			return nil, err
@@ -163,10 +163,10 @@ func newRESTHandler(broker Broker) http.Handler {
 		if err != nil {
 			return nil, err
 		}
-		return broker.DeleteHistory(r.Context(), &heavylockv2.DeleteHistoryRequest{FinishedBefore: cutoff})
+		return broker.DeleteHistory(r.Context(), &tunapb.DeleteHistoryRequest{FinishedBefore: cutoff})
 	}}})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		writeRESTError(w, contract.Error(codes.NotFound, heavylockv2.ErrorReason_HTTP_ROUTE_NOT_FOUND,
+		writeRESTError(w, contract.Error(codes.NotFound, tunapb.ErrorReason_HTTP_ROUTE_NOT_FOUND,
 			"REST route not found", nil), http.StatusNotFound)
 	})
 	return mux
@@ -186,7 +186,7 @@ func handlePreflight(w http.ResponseWriter, r *http.Request, methods map[string]
 		return
 	}
 	if _, ok := methods[requested]; !ok {
-		writeRESTError(w, contract.Error(codes.Unimplemented, heavylockv2.ErrorReason_HTTP_METHOD_NOT_ALLOWED,
+		writeRESTError(w, contract.Error(codes.Unimplemented, tunapb.ErrorReason_HTTP_METHOD_NOT_ALLOWED,
 			"preflight method is not supported on this route", nil), http.StatusMethodNotAllowed)
 		return
 	}
@@ -209,7 +209,7 @@ func handlePreflight(w http.ResponseWriter, r *http.Request, methods map[string]
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func listJobsRequest(r *http.Request) (*heavylockv2.ListJobsRequest, error) {
+func listJobsRequest(r *http.Request) (*tunapb.ListJobsRequest, error) {
 	query, err := parseQuery(r, map[string]bool{
 		"states": true, "repository": false, "clientName": false, "queuedAfter": false,
 		"queuedBefore": false, "pageSize": false, "pageToken": false,
@@ -217,13 +217,13 @@ func listJobsRequest(r *http.Request) (*heavylockv2.ListJobsRequest, error) {
 	if err != nil {
 		return nil, err
 	}
-	request := &heavylockv2.ListJobsRequest{}
+	request := &tunapb.ListJobsRequest{}
 	for _, value := range query["states"] {
-		number, ok := heavylockv2.JobState_value[value]
+		number, ok := tunapb.JobState_value[value]
 		if !ok {
 			return nil, invalidField("states", "states must contain JobState enum names")
 		}
-		request.States = append(request.States, heavylockv2.JobState(number))
+		request.States = append(request.States, tunapb.JobState(number))
 	}
 	if value, ok := query["repository"]; ok {
 		request.Repository = proto.String(value[0])
@@ -307,7 +307,7 @@ func readBody(r *http.Request) ([]byte, error) {
 		return nil, invalidField("body", "cannot read request body: "+err.Error())
 	}
 	if len(data) > maxRESTBodyBytes {
-		return nil, contract.Error(codes.ResourceExhausted, heavylockv2.ErrorReason_HTTP_REQUEST_TOO_LARGE,
+		return nil, contract.Error(codes.ResourceExhausted, tunapb.ErrorReason_HTTP_REQUEST_TOO_LARGE,
 			"REST request body exceeds 1 MiB", nil)
 	}
 	return bytes.TrimSpace(data), nil
@@ -331,7 +331,7 @@ func decodeBody(r *http.Request, message proto.Message, allowed ...string) error
 	}
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
-		return contract.Error(codes.InvalidArgument, heavylockv2.ErrorReason_HTTP_UNSUPPORTED_MEDIA_TYPE,
+		return contract.Error(codes.InvalidArgument, tunapb.ErrorReason_HTTP_UNSUPPORTED_MEDIA_TYPE,
 			"REST request body must use application/json", nil)
 	}
 	var object map[string]json.RawMessage
@@ -362,7 +362,7 @@ func decodeBody(r *http.Request, message proto.Message, allowed ...string) error
 }
 
 func invalidField(field, message string) error {
-	return contract.Error(codes.InvalidArgument, heavylockv2.ErrorReason_INVALID_ARGUMENT_FIELD, message,
+	return contract.Error(codes.InvalidArgument, tunapb.ErrorReason_INVALID_ARGUMENT_FIELD, message,
 		map[string]string{"field": field})
 }
 
@@ -378,9 +378,9 @@ func writeRESTError(w http.ResponseWriter, err error, httpStatus int) {
 		for _, detail := range result.Details() {
 			if info, ok := detail.(*errdetails.ErrorInfo); ok {
 				switch info.Reason {
-				case heavylockv2.ErrorReason_HTTP_UNSUPPORTED_MEDIA_TYPE.String():
+				case tunapb.ErrorReason_HTTP_UNSUPPORTED_MEDIA_TYPE.String():
 					httpStatus = http.StatusUnsupportedMediaType
-				case heavylockv2.ErrorReason_HTTP_REQUEST_TOO_LARGE.String():
+				case tunapb.ErrorReason_HTTP_REQUEST_TOO_LARGE.String():
 					httpStatus = http.StatusRequestEntityTooLarge
 				}
 			}

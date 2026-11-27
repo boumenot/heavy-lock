@@ -1,4 +1,4 @@
--- heavy-lock v2 SQLite schema (schema version 2).
+-- Tuna SQLite schema (schema version 2).
 --
 -- A new database is created at the current version and records every
 -- migration version it includes. Older databases are migrated in place by
@@ -34,7 +34,7 @@ BEGIN IMMEDIATE;
 CREATE TABLE schema_migrations (
   version        INTEGER PRIMARY KEY,   -- e.g. 1
   applied_at_ns  INTEGER NOT NULL,      -- e.g. 1764121200000000000 (2025-11-26T01:40:00Z)
-  description    TEXT    NOT NULL       -- e.g. 'initial v2 schema'
+  description    TEXT    NOT NULL       -- e.g. 'initial schema'
 ) STRICT;
 
 -- Single-row broker state.
@@ -138,7 +138,7 @@ CREATE TABLE jobs (
                       -- set if the retry's own history is later deleted
 
   -- Who submitted it (unauthenticated client claims) ------------------------
-  client_name         TEXT,     -- e.g. 'heavy-lock'
+  client_name         TEXT,     -- e.g. 'tuna'
   client_version      TEXT,     -- e.g. '2.0.0'
   client_os           TEXT CHECK (client_os IN ('macos', 'linux', 'windows', 'other')),
                       -- explicitly reported only, e.g. 'macos'
@@ -267,7 +267,7 @@ BEGIN
   SELECT RAISE(ABORT, 'idempotency key belongs to a job or no-wait rejection');
 END;
 
--- Retained keys are immutable and cannot be pruned under the v2 policy.
+-- Retained keys are immutable and cannot be pruned under the retention policy.
 CREATE TRIGGER deleted_keys_no_update
 BEFORE UPDATE OF idempotency_key ON deleted_idempotency_keys
 WHEN NEW.idempotency_key IS NOT OLD.idempotency_key
@@ -454,7 +454,7 @@ INSERT INTO schema_migrations (version, applied_at_ns, description)
   SELECT version, CAST(strftime('%s', 'now') AS INTEGER) * 1000000000
              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) * 1000000,
          description
-  FROM (SELECT 1 AS version, 'initial v2 schema' AS description
+  FROM (SELECT 1 AS version, 'initial schema' AS description
         UNION ALL SELECT 2, 'explicit queue mode');
 PRAGMA user_version = 2;
 

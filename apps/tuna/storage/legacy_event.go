@@ -3,7 +3,7 @@ package storage
 import (
 	"fmt"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
+	"github.com/boumenot/tuna/apps/tuna/contract"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -18,15 +18,15 @@ const (
 // Old event payloads used varints at these same field numbers. Preserve their
 // original snapshots on replay without rewriting or discarding durable events.
 var legacyEventTimes = map[protoreflect.FullName]map[protowire.Number]legacyTimeKind{
-	"heavylock.v2.BrokerEvent":       {2: legacyTimestamp},
-	"heavylock.v2.JobEvent":          {2: legacyTimestamp},
-	"heavylock.v2.ProcessIdentity":   {2: legacyTimestamp},
-	"heavylock.v2.Grant":             {4: legacyTimestamp, 5: legacyMilliseconds},
-	"heavylock.v2.ResourceSummary":   {1: legacyMilliseconds, 2: legacyMilliseconds},
-	"heavylock.v2.Job":               {11: legacyTimestamp, 12: legacyTimestamp, 13: legacyTimestamp, 14: legacyTimestamp, 15: legacyTimestamp, 18: legacyMilliseconds, 29: legacyTimestamp},
-	"heavylock.v2.BrokerTermination": {1: legacyTimestamp},
-	"heavylock.v2.BrokerStatus":      {4: legacyTimestamp},
-	"heavylock.v2.Heartbeat":         {1: legacyMilliseconds},
+	"tuna.BrokerEvent":       {2: legacyTimestamp},
+	"tuna.JobEvent":          {2: legacyTimestamp},
+	"tuna.ProcessIdentity":   {2: legacyTimestamp},
+	"tuna.Grant":             {4: legacyTimestamp, 5: legacyMilliseconds},
+	"tuna.ResourceSummary":   {1: legacyMilliseconds, 2: legacyMilliseconds},
+	"tuna.Job":               {11: legacyTimestamp, 12: legacyTimestamp, 13: legacyTimestamp, 14: legacyTimestamp, 15: legacyTimestamp, 18: legacyMilliseconds, 29: legacyTimestamp},
+	"tuna.BrokerTermination": {1: legacyTimestamp},
+	"tuna.BrokerStatus":      {4: legacyTimestamp},
+	"tuna.Heartbeat":         {1: legacyMilliseconds},
 }
 
 func restoreLegacyEvent(message protoreflect.Message) error {

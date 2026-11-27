@@ -1,5 +1,5 @@
 import Foundation
-import HeavyLockV2
+import TunaContract
 import Observation
 
 /// Attribution extra keys recorded by the tuna runner.
@@ -12,7 +12,7 @@ public enum AttributionKey {
 /// A worklog issue named by a job's attribution. The repository is never
 /// inferred: it is either explicit (`owner/repo#N` or the job's repository
 /// attribution) or, for legacy jobs, left to `gh` in the job's working
-/// directory, as in v1.
+/// directory.
 public struct WorklogReference: Hashable, Sendable {
     /// The `gh --repo` value, `[HOST/]OWNER/NAME`, when known.
     public var repository: String?
@@ -26,7 +26,7 @@ public struct WorklogReference: Hashable, Sendable {
         self.url = url
     }
 
-    public init?(_ job: Heavylock_V2_Job) {
+    public init?(_ job: Tuna_Job) {
         guard job.attribution.hasWorklog else { return nil }
         let value = job.attribution.worklog.trimmingCharacters(in: .whitespaces)
         let extra = job.attribution.extra
@@ -77,7 +77,7 @@ public struct AgentSession: Equatable, Sendable {
         self.url = url
     }
 
-    public init?(_ job: Heavylock_V2_Job) {
+    public init?(_ job: Tuna_Job) {
         guard job.attribution.hasAgentSession, !job.attribution.agentSession.isEmpty else { return nil }
         let id = job.attribution.agentSession
         let valid = id.count <= 128 && id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) }

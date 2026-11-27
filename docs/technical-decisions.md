@@ -1,231 +1,94 @@
-# Heavy-lock technical decisions
+# Tuna technical decisions
 
-These decisions describe the current design and its constraints.
+These decisions describe the current implementation and its constraints.
+The [design and decision record](design.md) holds the full service design;
+Git history holds superseded decisions, including the earlier Dart
+`heavy-lock` runner and its monitor, which were removed in
+[#35](https://github.com/boumenot/heavy-lock/issues/35).
 
-## Cross-platform weighted heavy-work runner
+## One repository around Tuna
 
-**Context.** A convention based on Python `fcntl.flock` and `nice` was
-macOS-only and did not expose admission/resource reasons. Parallel sessions
-need bounded machine load without a server or Flutter dependency.
+**Decision.** The repository ships only the Tuna broker and runner
+(`apps/tuna`), its macOS monitor (`apps/tuna-monitor-macos`) and the
+generated Swift contract library (`packages/tuna-contract-swift`). Source,
+generated code, paths, modules, packages and protocol, service and runtime
+identifiers describe the current service without version suffixes: Go
+module `github.com/boumenot/tuna/apps/tuna`, proto package `tuna`, Go
+package `tunapb`, Swift module `TunaContract`, REST paths without a version
+prefix, state under `~/Library/Application Support/tuna` and launch label
+`com.github.boumenot.tuna`. Historical copies are not kept in the tree.
 
-**Decision.** Use an SDK-only Dart command with OS file locks. Heavy jobs
-weigh 2, light jobs 1. Automatic capacity is
-`min(processors ~/ 3, totalMemoryGiB ~/ 4)`, clamped to 2-8, or 2 if memory
-is unavailable. One exclusive admission lock controls slot acquisition;
-admitted jobs hold the gate shared and one exclusive slot per weight unit.
-All existing slots are inspected, including those above a newly computed
-capacity, before deciding a job would run alone.
+The identity change is breaking, so the service version restarts at major 3
+(`3.0.0-dev.1`) and clients' minimum minor resets to 0. An earlier broker,
+runner or monitor refuses the new one and vice versa; they must be replaced
+together (see [supervision](supervision.md#migrating-an-earlier-installation)).
 
-When sharing, require 25% free memory, CPU load at most 50%, and 60 seconds
-since the previous admission. Sample with `sysctl` on macOS, `/proc` on
-Linux and PowerShell CIM on Windows. macOS uses
-`kern.memorystatus_level`, not Activity Monitor's pressure assessment.
-Failure to sample prevents sharing but never prevents running alone.
-Thresholds are heuristics, not hard resource caps; no mid-run resizing.
+**Exceptions.** Links to existing issues keep the current GitHub repository
+URL until the repository is renamed. Storage migration test data and tests
+named after database schema versions (`schema_v1.sql`, `schema_v2.sql`)
+describe schema versions, not service versions. The legacy event timestamp
+conversion stays for databases written by earlier builds.
 
-Use `~/.cache/heavy-lock.lock` by default on macOS and Linux, and the
-documented `HEAVY_LOCK_*` variables.
-On macOS, legacy exclusive Python flock and Dart locks exclude one another.
-On Linux, flock and Dart record locks are independent, so legacy Python
-flock does not guarantee coordination there. All Dart consumers share the
-same gate/slots/protocol on each supported OS.
-
-Default priority is POSIX `nice -n 10` or Windows below-normal.
-`background` opts into macOS `taskpolicy -b`; `normal` disables lowering.
-Earlier experiments found background QoS roughly 2.4x slower with
-test failures, so it is not the default. Neither priority is a CPU/memory cap.
-Windows EcoQoS, Power Throttling and Job Object CPU limits remain deferred.
-
-Child commands inherit `HEAVY_LOCK_HELD`; nested runners on the same
-gate run directly. OS locks are released on exit; persistent files are never
-deleted. Ctrl+C/termination is watched through the runner lifetime. POSIX
-tracks descendants by PID/start time and holds slots through cancellation;
-Windows uses a kill-on-close Job Object for cancelled runs and disarms it on
-normal exit. Command exit codes are passed through, with POSIX signal deaths
-converted to shell form.
-
-**Alternatives.** A single exclusive slot wastes spare capacity; Python
-flock is not cross-platform; dynamic resizing and hard resource caps add
-complexity. Lowering consumer test concurrency or stopping shared Gradle
-daemons changes unrelated workflows and was not selected.
-
-**Limits.** Priority does not throttle all I/O/memory. External/reused
-daemons remain outside the tracked tree. POSIX SIGKILL cannot clean up and
-can release slots while commands survive. Legacy exclusive holders may
-wait while successive shared holders run; strict FIFO fairness is not
-guaranteed by OS locks.
-
-## Read-only heavy-work Dock status
-
-**Decision.** Non-nested runners publish best-effort atomic version-1 JSON
-beside the gate. Explicit `--worklog` or `HEAVY_LOCK_WORKLOG` gives declared
-attribution; absent attribution stays unknown, never inferred from a branch.
-Records contain PID/kernel process-start identity, cwd, command, weight,
-capacity, wait/run state, reason, timestamps and heartbeat. POSIX restricts
-the directory to its user. Status I/O is not admission control; failures log
-once and do not prevent a job running. Later runners prune only confirmed
-dead/reused identities.
-
-The standalone macOS monitor reads records and uses `F_GETLK` without
-acquiring locks. Match slot owner PIDs to identity-validated records;
-unknown/unreadable/stale state is not a live holder. It displays a Dock tile,
-menu and status window. Badges count waiters, not positions; concurrent
-holders are summarized without a priority promise. It starts manually,
-without login items or lock-control actions.
-
-**Alternatives/limits.** Branch inference can attribute the wrong issue.
-Simulated Dock hover needs undocumented APIs/permissions. A lock-acquiring
-probe could interfere with admission. Status exposes command arguments and
-paths, so secrets must not be passed as arguments. Cleanup after cancellation
-is best effort; stale records are normal.
-
-## Freeze the command tree before signalling
-
-**Context.** Snapshot-then-signal lets a parent fork after a snapshot and
-exit before a child is identified, orphaning work while slots release.
-
-**Decision.** For each delivered POSIX signal, take snapshots and stop
-tracked processes until two consecutive snapshots agree on an all-stopped
-set. Stopped processes cannot fork/exit. Deliver the signal, then continue
-only processes stopped by this round, descendants before ancestors to avoid
-SIGHUP of orphaned stopped groups. If freezing cannot finish within two
-seconds, log once and signal from the latest snapshot.
-
-Tracking follows parent links, including separate sessions/process groups.
-The ordinary run is never frozen. First-signal forwarding, the 20-second
-grace, second-signal escalation, nesting, exit codes and Windows behavior
-stay unchanged.
-
-**Alternatives.** Process groups require terminal handoff and still miss
-`setsid` descendants; subreapers/cgroups are Linux-specific; repeated
-snapshots after signalling cannot close the fork/exit race.
-
-**Limits.** Parents that exit before any observation, double-forked daemons,
-and new work started in termination handlers between observations may
-escape. PID reuse between snapshot and signal remains a race. A runner
-killed with SIGKILL during freezing may leave stopped descendants needing
-SIGCONT. Nested freezes can interact, while the outer freeze covers the
-tracked tree.
-
-**Evidence.** Tests include fake process-table races, non-atomic
-snapshots, descendant-first resume ordering, real cancellation, separate
-sessions, nested cancellation and pseudo-terminal Ctrl+C. The Dart suite uses
-`package:test`.
-
-## Observation-only recent history
-
-**Decision.** Keep the last 100 observed ended holders in memory, newest
-first, keyed by PID/start identity. Defer ambiguous/unreadable observations.
-Show approximate admission-to-observed-end duration and command summaries;
-hover/copy exposes the full shell-quoted command.
-
-**Limits.** History resets when the app quits, can miss jobs between
-refreshes, and has no exit codes, so "ended" is not success. Delayed refreshes
-overstate durations. A persistent audit log was deliberately not added.
-
-## Standalone CLI - One protocol, portable consumers
-
-**Decision.** Compile SDK-only binaries for each development machine.
-Runner code lives in `lib/`, status publication in `lib/src/`, commands in
-`bin/`, and tests in `test/`. Use `package:test` and
-`Platform.resolvedExecutable`.
-
-Add a read-only `heavy-lock-status` command for reported JSON snapshots;
-it explicitly does not claim lock ownership or process liveness.
-Generalize the native monitor's issue lookup to `gh issue view` in each
-record's cwd. Cache by cwd plus issue number and use the returned issue URL,
-never a hard-coded repository. Unresolved repositories have no guessed link.
-The version-1 publisher protocol does not need a repo field.
+## Repository skills and lifecycle
 
 Keep repository worklog and verification/TDD/debug/review skills without
 fixed-model gates. "Implement/ship/merge/land #N" authorizes the
 `ship-worklog` loop; the lifecycle's shipping criteria add this
-repository's gates. Provide the installed-command consumer and read-only
-worklog-list skill as templates.
-
-**Migration.** The current gate and environment names are a clean break from
-earlier runners, with no aliases. All invokers, including nested runners,
-must be migrated together before resuming heavy work; mixed versions can
-overlap or deadlock. Preserve old lock files during migration.
-
-**Consequences.** Binaries need native rebuilds; copied skills need explicit
-upgrades. A moved/deleted cwd or unavailable gh can prevent issue metadata
-lookup; the run remains valid and unattributed metadata remains explicit.
-Runtime validation on macOS is not evidence of Linux/Windows execution.
+repository's gates. [skills/heavy-work](../skills/heavy-work/SKILL.md) is the
+portable consumer template for the installed `tuna` runner, and
+[skills/list-worklogs](../skills/list-worklogs/SKILL.md) a read-only
+worklog-list template. Every repository invoker of heavy work uses the
+shared broker; nothing runs heavy work unlocked.
 
 ## Nix development shell
 
 **Decision.** Repository development uses a flake dev shell (`flake.nix`,
-pinned by `flake.lock`) providing Dart from `nixpkgs-unstable` (stable
-channels lagged the Dart 3.13 minimum), Python 3, git, gh and jq. It uses
+pinned by `flake.lock`) providing Go, `protoc` and the Go plugins, Dart
+for the `tool/` orchestrator, Python 3, git, gh and jq. It uses
 `mkShellNoCC` so macOS keeps the system Xcode Swift toolchain for the
-monitor, and exports `HEAVY_LOCK_MONITOR_DART`.
+monitor and Swift library.
 
 **Consequences.** Contributors get one reproducible toolchain per machine.
-Nix is a development dependency only: compiled binaries are self-contained,
-the runner stays SDK-only, and the gate/protocol is unchanged regardless of
-which Dart built or runs it. Toolchain updates are explicit `nix flake
-update` changes that must pass all gates.
+Nix is a development dependency only: the installed `tuna` binary is
+self-contained. Toolchain updates are explicit `nix flake update` changes
+that must pass all gates.
 
 ## Application layout and build orchestration
 
-**Decision.** Shipped applications live under `apps/` (`heavy-lock`, the
-Dart runner and status CLI; `monitor-macos`, the Swift monitor). Development
-tooling lives in `tool/`: an SDK-only Dart orchestrator (`dart tool/dev.dart`)
-with one adapter per application and the commands `list`, `version`,
-`build`, `test`, `check` and `install`. `build` never runs tests, `test`
-never builds, and `check` runs both and reports each failure. `all` selects
-the applications implemented for the host. Unknown targets exit 64; future
-or host-unsupported targets exit 69 and never report success. Outputs go to
-`build/<app>/`. The root `pubspec.yaml` is a pub workspace over
-`apps/heavy-lock` and `tool`.
+**Decision.** Shipped applications live under `apps/` and libraries under
+`packages/`. Development tooling lives in `tool/`: an SDK-only Dart
+orchestrator (`dart tool/dev.dart`) with one adapter per application and the
+commands `list`, `build`, `test` and `check`. `build` never runs tests,
+`test` never builds, and `check` runs both and reports each failure. `all`
+selects the applications implemented for the host. Unknown targets exit 64;
+host-unsupported targets exit 69 and never report success. Outputs go to
+`build/<app>/`. The root `pubspec.yaml` is a pub workspace over `tool`.
+Installation is a documented manual step
+([supervision](supervision.md#install)), not an orchestrator command.
 
-The runner's version is derived from Git at build time and stamped with
-`-D` defines: `<major>.<minor>.<commit count>+<hash>` for a clean commit on
-master, otherwise `-dirty` with the reasons. Every commit bumps the patch
-without manual edits.
+**Alternatives/limits.** A shell dispatcher risks drift between platform
+implementations; a task runner such as `just` adds a dependency and still
+needs adapters. The orchestrator requires Dart (provided by the Nix shell).
+A running monitor keeps its old code until it is quit and reopened.
 
-Installation stays Dart-free for the runner: `tool/install.sh` atomically
-replaces `~/.local/bin/heavy-lock`, and the orchestrator delegates to it.
-The monitor bundle is copied next to its destination and swapped in by
-rename, restoring the previous bundle if the swap fails. Launching is left
-to `open`, separate from build and install.
+## Toolchain, layout and contract bindings
 
-Windows and Linux monitors are future applications. No empty projects are
-created for them. When implemented, each must read the version-1 status
-records and observe the gate without acquiring it, using that platform's
-lock semantics (POSIX record locks on Linux, which are independent of
-`flock(2)`; Windows byte-range locks), and must keep unknown state unknown.
-Add a shared code package only once real code is shared.
-
-**Alternatives/limits.** A shell dispatcher with a PowerShell counterpart
-risks drift between two implementations; a task runner such as `just` adds a
-dependency and still needs platform adapters. The orchestrator requires Dart
-(provided by the Nix shell). `tool/build.sh` remains as a compatibility
-wrapper; the monitor's former `build.sh` was removed. A running monitor keeps
-its old code until it is quit and reopened.
-
-## v2 toolchain, layout and contract bindings
-
-**Context.** Phase 1 of the [v2 plan](v2-implementation-plan.md) needs a Go
-executable, pinned generators and Go/Swift bindings for
-`docs/v2/heavylock.proto`. The user directed that dependencies be defined in
+**Context.** The broker needs a Go executable, pinned generators and Go/Swift bindings for
+`docs/tuna.proto`. The user directed that dependencies be defined in
 `flake.nix` and that the current Mac (macOS 26.7.3/arm64, Xcode 27.2, Swift
 6.4.2) be the baseline; the macOS 26+ floor is user-confirmed. The choices
 below were delegated.
 
 **Decision.** `tuna` is a shipped application, so its Go module lives in
-`apps/tuna` (module `github.com/boumenot/heavy-lock/apps/tuna`), not at the
+`apps/tuna` (module `github.com/boumenot/tuna/apps/tuna`), not at the
 repository root. The flake supplies Go, `protoc` and the Go plugins, and
 exposes `packages.tuna` whose `vendorHash` pins the Go module dependencies.
-Generated Go code goes to `apps/tuna/gen/heavylock/v2`; the generator maps
-the proto there with an `M` option, so the canonical contract's
-`go_package` is unchanged.
+Generated Go code goes to `apps/tuna/gen/tunapb`, the contract's
+`go_package`.
 
 Swift bindings live in a separate library package,
-`packages/heavylock-v2-swift`, isolated from the v1 monitor (macOS 13+). It
-uses grpc-swift-2 2.4.4, grpc-swift-protobuf 2.5.0 and swift-protobuf
-1.41.0 exactly; gRPC Swift 2 documents macOS 15+, below the v2 floor. Every
+`packages/tuna-contract-swift`. It uses grpc-swift-2 2.4.4, grpc-swift-protobuf 2.5.0 and swift-protobuf
+1.41.0 exactly; gRPC Swift 2 documents macOS 15+, below the macOS 26 floor. Every
 resolved Swift dependency, including transitive swift-collections 1.7.6, is
 defined in `flake.nix` as a non-flake input pinned by tag, so `flake.lock`
 records its commit. SwiftPM cannot consume Nix store sources without
@@ -233,15 +96,15 @@ replacing URL requirements with local paths, which would break plain
 `swift`/Xcode builds, so `Package.swift` and `Package.resolved` remain and
 must agree with the flake: flake evaluation (`nix develop`, `nix flake
 check`) throws on any difference in the pin set, location, tag, commit or
-`exact:` requirement, and `tool/dev.dart` and `tool/generate_v2.sh` build
+`exact:` requirement, and `tool/dev.dart` and `tool/generate.sh` build
 with `--only-use-versions-from-resolved-file`, so SwiftPM cannot drift from
 the verified file. The
 Swift protoc plugins are built with Xcode's Swift from those same pinned
 packages rather than taken from Nix. Only messages and clients are
 generated: the monitor never serves the API. Generated files in both
-languages are committed and regenerated by `tool/generate_v2.sh` (with
+languages are committed and regenerated by `tool/generate.sh` (with
 `--check` to detect drift) under the shared gate. `tool/dev.dart` builds
-and tests `tuna` and the Swift library; neither is installable.
+and tests `tuna` and the Swift library.
 
 **Alternatives.** Nixpkgs has `protoc-gen-swift` but no gRPC Swift 2
 generator, and realizing it required ~1.3 GiB of downloads for a Nix Swift
@@ -261,17 +124,17 @@ inputs too, or flake evaluation fails. The `vendorHash` must be updated
 when the vendored Go package set changes, even if `go.sum` does not. Only
 this Mac has been exercised.
 
-## v2 shared-port contract prototype
+## Shared-port contract
 
 **Decision.** A Go `net/http` listener binds `127.0.0.1` and accepts HTTP/1.1
 and cleartext HTTP/2. It routes gRPC to `grpc.Server.ServeHTTP` and REST to
 explicit handlers sharing one broker interface. The requested port must be
 1–65535 and an occupied port reports an error, not a replacement. Identity
-checks use `heavylock.v2`, SemVer compatibility and liveness, not port discovery
+checks use `tuna`, SemVer compatibility and liveness, not port discovery
 or authentication. Prerelease peers must match the complete version. The
 versioned SHA-256 submission encoding, POSIX-style
 argv display, REST mappings, errors and CORS are specified in
-[v2 design sections 6 and 11.2](v2-design.md#6-apis-port-and-local-access-risks).
+[design sections 6 and 11.2](design.md#6-apis-port-and-local-access-risks).
 
 **Evidence.** Fake-broker probes exercised Go gRPC and HTTP/1.1/HTTP/2 REST
 on the same listener, runner/control streams, shared state and errors.
@@ -282,33 +145,30 @@ Native CORS/private-network preflights passed; a real browser check was
 not run because browser access approval was denied.
 
 **Limits.** `grpc.Server.ServeHTTP` is experimental; rerun compatibility
-probes after upgrades. Only this Mac was exercised. The prototype does not
-start a real service or execute a command. Loopback, Host checks and
+probes after upgrades. Only this Mac was exercised. Loopback, Host checks and
 permissive CORS do not provide isolation or authentication.
 
-## v2 macOS monitor
+## macOS monitor
 
 **Context.** Phase 7c ([#18](https://github.com/boumenot/heavy-lock/issues/18))
 implements the Swift monitor from
-[v2 design section 3](v2-design.md#3-monitor-controls). The user selected the
+[design section 3](design.md#3-monitor-controls). The user selected the
 confirmation rules (confirm every cancel and force-start; pause, resume and
 reorder unconfirmed), no history deletion and distinct forced jobs; the
 choices below were delegated.
 
-**Decision.** The v2 monitor is a new SwiftUI package,
+**Decision.** The monitor is a SwiftUI package,
 `apps/tuna-monitor-macos` (`Tuna Monitor.app`, `com.boumenot.tuna-monitor`,
-macOS 26+), not a change to the v1 monitor, which keeps observing v1 locks
-until the cutover (#19). A `TunaMonitorCore` library holds the broker client,
+macOS 26+). A `TunaMonitorCore` library holds the broker client,
 event projection, session loop, control policy and presentation, so they are
 tested without UI; the executable is a thin view. It uses the generated
-`HeavyLockV2` clients over the grpc-swift-nio-transport TransportServices
+`TunaContract` clients over the grpc-swift-nio-transport TransportServices
 HTTP/2 transport, pinned with the contract library's packages and checked by
-the same flake evaluation. `tool/dev.dart` builds and tests it but does not
-install it before cutover. The port is `--port`, then `TUNA_MONITOR_PORT`,
+the same flake evaluation. `tool/dev.dart` builds and tests it. The port is `--port`, then `TUNA_MONITOR_PORT`,
 then 49783; there is no port discovery.
 
 On each (re)connect the monitor checks `Health` for a compatible
-`heavylock.v2` service before watching, so replayed events are never shown
+`tuna` service before watching, so replayed events are never shown
 as live. It resumes after the last applied sequence; a non-contiguous
 sequence or `EVENTS_EXPIRED` discards the cursor and rebuilds from a
 snapshot with a notice. A heartbeat timeout of max(15 s, 3 × the advertised
@@ -323,11 +183,11 @@ reservations or starts); capacity, pause and resource figures come from the
 last status. A queued job heavier than capacity gets a persistent warning
 from either its blocked reason or weight versus capacity.
 
-After the user's UI review, the Dock tile matches v1: the longest-running
+After the user's UI review, the Dock tile shows the longest-running
 job's worklog (`#N`, `#?` unattributed, `—` idle) and `+N` other running
 jobs in a state-coloured ring, with the queued count as a badge while live.
 A bordered tile adds a queue stop light, since #32 driven by the broker's
-explicit `QueueState` (see "v2 explicit queue mode and state"): green for
+explicit `QueueState` (see "Explicit queue mode and state"): green for
 idle or running, amber for blocked, recovering or error, red for paused, and
 dark when unknown or not live, so stale state never looks like running.
 Sections are Running, Queued and Recently finished; each available row action
@@ -335,8 +195,8 @@ has its own labelled icon button with a 1-second default tooltip delay;
 paths under home display as `~`. A worklog
 links to its issue via `gh issue view --repo [HOST/]OWNER/NAME` from the
 job's recorded attribution, keeping the recorded `worklog_url` as the link
-if `gh` fails, cached per key; only jobs recorded without a repository use
-v1's lookup in the job's cwd. The cwd links to its git top-level
+if `gh` fails, cached per key; jobs recorded without a repository look the
+issue up in the job's cwd. The cwd links to its git top-level
 directory and branch (`git rev-parse`), or to the cwd outside git. The
 Project link ([#33](https://github.com/boumenot/heavy-lock/issues/33)) uses
 the job's `agent_session`, recorded from `COPILOT_AGENT_SESSION_ID`, as the
@@ -344,8 +204,7 @@ documented `ghapp://sessions/SESSION_ID` deep link, only when `ai_agent` is
 `github_copilot_app_agent`; no variable carries a Project ID, so the
 Project is reached through its session. Other sessions show as text.
 
-**Alternatives.** Extending the v1 monitor would mix two protocols in one app
-before cutover and raise its macOS 13 floor. Polling REST would lose
+**Alternatives.** Polling REST would lose
 resumable events. Trusting `BrokerStatus` counts alone showed stale counts in
 a live smoke test.
 
@@ -358,14 +217,14 @@ returned. The API is unauthenticated loopback, exposing commands and
 history to any local process. A manual UI review by the user is required.
 Only this Mac (macOS 26.7.3/arm64, Xcode 27.2, Swift 6.4.2) was exercised.
 
-## v2 explicit queue mode and state
+## Explicit queue mode and state
 
 **Decision.** The user asked for "an explicit state instead of a boolean"
 (#32). `BrokerStatus` gains a durable `QueueMode` (`ENABLED`, `PAUSED`) and
 a derived operational `QueueState` (`IDLE`, `RUNNING`, `BLOCKED`, `PAUSED`,
 `RECOVERING`, `ERROR`, `UNKNOWN`/unspecified); `Queue` carries the same
-state. `head_blocked_reason` stays as the head's diagnostic. This is API
-2.1; the monitor requires it.
+state. `head_blocked_reason` stays as the head's diagnostic. The monitor
+requires it.
 
 - **Precedence.** `ERROR > RECOVERING > PAUSED > BLOCKED > RUNNING > IDLE`,
   so the most actionable broker-wide condition wins and a pause stays
@@ -377,15 +236,15 @@ state. `head_blocked_reason` stays as the head's diagnostic. This is API
   earlier monitor did not show, because the worklog's manual check lists
   "blocked" as a distinct case.
 - **Compatibility.** The deprecated `paused` field (3) is still set from
-  the mode for older clients. Events from before the upgrade replay with
+  the mode. Events from before the upgrade replay with
   unspecified mode and state; the monitor shows unknown until a fresh event
   or snapshot arrives.
-- **Storage.** Schema v2 stores `broker_state.queue_mode` text instead of
+- **Storage.** Schema version 2 stores `broker_state.queue_mode` text instead of
   the `paused` integer. The first migration framework
   (`apps/tuna/storage/migrate.go`) upgrades one version per step in one
   immediate transaction and commits only when every object's SQL matches
-  `schema.sql` exactly. Migration is one-way; a v1 broker refuses a v2
-  database, and v1 has no installed users yet.
+  `schema.sql` exactly. Migration is one-way; a broker refuses a database
+  with a newer schema version.
 - **Degraded status.** With durable storage failed, `GetStatus` still
   answers with `ERROR`, unspecified mode, `storage_unavailable` and the
   configured capacity instead of failing, so clients can show why
@@ -403,11 +262,11 @@ A single enum that merged mode and state would lose a pause during recovery
 or storage failure. The TLA+ model keeps its boolean `paused` abstraction,
 which is equivalent to the mode.
 
-## v2 monitor curl diagnostics
+## Monitor curl diagnostics
 
 **Decision.** The user asked for "an HTTP endpoint into the swift app or
 something else to better facilitate testing" and "curl support so
-integration testing can be done". The v2 monitor serves `GET /diagnostics`
+integration testing can be done". The monitor serves `GET /diagnostics`
 as JSON on `127.0.0.1:N` only when `--diagnostics-port N` or
 `TUNA_MONITOR_DIAGNOSTICS_PORT` is given. It is a hand-written HTTP/1.1
 responder over Network.framework, adding no dependency.

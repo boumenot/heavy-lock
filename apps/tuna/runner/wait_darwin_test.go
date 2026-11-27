@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/procid"
+	"github.com/boumenot/tuna/apps/tuna/procid"
 )
 
 func TestWaitFallbackDisarmsOnlyAfterExit(t *testing.T) {

@@ -1,4 +1,4 @@
-import HeavyLockV2
+import TunaContract
 import SwiftUI
 import TunaMonitorCore
 
@@ -94,7 +94,7 @@ struct MonitorView: View {
 
     @ViewBuilder
     private func section(
-        _ title: String, jobs: [Heavylock_V2_Job], state: MonitorState, now: Date, empty: String
+        _ title: String, jobs: [Tuna_Job], state: MonitorState, now: Date, empty: String
     ) -> some View {
         Section(title) {
             if jobs.isEmpty {
@@ -106,7 +106,7 @@ struct MonitorView: View {
         }
     }
 
-    private func jobRow(_ job: Heavylock_V2_Job, state: MonitorState, now: Date) -> some View {
+    private func jobRow(_ job: Tuna_Job, state: MonitorState, now: Date) -> some View {
         let row = Presentation.row(job, capacity: state.status?.capacity, now: now)
         return HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {

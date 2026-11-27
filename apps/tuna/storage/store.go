@@ -1,4 +1,4 @@
-// Package storage owns v2 durable state. It does not decide scheduling policy,
+// Package storage owns Tuna durable state. It does not decide scheduling policy,
 // verify OS process death, signal processes or establish broker ownership.
 package storage
 
@@ -16,11 +16,11 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	_ "modernc.org/sqlite"
 )
 
-//go:generate cp ../../../docs/v2/schema.sql schema.sql
+//go:generate cp ../../../docs/schema.sql schema.sql
 //go:embed schema.sql
 var schema string
 

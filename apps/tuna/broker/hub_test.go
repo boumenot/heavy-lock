@@ -3,7 +3,7 @@ package broker
 import (
 	"testing"
 
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 )
 
 func TestHubDeliversInOrderAndOverflowsWithoutBlocking(t *testing.T) {

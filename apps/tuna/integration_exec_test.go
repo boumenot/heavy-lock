@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -38,7 +38,7 @@ func TestServiceAdmissionSettings(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			broker := startService(t, port, dir, tt.args...)
-			code, _, body := restCall(t, port, http.MethodGet, "/v1/status", nil)
+			code, _, body := restCall(t, port, http.MethodGet, "/status", nil)
 			if code != http.StatusOK {
 				t.Fatalf("status = %d: %s", code, body)
 			}
@@ -71,14 +71,7 @@ func startRunner(t *testing.T, args ...string) *runnerProcess {
 	p := &runnerProcess{stderr: &syncBuffer{}, done: make(chan error, 1)}
 	p.cmd = tunaCommand(ctx, args...)
 	p.cmd.Cancel = func() error { return p.signal(syscall.SIGTERM) }
-	var env []string
-	for _, kv := range p.cmd.Env {
-		if !strings.HasPrefix(kv, "TUNA_JOB_ID=") {
-			env = append(env, kv)
-		}
-	}
-
-	p.cmd.Env, p.cmd.Stderr = env, p.stderr
+	p.cmd.Stderr = p.stderr
 	if err := p.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +187,7 @@ func TestExecutableRunnerWithControls(t *testing.T) {
 		t.Fatalf("force-started job was retried: %d submissions; stderr=%s", n, b.stderr.String())
 	}
 
-	if status, _, body := restCall(t, port, http.MethodPost, "/v1/jobs/"+aID+"/cancel", nil); status != 200 {
+	if status, _, body := restCall(t, port, http.MethodPost, "/jobs/"+aID+"/cancel", nil); status != 200 {
 		t.Fatalf("REST cancel = %d %s", status, body)
 	}
 	if code := a.exitCode(t); code != 137 {
@@ -202,7 +195,7 @@ func TestExecutableRunnerWithControls(t *testing.T) {
 	}
 	waitJobState(t, ps, aID, "JOB_STATE_FINISHED")
 	waitJobState(t, ps, bID, "JOB_STATE_FINISHED")
-	if status, _, body := restCall(t, port, http.MethodGet, "/v1/jobs/"+aID, nil); status != 200 || !strings.Contains(body, "JOB_STATE_FINISHED") {
+	if status, _, body := restCall(t, port, http.MethodGet, "/jobs/"+aID, nil); status != 200 || !strings.Contains(body, "JOB_STATE_FINISHED") {
 		t.Fatalf("REST job = %d %s", status, body)
 	}
 }
@@ -220,7 +213,7 @@ func TestBrokerRestartPreservesLiveRunnerAndReservation(t *testing.T) {
 
 	readJob := func() *pb.Job {
 		t.Helper()
-		status, _, body := restCall(t, port, http.MethodGet, "/v1/jobs/"+id, nil)
+		status, _, body := restCall(t, port, http.MethodGet, "/jobs/"+id, nil)
 		if status != 200 {
 			t.Fatalf("read job = %d %s", status, body)
 		}
@@ -241,7 +234,7 @@ func TestBrokerRestartPreservesLiveRunnerAndReservation(t *testing.T) {
 	if !proto.Equal(after.Process, before.Process) || !proto.Equal(after.Grant.Runner, before.Grant.Runner) {
 		t.Fatalf("restart changed live identities: before=%v after=%v", before, after)
 	}
-	status, _, body := restCall(t, port, http.MethodGet, "/v1/status", nil)
+	status, _, body := restCall(t, port, http.MethodGet, "/status", nil)
 	var brokerStatus pb.BrokerStatus
 	if status != 200 {
 		t.Fatalf("status after restart = %d %s", status, body)
@@ -252,7 +245,7 @@ func TestBrokerRestartPreservesLiveRunnerAndReservation(t *testing.T) {
 	if brokerStatus.Occupied != 2 || brokerStatus.UnreconciledReservations != 1 {
 		t.Fatalf("recovered accounting = %v", &brokerStatus)
 	}
-	if status, _, body = restCall(t, port, http.MethodPost, "/v1/jobs/"+id+"/cancel", nil); status != 200 {
+	if status, _, body = restCall(t, port, http.MethodPost, "/jobs/"+id+"/cancel", nil); status != 200 {
 		t.Fatalf("cancel after restart = %d %s", status, body)
 	}
 	if code := r.exitCode(t); code != 137 {

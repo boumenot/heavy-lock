@@ -18,15 +18,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
-	"github.com/boumenot/heavy-lock/apps/tuna/broker"
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
-	"github.com/boumenot/heavy-lock/apps/tuna/procid"
-	"github.com/boumenot/heavy-lock/apps/tuna/runner"
-	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
-	"github.com/boumenot/heavy-lock/apps/tuna/storage"
-	"github.com/boumenot/heavy-lock/apps/tuna/transport"
+	"github.com/boumenot/tuna/apps/tuna/attribution"
+	"github.com/boumenot/tuna/apps/tuna/broker"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
+	"github.com/boumenot/tuna/apps/tuna/procid"
+	"github.com/boumenot/tuna/apps/tuna/runner"
+	"github.com/boumenot/tuna/apps/tuna/scheduler"
+	"github.com/boumenot/tuna/apps/tuna/storage"
+	"github.com/boumenot/tuna/apps/tuna/transport"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -386,7 +386,7 @@ func TestFinishedJobRetainsRuntimeAndDeclaredMetadata(t *testing.T) {
 			case "symbolic-ref --quiet --short HEAD":
 				return "feature", nil
 			case "remote get-url -- origin":
-				return "git@github.com:boumenot/heavy-lock.git", nil
+				return "git@github.com:boumenot/tuna.git", nil
 			}
 			return "", errors.New("exit status 1")
 		}
@@ -397,10 +397,10 @@ func TestFinishedJobRetainsRuntimeAndDeclaredMetadata(t *testing.T) {
 	j := b.waitState(t, inv.log.jobID(t), pb.JobState_JOB_STATE_FINISHED)
 	if j.Command != "/bin/sleep 0.2" || j.ServiceVersion != contract.ServiceVersion ||
 		j.Client.GetName() != "tuna" || j.Client.GetVersion() != contract.ServiceVersion ||
-		j.Attribution.GetWorklog() != "boumenot/heavy-lock#16" || j.Attribution.GetRepository() != "boumenot/heavy-lock" ||
+		j.Attribution.GetWorklog() != "boumenot/tuna#16" || j.Attribution.GetRepository() != "boumenot/tuna" ||
 		j.Attribution.GetBranch() != "feature" || j.Attribution.GetCommitSha() != commit ||
 		j.Attribution.GetAgentSession() != "session-1" ||
-		j.Attribution.GetExtra()[attribution.WorklogURLKey] != "https://github.com/boumenot/heavy-lock/issues/16" ||
+		j.Attribution.GetExtra()[attribution.WorklogURLKey] != "https://github.com/boumenot/tuna/issues/16" ||
 		attribution.SessionLink(j.Attribution) != "ghapp://sessions/session-1" ||
 		j.Client.GetOs() != pb.ClientOS_CLIENT_OS_MACOS || j.Client.GetOsVersion() != attribution.OSVersion() || j.Client.OsVersion == nil ||
 		j.QueuedAt == nil || j.QueuedAt.AsTime().UnixNano() <= 0 || j.AdmittedAt == nil || j.FreeMemoryAtAdmissionBytes == nil {
@@ -807,7 +807,7 @@ func TestDefaultDirectoryIgnoresHomeEnvironment(t *testing.T) {
 func TestRunExcludesBrokerWithDifferentDataDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	lock, err := AcquireLock(filepath.Join(home, "Library", "Application Support", "heavy-lock", "v2"))
+	lock, err := AcquireLock(filepath.Join(home, "Library", "Application Support", "tuna"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -815,7 +815,7 @@ func TestRunExcludesBrokerWithDifferentDataDirectory(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err = Run(ctx, Options{Port: freePort(t), DataDir: filepath.Join(t.TempDir(), "private"), LockDir: filepath.Join(home, "Library", "Application Support", "heavy-lock", "v2"), Capacity: 2, ServiceVersion: "test", Sampler: idleSampler{}})
+	err = Run(ctx, Options{Port: freePort(t), DataDir: filepath.Join(t.TempDir(), "private"), LockDir: filepath.Join(home, "Library", "Application Support", "tuna"), Capacity: 2, ServiceVersion: "test", Sampler: idleSampler{}})
 	if !errors.Is(err, ErrLocked) {
 		t.Fatalf("different data directory: got %v, want ErrLocked", err)
 	}

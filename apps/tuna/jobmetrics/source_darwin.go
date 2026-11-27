@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/procid"
+	"github.com/boumenot/tuna/apps/tuna/procid"
 )
 
 type tableProcess struct {

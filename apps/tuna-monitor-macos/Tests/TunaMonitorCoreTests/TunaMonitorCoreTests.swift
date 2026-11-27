@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import HeavyLockV2
+import TunaContract
 import Synchronization
 import Testing
 
@@ -150,7 +150,7 @@ import Testing
         #expect(banner.title == "Broker unavailable: connection refused")
         #expect(banner.detail?.contains("it is not live") == true)
 
-        state.connection = .incompatible("the service on this port is not a heavy-lock v2 broker")
+        state.connection = .incompatible("the service on this port is not a Tuna broker")
         #expect(Presentation.banner(state, port: 1234, now: self.now).title == "Incompatible service on 127.0.0.1:1234")
 
         state.connection = .brokerError("disk I/O error")
@@ -164,7 +164,7 @@ import Testing
         state.connection = .live
         var initial = status()
         initial.queueState = .idle
-        var queue = Heavylock_V2_Queue()
+        var queue = Tuna_Queue()
         queue.queueState = .idle
         var snapshot = snapshotEvent(seq: 1, status: initial)
         snapshot.snapshot.queue.queueState = .idle
@@ -175,7 +175,7 @@ import Testing
         var blocked = queue
         blocked.queueState = .blocked
         blocked.headBlockedReason = .insufficientSlots
-        var queueEvent = Heavylock_V2_BrokerEvent()
+        var queueEvent = Tuna_BrokerEvent()
         queueEvent.eventSeq = 2
         queueEvent.queueChanged = blocked
         _ = state.apply(queueEvent, at: self.now)
@@ -186,7 +186,7 @@ import Testing
         paused.queueMode = .paused
         paused.queueState = .paused
         paused.headBlockedReason = .paused
-        var statusEvent = Heavylock_V2_BrokerEvent()
+        var statusEvent = Tuna_BrokerEvent()
         statusEvent.eventSeq = 3
         statusEvent.statusChanged = paused
         _ = state.apply(statusEvent, at: self.now)
@@ -232,7 +232,7 @@ import Testing
 
 @MainActor
 @Suite struct MonitorSessionTests {
-    func liveSession(_ broker: FakeBroker, snapshot: Heavylock_V2_BrokerEvent) async -> (
+    func liveSession(_ broker: FakeBroker, snapshot: Tuna_BrokerEvent) async -> (
         MonitorSession, FakeBroker.Stream.Continuation
     ) {
         let stream = broker.openStream()
@@ -310,7 +310,7 @@ import Testing
         #expect(broker.snapshot.healthChecks >= 2)
 
         // Field 20 represents an event oneof case unknown to these bindings.
-        let future = try Heavylock_V2_BrokerEvent(serializedBytes: Data([0x08, 0x04, 0xa2, 0x01, 0x00]))
+        let future = try Tuna_BrokerEvent(serializedBytes: Data([0x08, 0x04, 0xa2, 0x01, 0x00]))
         #expect(future.event == nil)
         let refreshed = broker.openStream()
         resumed.yield(future)
@@ -337,7 +337,7 @@ import Testing
         let (session, stream) = await self.liveSession(broker, snapshot: snapshotEvent(seq: 3))
         defer { session.stop() }
         let refreshed = broker.openStream()
-        let future = try Heavylock_V2_BrokerEvent(serializedBytes: Data([0x08, 0x04, 0xa2, 0x01, 0x00]))
+        let future = try Tuna_BrokerEvent(serializedBytes: Data([0x08, 0x04, 0xa2, 0x01, 0x00]))
         stream.yield(future)
         #expect(await eventually { broker.snapshot.watches == [0, 0] })
         #expect(!session.state.isLive)
@@ -355,7 +355,7 @@ import Testing
         session.start()
         defer { session.stop() }
 
-        stream.yield(Heavylock_V2_BrokerEvent())
+        stream.yield(Tuna_BrokerEvent())
         #expect(await eventually { broker.snapshot.watches == [0, 0] })
         #expect(!session.state.isLive)
         #expect(!session.state.hasSnapshot)
@@ -373,7 +373,7 @@ import Testing
         session.start()
         defer { session.stop() }
 
-        stream.yield(Heavylock_V2_BrokerEvent())
+        stream.yield(Tuna_BrokerEvent())
         #expect(await eventually { session.state.connection == .unavailable("unrecognized broker event; refreshing") })
         let observedAt = ContinuousClock.now
         #expect(broker.snapshot.watches == [0])
@@ -382,7 +382,7 @@ import Testing
         #expect(!session.state.isLive)
     }
 
-    @Test func brokerWithoutExplicitQueueStateIsIncompatible() async {
+    @Test func brokerWithDifferentMajorIsIncompatible() async {
         var health = FakeBroker.liveHealth()
         health.serviceVersion = "2.0.0"
         let broker = FakeBroker(health: health)
@@ -530,9 +530,9 @@ import Testing
 }
 
 private func attributed(
-    _ id: String, _ state: Heavylock_V2_JobState, worklog: String? = nil, repository: String? = nil,
+    _ id: String, _ state: Tuna_JobState, worklog: String? = nil, repository: String? = nil,
     cwd: String? = nil
-) -> Heavylock_V2_Job {
+) -> Tuna_Job {
     var value = job(id, state)
     if let worklog { value.attribution.worklog = worklog }
     if let repository { value.attribution.repository = repository }
@@ -570,8 +570,8 @@ private func attributed(
     @Test func stopLightFollowsExplicitQueueState() {
         var state = MonitorState()
         state.connection = .live
-        state.status = Heavylock_V2_BrokerStatus()
-        let cases: [(Heavylock_V2_QueueState, Presentation.QueueLight)] = [
+        state.status = Tuna_BrokerStatus()
+        let cases: [(Tuna_QueueState, Presentation.QueueLight)] = [
             (.idle, .go), (.running, .go), (.blocked, .stalled), (.paused, .stopped),
             (.recovering, .stalled), (.error, .stalled), (.unspecified, .unknown),
         ]
@@ -621,13 +621,13 @@ private func attributed(
     }
 
     @Test func recordedAttributionQualifiesWorklogsAndLinksSessions() {
-        var value = attributed("a", .running, worklog: "boumenot/heavy-lock#33", repository: "boumenot/heavy-lock")
+        var value = attributed("a", .running, worklog: "boumenot/tuna#33", repository: "boumenot/tuna")
         value.attribution.branch = "main"
         value.attribution.commitSha = String(repeating: "a", count: 40)
         value.attribution.agentSession = "22caf59c-ccac-4db8-96ac-9723739b61fb"
         value.attribution.extra = [
             AttributionKey.repositoryHost: "github.com",
-            AttributionKey.worklogURL: "https://github.com/boumenot/heavy-lock/issues/33",
+            AttributionKey.worklogURL: "https://github.com/boumenot/tuna/issues/33",
             AttributionKey.aiAgent: "github_copilot_app_agent",
         ]
         value.client.name = "tuna"
@@ -636,11 +636,11 @@ private func attributed(
         value.client.osVersion = "26.1"
         value.client.architecture = .arm64
         let row = Presentation.row(value, capacity: 2, now: self.now)
-        let url = URL(string: "https://github.com/boumenot/heavy-lock/issues/33")
-        #expect(row.worklog == WorklogReference(repository: "github.com/boumenot/heavy-lock", number: 33, url: url))
-        #expect(row.worklog?.qualifiedLabel == "boumenot/heavy-lock#33")
+        let url = URL(string: "https://github.com/boumenot/tuna/issues/33")
+        #expect(row.worklog == WorklogReference(repository: "github.com/boumenot/tuna", number: 33, url: url))
+        #expect(row.worklog?.qualifiedLabel == "boumenot/tuna#33")
         #expect(row.worklog?.label == "#33")
-        #expect(row.details.contains("boumenot/heavy-lock · main · aaaaaaa"))
+        #expect(row.details.contains("boumenot/tuna · main · aaaaaaa"))
         #expect(row.details.contains("macOS 26.1 · arm64 · tuna 2.0.0"))
         #expect(
             row.session

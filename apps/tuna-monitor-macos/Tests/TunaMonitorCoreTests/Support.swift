@@ -1,5 +1,5 @@
 import Foundation
-import HeavyLockV2
+import TunaContract
 import Synchronization
 import TunaMonitorCore
 
@@ -13,22 +13,22 @@ final class FakeBroker: BrokerClient {
         var recentRequests = 0
     }
 
-    typealias Stream = AsyncThrowingStream<Heavylock_V2_BrokerEvent, any Error>
+    typealias Stream = AsyncThrowingStream<Tuna_BrokerEvent, any Error>
 
     private let recorded = Mutex(Recorded())
     private let streams = Mutex<[Stream]>([])
-    private let healthResult: Mutex<Result<Heavylock_V2_Health, BrokerFailure>>
-    private let recentJobs = Mutex<[Heavylock_V2_Job]>([])
+    private let healthResult: Mutex<Result<Tuna_Health, BrokerFailure>>
+    private let recentJobs = Mutex<[Tuna_Job]>([])
     private let performFailure = Mutex<BrokerFailure?>(nil)
 
-    init(health: Heavylock_V2_Health = FakeBroker.liveHealth()) {
+    init(health: Tuna_Health = FakeBroker.liveHealth()) {
         self.healthResult = Mutex(.success(health))
     }
 
-    static func liveHealth() -> Heavylock_V2_Health {
-        var health = Heavylock_V2_Health()
-        health.serviceIdentity = HeavyLockV2.errorDomain
-        health.serviceVersion = HeavyLockV2.serviceVersion
+    static func liveHealth() -> Tuna_Health {
+        var health = Tuna_Health()
+        health.serviceIdentity = TunaContract.errorDomain
+        health.serviceVersion = TunaContract.serviceVersion
         health.live = true
         health.ready = true
         return health
@@ -43,11 +43,11 @@ final class FakeBroker: BrokerClient {
         return continuation
     }
 
-    func setHealth(_ result: Result<Heavylock_V2_Health, BrokerFailure>) {
+    func setHealth(_ result: Result<Tuna_Health, BrokerFailure>) {
         self.healthResult.withLock { $0 = result }
     }
 
-    func setRecent(_ jobs: [Heavylock_V2_Job]) {
+    func setRecent(_ jobs: [Tuna_Job]) {
         self.recentJobs.withLock { $0 = jobs }
     }
 
@@ -55,7 +55,7 @@ final class FakeBroker: BrokerClient {
         self.performFailure.withLock { $0 = failure }
     }
 
-    func health() async throws -> Heavylock_V2_Health {
+    func health() async throws -> Tuna_Health {
         self.recorded.withLock { $0.healthChecks += 1 }
         return try self.healthResult.withLock { $0 }.get()
     }
@@ -68,7 +68,7 @@ final class FakeBroker: BrokerClient {
         return Stream { _ in }
     }
 
-    func recentFinishedJobs(limit: UInt32) async throws -> [Heavylock_V2_Job] {
+    func recentFinishedJobs(limit: UInt32) async throws -> [Tuna_Job] {
         self.recorded.withLock { $0.recentRequests += 1 }
         return self.recentJobs.withLock { $0 }
     }
@@ -80,10 +80,10 @@ final class FakeBroker: BrokerClient {
 }
 
 func job(
-    _ id: String, _ state: Heavylock_V2_JobState, weight: UInt32 = 1, forced: Bool = false,
-    position: UInt32? = nil, blocked: Heavylock_V2_BlockedReason = .unspecified
-) -> Heavylock_V2_Job {
-    var job = Heavylock_V2_Job()
+    _ id: String, _ state: Tuna_JobState, weight: UInt32 = 1, forced: Bool = false,
+    position: UInt32? = nil, blocked: Tuna_BlockedReason = .unspecified
+) -> Tuna_Job {
+    var job = Tuna_Job()
     job.jobID = id
     job.command = "make \(id)"
     job.state = state
@@ -95,8 +95,8 @@ func job(
     return job
 }
 
-func status(capacity: UInt32 = 2, occupied: UInt32 = 0, paused: Bool = false) -> Heavylock_V2_BrokerStatus {
-    var status = Heavylock_V2_BrokerStatus()
+func status(capacity: UInt32 = 2, occupied: UInt32 = 0, paused: Bool = false) -> Tuna_BrokerStatus {
+    var status = Tuna_BrokerStatus()
     status.capacity = capacity
     status.occupied = occupied
     status.paused = paused
@@ -104,30 +104,30 @@ func status(capacity: UInt32 = 2, occupied: UInt32 = 0, paused: Bool = false) ->
 }
 
 func snapshotEvent(
-    seq: Int64, queue: [Heavylock_V2_Job] = [], active: [Heavylock_V2_Job] = [],
-    status brokerStatus: Heavylock_V2_BrokerStatus = status()
-) -> Heavylock_V2_BrokerEvent {
-    var snapshot = Heavylock_V2_BrokerSnapshot()
+    seq: Int64, queue: [Tuna_Job] = [], active: [Tuna_Job] = [],
+    status brokerStatus: Tuna_BrokerStatus = status()
+) -> Tuna_BrokerEvent {
+    var snapshot = Tuna_BrokerSnapshot()
     snapshot.status = brokerStatus
     snapshot.queue.jobs = queue
     snapshot.activeJobs = active
-    var event = Heavylock_V2_BrokerEvent()
+    var event = Tuna_BrokerEvent()
     event.eventSeq = seq
     event.snapshot = snapshot
     return event
 }
 
-func jobEvent(seq: Int64, _ job: Heavylock_V2_Job) -> Heavylock_V2_BrokerEvent {
-    var event = Heavylock_V2_BrokerEvent()
+func jobEvent(seq: Int64, _ job: Tuna_Job) -> Tuna_BrokerEvent {
+    var event = Tuna_BrokerEvent()
     event.eventSeq = seq
     event.jobChanged = job
     return event
 }
 
-func heartbeatEvent(seq: Int64, intervalMs: Int64 = 0) -> Heavylock_V2_BrokerEvent {
-    var event = Heavylock_V2_BrokerEvent()
+func heartbeatEvent(seq: Int64, intervalMs: Int64 = 0) -> Tuna_BrokerEvent {
+    var event = Tuna_BrokerEvent()
     event.eventSeq = seq
-    var heartbeat = Heavylock_V2_Heartbeat()
+    var heartbeat = Tuna_Heartbeat()
     if intervalMs > 0 {
         heartbeat.heartbeatInterval.seconds = intervalMs / 1000
         heartbeat.heartbeatInterval.nanos = Int32(intervalMs % 1000) * 1_000_000

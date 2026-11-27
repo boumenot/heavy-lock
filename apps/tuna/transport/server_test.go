@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	tunapb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
@@ -30,55 +30,55 @@ import (
 )
 
 type fakeBroker struct {
-	heavylockv2.UnimplementedRunnerServiceServer
-	heavylockv2.UnimplementedControlServiceServer
+	tunapb.UnimplementedRunnerServiceServer
+	tunapb.UnimplementedControlServiceServer
 	mu     sync.Mutex
 	paused bool
 }
 
-func (b *fakeBroker) GetHealth(context.Context, *heavylockv2.GetHealthRequest) (*heavylockv2.Health, error) {
-	return &heavylockv2.Health{
+func (b *fakeBroker) GetHealth(context.Context, *tunapb.GetHealthRequest) (*tunapb.Health, error) {
+	return &tunapb.Health{
 		Live: true, Ready: false, ServiceVersion: contract.ServiceVersion,
 		ServiceIdentity: contract.ServiceIdentity,
 	}, nil
 }
 
-func (b *fakeBroker) GetStatus(context.Context, *heavylockv2.GetStatusRequest) (*heavylockv2.BrokerStatus, error) {
+func (b *fakeBroker) GetStatus(context.Context, *tunapb.GetStatusRequest) (*tunapb.BrokerStatus, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return &heavylockv2.BrokerStatus{Paused: b.paused}, nil
+	return &tunapb.BrokerStatus{Paused: b.paused}, nil
 }
 
-func (b *fakeBroker) PauseQueue(context.Context, *heavylockv2.PauseQueueRequest) (*heavylockv2.BrokerStatus, error) {
+func (b *fakeBroker) PauseQueue(context.Context, *tunapb.PauseQueueRequest) (*tunapb.BrokerStatus, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.paused = true
-	return &heavylockv2.BrokerStatus{Paused: true}, nil
+	return &tunapb.BrokerStatus{Paused: true}, nil
 }
 
-func (b *fakeBroker) ResumeQueue(context.Context, *heavylockv2.ResumeQueueRequest) (*heavylockv2.BrokerStatus, error) {
+func (b *fakeBroker) ResumeQueue(context.Context, *tunapb.ResumeQueueRequest) (*tunapb.BrokerStatus, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.paused = false
-	return &heavylockv2.BrokerStatus{}, nil
+	return &tunapb.BrokerStatus{}, nil
 }
 
-func (b *fakeBroker) CancelJob(context.Context, *heavylockv2.CancelJobRequest) (*heavylockv2.Job, error) {
-	return nil, contract.Error(codes.FailedPrecondition, heavylockv2.ErrorReason_JOB_NOT_WAITING, "job is not waiting", nil)
+func (b *fakeBroker) CancelJob(context.Context, *tunapb.CancelJobRequest) (*tunapb.Job, error) {
+	return nil, contract.Error(codes.FailedPrecondition, tunapb.ErrorReason_JOB_NOT_WAITING, "job is not waiting", nil)
 }
 
-func (b *fakeBroker) WatchEvents(_ *heavylockv2.WatchEventsRequest, stream grpc.ServerStreamingServer[heavylockv2.BrokerEvent]) error {
-	return stream.Send(&heavylockv2.BrokerEvent{EventSeq: 42})
+func (b *fakeBroker) WatchEvents(_ *tunapb.WatchEventsRequest, stream grpc.ServerStreamingServer[tunapb.BrokerEvent]) error {
+	return stream.Send(&tunapb.BrokerEvent{EventSeq: 42})
 }
 
-func (b *fakeBroker) TrySubmitAndWatch(_ *heavylockv2.SubmitJobRequest, stream grpc.ServerStreamingServer[heavylockv2.JobEvent]) error {
-	return stream.Send(&heavylockv2.JobEvent{EventSeq: 7})
+func (b *fakeBroker) TrySubmitAndWatch(_ *tunapb.SubmitJobRequest, stream grpc.ServerStreamingServer[tunapb.JobEvent]) error {
+	return stream.Send(&tunapb.JobEvent{EventSeq: 7})
 }
 
 func TestRESTDispatchesToBroker(t *testing.T) {
 	broker := &fakeBroker{}
 	handler := newHandler(broker, DefaultPort)
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:49783/v1/queue/pause", nil)
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:49783/queue/pause", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -87,7 +87,7 @@ func TestRESTDispatchesToBroker(t *testing.T) {
 	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("allow origin = %q, want *", got)
 	}
-	var result heavylockv2.BrokerStatus
+	var result tunapb.BrokerStatus
 	if err := protojson.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestRESTDispatchesToBroker(t *testing.T) {
 
 func TestRESTPreflightAndHostValidation(t *testing.T) {
 	handler := newHandler(&fakeBroker{}, DefaultPort)
-	preflight := httptest.NewRequest(http.MethodOptions, "http://localhost:49783/v1/queue/pause", nil)
+	preflight := httptest.NewRequest(http.MethodOptions, "http://localhost:49783/queue/pause", nil)
 	preflight.Header.Set("Origin", "https://example.test")
 	preflight.Header.Set("Access-Control-Request-Method", "POST")
 	preflight.Header.Set("Access-Control-Request-Headers", "content-type")
@@ -113,7 +113,7 @@ func TestRESTPreflightAndHostValidation(t *testing.T) {
 		t.Fatalf("preflight did not advertise private-network access and cache variation: %v", response.Header())
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "http://example.test:49783/v1/status", nil)
+	request := httptest.NewRequest(http.MethodGet, "http://example.test:49783/status", nil)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -136,7 +136,7 @@ func TestRESTAuthoritiesAndPreflightErrors(t *testing.T) {
 		{"[::1]:49783", 400},
 	} {
 		t.Run(tt.host, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:49783/v1/status", nil)
+			request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:49783/status", nil)
 			request.Host = tt.host
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
@@ -145,7 +145,7 @@ func TestRESTAuthoritiesAndPreflightErrors(t *testing.T) {
 			}
 			if tt.code != 200 {
 				code, reason, metadata := errorReason(t, response)
-				if code != codes.InvalidArgument || reason != heavylockv2.ErrorReason_INVALID_ARGUMENT_FIELD.String() || metadata["field"] != "host" {
+				if code != codes.InvalidArgument || reason != tunapb.ErrorReason_INVALID_ARGUMENT_FIELD.String() || metadata["field"] != "host" {
 					t.Fatalf("host error = %v/%s/%v", code, reason, metadata)
 				}
 			}
@@ -161,7 +161,7 @@ func TestRESTAuthoritiesAndPreflightErrors(t *testing.T) {
 		{"unsupported header", "POST", "authorization", 400},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodOptions, "http://localhost:49783/v1/queue/pause", nil)
+			request := httptest.NewRequest(http.MethodOptions, "http://localhost:49783/queue/pause", nil)
 			request.Header.Set("Origin", "https://any.example")
 			request.Header.Set("Access-Control-Request-Method", tt.method)
 			request.Header.Set("Access-Control-Request-Headers", tt.header)
@@ -209,8 +209,8 @@ func TestSharedPortGRPCAndREST(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	control := heavylockv2.NewControlServiceClient(conn)
-	health, err := control.GetHealth(ctx, &heavylockv2.GetHealthRequest{})
+	control := tunapb.NewControlServiceClient(conn)
+	health, err := control.GetHealth(ctx, &tunapb.GetHealthRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestSharedPortGRPCAndREST(t *testing.T) {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	preflight, err := http.NewRequest(http.MethodOptions, "http://"+address+"/v1/queue/pause", nil)
+	preflight, err := http.NewRequest(http.MethodOptions, "http://"+address+"/queue/pause", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestSharedPortGRPCAndREST(t *testing.T) {
 		response.Header.Get("Access-Control-Allow-Private-Network") != "true" {
 		t.Fatalf("network preflight = %s, headers = %v", response.Status, response.Header)
 	}
-	response, err = client.Post("http://"+address+"/v1/queue/pause", "", nil)
+	response, err = client.Post("http://"+address+"/queue/pause", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,11 +244,11 @@ func TestSharedPortGRPCAndREST(t *testing.T) {
 	if response.StatusCode != 200 || response.ProtoMajor != 1 {
 		t.Fatalf("HTTP/1 pause = %s (%s)", response.Status, response.Proto)
 	}
-	state, err := control.GetStatus(ctx, &heavylockv2.GetStatusRequest{})
+	state, err := control.GetStatus(ctx, &tunapb.GetStatusRequest{})
 	if err != nil || !state.GetPaused() {
 		t.Fatalf("gRPC status after REST pause = %v, %v", state, err)
 	}
-	if _, err := control.ResumeQueue(ctx, &heavylockv2.ResumeQueueRequest{}); err != nil {
+	if _, err := control.ResumeQueue(ctx, &tunapb.ResumeQueueRequest{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -257,7 +257,7 @@ func TestSharedPortGRPCAndREST(t *testing.T) {
 	h2Transport := &http.Transport{Protocols: protocols}
 	defer h2Transport.CloseIdleConnections()
 	h2Client := &http.Client{Transport: h2Transport, Timeout: 5 * time.Second}
-	response, err = h2Client.Get("http://" + address + "/v1/status")
+	response, err = h2Client.Get("http://" + address + "/status")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestSharedPortGRPCAndREST(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var restState heavylockv2.BrokerStatus
+	var restState tunapb.BrokerStatus
 	if err := protojson.Unmarshal(body, &restState); err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestSharedPortGRPCAndREST(t *testing.T) {
 		t.Fatalf("HTTP/2 status = %s (%s): %s", response.Status, response.Proto, body)
 	}
 
-	events, err := control.WatchEvents(ctx, &heavylockv2.WatchEventsRequest{})
+	events, err := control.WatchEvents(ctx, &tunapb.WatchEventsRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,8 +282,8 @@ func TestSharedPortGRPCAndREST(t *testing.T) {
 	if err != nil || event.GetEventSeq() != 42 {
 		t.Fatalf("gRPC event = %v, %v", event, err)
 	}
-	runner := heavylockv2.NewRunnerServiceClient(conn)
-	jobEvents, err := runner.TrySubmitAndWatch(ctx, &heavylockv2.SubmitJobRequest{})
+	runner := tunapb.NewRunnerServiceClient(conn)
+	jobEvents, err := runner.TrySubmitAndWatch(ctx, &tunapb.SubmitJobRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,11 +292,11 @@ func TestSharedPortGRPCAndREST(t *testing.T) {
 		t.Fatalf("gRPC runner event = %v, %v", jobEvent, err)
 	}
 
-	_, grpcErr := control.CancelJob(ctx, &heavylockv2.CancelJobRequest{JobId: "job-1"})
+	_, grpcErr := control.CancelJob(ctx, &tunapb.CancelJobRequest{JobId: "job-1"})
 	if status.Code(grpcErr) != codes.FailedPrecondition {
 		t.Fatalf("gRPC error = %v", grpcErr)
 	}
-	response, err = client.Post("http://"+address+"/v1/jobs/job-1/cancel", "application/json", strings.NewReader("{}"))
+	response, err = client.Post("http://"+address+"/jobs/job-1/cancel", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestGRPCRejectsUnrelatedAuthority(t *testing.T) {
 	defer conn.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = heavylockv2.NewControlServiceClient(conn).GetStatus(ctx, &heavylockv2.GetStatusRequest{})
+	_, err = tunapb.NewControlServiceClient(conn).GetStatus(ctx, &tunapb.GetStatusRequest{})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("gRPC authority error = %v", err)
 	}
@@ -352,7 +352,7 @@ func TestGRPCRejectsUnrelatedAuthority(t *testing.T) {
 	}
 	info, ok := details[0].(*errdetails.ErrorInfo)
 	if !ok || info.Domain != contract.ServiceIdentity ||
-		info.Reason != heavylockv2.ErrorReason_INVALID_ARGUMENT_FIELD.String() || info.Metadata["field"] != "host" {
+		info.Reason != tunapb.ErrorReason_INVALID_ARGUMENT_FIELD.String() || info.Metadata["field"] != "host" {
 		t.Fatalf("gRPC authority detail = %v", details[0])
 	}
 }
@@ -370,7 +370,7 @@ func TestSwiftGRPCCompatibility(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "swift", "test",
-		"--package-path", filepath.Join(root, "packages", "heavylock-v2-swift"),
+		"--package-path", filepath.Join(root, "packages", "tuna-contract-swift"),
 		"--only-use-versions-from-resolved-file", "--filter", "swiftGRPCSharedPort")
 	cmd.Env = append(os.Environ(), "TUNA_TEST_SWIFT_PORT="+strconv.Itoa(server.Port()))
 	output, err := cmd.CombinedOutput()
@@ -380,7 +380,7 @@ func TestSwiftGRPCCompatibility(t *testing.T) {
 	if !strings.Contains(string(output), "Test swiftGRPCSharedPort() passed") {
 		t.Fatalf("Swift gRPC probe did not run:\n%s", output)
 	}
-	state, err := broker.GetStatus(ctx, &heavylockv2.GetStatusRequest{})
+	state, err := broker.GetStatus(ctx, &tunapb.GetStatusRequest{})
 	if err != nil || !state.Paused {
 		t.Fatalf("Swift did not affect the shared broker: %v, %v", state, err)
 	}

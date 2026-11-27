@@ -6,8 +6,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )

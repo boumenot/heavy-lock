@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 )
 
 func TestParseRepository(t *testing.T) {
 	for value, want := range map[string]Repository{
-		"boumenot/heavy-lock":              {Path: "boumenot/heavy-lock"},
-		"GitHub.com/boumenot/heavy-lock":   {Host: "github.com", Path: "boumenot/heavy-lock"},
+		"boumenot/tuna":                    {Path: "boumenot/tuna"},
+		"GitHub.com/boumenot/tuna":         {Host: "github.com", Path: "boumenot/tuna"},
 		"ghe.example:8443/org/repo.name_1": {Host: "ghe.example:8443", Path: "org/repo.name_1"},
 	} {
 		got, err := ParseRepository(value)
@@ -21,7 +21,7 @@ func TestParseRepository(t *testing.T) {
 			t.Errorf("ParseRepository(%q) = %+v, %v; want %+v", value, got, err, want)
 		}
 	}
-	for _, value := range []string{"", "heavy-lock", "a/b/c/d", "localhost/a/b", "a/..", "a/b c", "/a/b", "a/b/"} {
+	for _, value := range []string{"", "tuna", "a/b/c/d", "localhost/a/b", "a/..", "a/b c", "/a/b", "a/b/"} {
 		if _, err := ParseRepository(value); err == nil {
 			t.Errorf("ParseRepository(%q) succeeded", value)
 		}
@@ -30,17 +30,17 @@ func TestParseRepository(t *testing.T) {
 
 func TestParseWorklog(t *testing.T) {
 	for value, want := range map[string]string{
-		"33":                               "33",
-		"boumenot/heavy-lock#33":           "boumenot/heavy-lock#33",
-		"github.com/boumenot/heavy-lock#7": "boumenot/heavy-lock#7",
+		"33":                         "33",
+		"boumenot/tuna#33":           "boumenot/tuna#33",
+		"github.com/boumenot/tuna#7": "boumenot/tuna#7",
 	} {
 		got, err := ParseWorklog(value)
 		if err != nil || got.String() != want {
 			t.Errorf("ParseWorklog(%q) = %v, %v; want %s", value, got, err, want)
 		}
 	}
-	w, _ := ParseWorklog("github.com/boumenot/heavy-lock#7")
-	if w.URL() != "https://github.com/boumenot/heavy-lock/issues/7" {
+	w, _ := ParseWorklog("github.com/boumenot/tuna#7")
+	if w.URL() != "https://github.com/boumenot/tuna/issues/7" {
 		t.Errorf("URL = %q", w.URL())
 	}
 	for _, value := range []string{"", "0", "-1", "x", "#3", "a/b#", "a/b#0", "a#3", "33#"} {
@@ -51,14 +51,14 @@ func TestParseWorklog(t *testing.T) {
 }
 
 func TestParseRemoteURL(t *testing.T) {
-	gh := Repository{Host: "github.com", Path: "boumenot/heavy-lock"}
+	gh := Repository{Host: "github.com", Path: "boumenot/tuna"}
 	for remote, want := range map[string]Repository{
-		"https://github.com/boumenot/heavy-lock.git":       gh,
-		"https://user@github.com/boumenot/heavy-lock/":     gh,
-		"git@github.com:boumenot/heavy-lock.git":           gh,
-		"ssh://git@github.com:22/boumenot/heavy-lock":      gh,
-		"git+ssh://git@GitHub.com/boumenot/heavy-lock.git": gh,
-		"https://ghe.example:8443/org/repo":                {Host: "ghe.example:8443", Path: "org/repo"},
+		"https://github.com/boumenot/tuna.git":       gh,
+		"https://user@github.com/boumenot/tuna/":     gh,
+		"git@github.com:boumenot/tuna.git":           gh,
+		"ssh://git@github.com:22/boumenot/tuna":      gh,
+		"git+ssh://git@GitHub.com/boumenot/tuna.git": gh,
+		"https://ghe.example:8443/org/repo":          {Host: "ghe.example:8443", Path: "org/repo"},
 	} {
 		got, ok := ParseRemoteURL(remote)
 		if !ok || got != want {
@@ -95,19 +95,19 @@ func TestDetectCheckout(t *testing.T) {
 		"rev-parse --verify --quiet HEAD^{commit}": commit,
 		"symbolic-ref --quiet --short HEAD":        "feature",
 		"config --get branch.feature.remote":       "upstream",
-		"remote get-url -- upstream":               "git@github.com:boumenot/heavy-lock.git",
-		"remote get-url -- origin":                 "git@github.com:fork/heavy-lock.git",
+		"remote get-url -- upstream":               "git@github.com:boumenot/tuna.git",
+		"remote get-url -- origin":                 "git@github.com:fork/tuna.git",
 	}))
-	want := Checkout{Repository: Repository{Host: "github.com", Path: "boumenot/heavy-lock"}, Branch: "feature", Commit: commit}
+	want := Checkout{Repository: Repository{Host: "github.com", Path: "boumenot/tuna"}, Branch: "feature", Commit: commit}
 	if got != want {
 		t.Errorf("DetectCheckout = %+v; want %+v", got, want)
 	}
 
 	got = DetectCheckout(context.Background(), "/work", fakeGit(map[string]string{
 		"rev-parse --verify --quiet HEAD^{commit}": commit,
-		"remote get-url -- origin":                 "git@github.com:fork/heavy-lock.git",
+		"remote get-url -- origin":                 "git@github.com:fork/tuna.git",
 	}))
-	if got.Branch != "" || got.Repository.Path != "fork/heavy-lock" {
+	if got.Branch != "" || got.Repository.Path != "fork/tuna" {
 		t.Errorf("detached DetectCheckout = %+v", got)
 	}
 	if got := DetectCheckout(context.Background(), "/elsewhere", fakeGit(nil)); got != (Checkout{}) {
@@ -120,16 +120,16 @@ func env(values map[string]string) func(string) string {
 }
 
 func TestBuild(t *testing.T) {
-	checkout := Checkout{Repository: Repository{Host: "github.com", Path: "boumenot/heavy-lock"}, Branch: "main", Commit: strings.Repeat("b", 40)}
+	checkout := Checkout{Repository: Repository{Host: "github.com", Path: "boumenot/tuna"}, Branch: "main", Commit: strings.Repeat("b", 40)}
 	worklog := Worklog{Number: 33}
 
 	a := Build(Options{Worklog: &worklog}, checkout, env(map[string]string{
 		"COPILOT_AGENT_SESSION_ID": "22caf59c-ccac-4db8-96ac-9723739b61fb",
 		"AI_AGENT":                 CopilotAppAgent,
 	}))
-	if a.GetRepository() != "boumenot/heavy-lock" || a.GetBranch() != "main" || a.GetCommitSha() != checkout.Commit ||
-		a.GetWorklog() != "boumenot/heavy-lock#33" || a.GetAgentSession() != "22caf59c-ccac-4db8-96ac-9723739b61fb" ||
-		a.GetExtra()[RepositoryHostKey] != "github.com" || a.GetExtra()[WorklogURLKey] != "https://github.com/boumenot/heavy-lock/issues/33" ||
+	if a.GetRepository() != "boumenot/tuna" || a.GetBranch() != "main" || a.GetCommitSha() != checkout.Commit ||
+		a.GetWorklog() != "boumenot/tuna#33" || a.GetAgentSession() != "22caf59c-ccac-4db8-96ac-9723739b61fb" ||
+		a.GetExtra()[RepositoryHostKey] != "github.com" || a.GetExtra()[WorklogURLKey] != "https://github.com/boumenot/tuna/issues/33" ||
 		a.GetExtra()[AIAgentKey] != CopilotAppAgent {
 		t.Fatalf("Build = %v", a)
 	}
@@ -146,7 +146,7 @@ func TestBuild(t *testing.T) {
 	}
 
 	// An explicit same repository keeps the detected host and checkout.
-	same := Repository{Path: "Boumenot/Heavy-Lock"}
+	same := Repository{Path: "Boumenot/Tuna"}
 	a = Build(Options{Repository: &same}, checkout, env(nil))
 	if a.GetBranch() != "main" || a.GetExtra()[RepositoryHostKey] != "github.com" {
 		t.Errorf("same-repository Build = %v", a)
@@ -155,7 +155,7 @@ func TestBuild(t *testing.T) {
 	// A qualified worklog in another repository is kept as given.
 	qualified := Worklog{Repository: Repository{Host: "ghe.example", Path: "org/plans"}, Number: 4}
 	a = Build(Options{Worklog: &qualified}, checkout, env(nil))
-	if a.GetWorklog() != "org/plans#4" || a.GetExtra()[WorklogURLKey] != "https://ghe.example/org/plans/issues/4" || a.GetRepository() != "boumenot/heavy-lock" {
+	if a.GetWorklog() != "org/plans#4" || a.GetExtra()[WorklogURLKey] != "https://ghe.example/org/plans/issues/4" || a.GetRepository() != "boumenot/tuna" {
 		t.Errorf("qualified Build = %v", a)
 	}
 
@@ -182,11 +182,11 @@ func TestLinkWorklog(t *testing.T) {
 		a    *pb.Attribution
 		want WorklogLink
 	}{
-		{"recorded", &pb.Attribution{Worklog: str("boumenot/heavy-lock#33"), Repository: str("boumenot/heavy-lock"),
-			Extra: map[string]string{RepositoryHostKey: "github.com", WorklogURLKey: "https://github.com/boumenot/heavy-lock/issues/33"}},
-			WorklogLink{Label: "boumenot/heavy-lock#33", URL: "https://github.com/boumenot/heavy-lock/issues/33", Repo: "github.com/boumenot/heavy-lock", Number: 33}},
-		{"legacy with repository", &pb.Attribution{Worklog: str("16"), Repository: str("boumenot/heavy-lock"), Extra: map[string]string{RepositoryHostKey: "github.com"}},
-			WorklogLink{Label: "boumenot/heavy-lock#16", URL: "https://github.com/boumenot/heavy-lock/issues/16", Repo: "github.com/boumenot/heavy-lock", Number: 16}},
+		{"recorded", &pb.Attribution{Worklog: str("boumenot/tuna#33"), Repository: str("boumenot/tuna"),
+			Extra: map[string]string{RepositoryHostKey: "github.com", WorklogURLKey: "https://github.com/boumenot/tuna/issues/33"}},
+			WorklogLink{Label: "boumenot/tuna#33", URL: "https://github.com/boumenot/tuna/issues/33", Repo: "github.com/boumenot/tuna", Number: 33}},
+		{"legacy with repository", &pb.Attribution{Worklog: str("16"), Repository: str("boumenot/tuna"), Extra: map[string]string{RepositoryHostKey: "github.com"}},
+			WorklogLink{Label: "boumenot/tuna#16", URL: "https://github.com/boumenot/tuna/issues/16", Repo: "github.com/boumenot/tuna", Number: 16}},
 		{"legacy bare", &pb.Attribution{Worklog: str("16")}, WorklogLink{Label: "16", Number: 16}},
 		{"free text", &pb.Attribution{Worklog: str("plan A")}, WorklogLink{Label: "plan A"}},
 		{"unsafe url", &pb.Attribution{Worklog: str("a/b#1"), Extra: map[string]string{WorklogURLKey: "javascript:alert(1)"}},

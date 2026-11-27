@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
-	"github.com/boumenot/heavy-lock/apps/tuna/jobmetrics"
-	"github.com/boumenot/heavy-lock/apps/tuna/procid"
-	"github.com/boumenot/heavy-lock/apps/tuna/storage"
+	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
+	"github.com/boumenot/tuna/apps/tuna/jobmetrics"
+	"github.com/boumenot/tuna/apps/tuna/procid"
+	"github.com/boumenot/tuna/apps/tuna/storage"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

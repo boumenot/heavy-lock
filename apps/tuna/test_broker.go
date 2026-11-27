@@ -7,7 +7,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/service"
+	"github.com/boumenot/tuna/apps/tuna/service"
 )
 
 // A tuna_test_broker build serves integration tests outside this package,

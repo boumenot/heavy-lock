@@ -1,5 +1,5 @@
 import Foundation
-import HeavyLockV2
+import TunaContract
 
 /// The monitor's last known broker state. Everything except `connection`
 /// describes past observations; only a `.live` connection means it is
@@ -12,7 +12,7 @@ public struct MonitorState: Equatable, Sendable {
         case live
         /// The broker could not be reached or the stream failed.
         case unavailable(String)
-        /// Something answered that is not a compatible heavy-lock v2 broker.
+        /// Something answered that is not a compatible Tuna broker.
         case incompatible(String)
         /// The broker is running but its durable state failed, so it holds
         /// every admission and cannot stream events until it is restarted.
@@ -32,18 +32,18 @@ public struct MonitorState: Equatable, Sendable {
     public static let recentLimit = 20
 
     public var connection: Connection = .connecting
-    public var health: Heavylock_V2_Health?
-    public var status: Heavylock_V2_BrokerStatus?
+    public var health: Tuna_Health?
+    public var status: Tuna_BrokerStatus?
     /// Queue order, head first.
-    public var queue: [Heavylock_V2_Job] = []
-    public var headBlockedReason: Heavylock_V2_BlockedReason = .unspecified
+    public var queue: [Tuna_Job] = []
+    public var headBlockedReason: Tuna_BlockedReason = .unspecified
     /// The broker's operational queue state, from whichever status or queue
     /// event arrived last; both carry the state at their commit.
-    public var queueState: Heavylock_V2_QueueState = .unspecified
+    public var queueState: Tuna_QueueState = .unspecified
     /// Reserved, running and finishing jobs.
-    public var active: [Heavylock_V2_Job] = []
+    public var active: [Tuna_Job] = []
     /// Retained finished jobs, newest first.
-    public var recent: [Heavylock_V2_Job] = []
+    public var recent: [Tuna_Job] = []
     /// The last broker event sequence reflected; 0 before the first snapshot.
     public var lastEventSeq: Int64 = 0
     /// When the last stream message (including a heartbeat) arrived.
@@ -61,7 +61,7 @@ public struct MonitorState: Equatable, Sendable {
 
     /// The queue state to show now: the broker's own while live, `.error`
     /// when it reports failed storage and `.unspecified` (unknown) otherwise.
-    public var currentQueueState: Heavylock_V2_QueueState {
+    public var currentQueueState: Tuna_QueueState {
         switch self.connection {
         case .live: self.queueState
         case .brokerError: .error
@@ -79,7 +79,7 @@ public struct MonitorState: Equatable, Sendable {
 
     /// Applies one event from `WatchEvents`. Sequence checks are repeated here
     /// so a missing event is never silently skipped.
-    public mutating func apply(_ event: Heavylock_V2_BrokerEvent, at time: Date) -> ApplyResult {
+    public mutating func apply(_ event: Tuna_BrokerEvent, at time: Date) -> ApplyResult {
         switch event.event {
         case .snapshot(let snapshot):
             self.status = snapshot.status
@@ -134,11 +134,11 @@ public struct MonitorState: Equatable, Sendable {
         self.notice = notice
     }
 
-    public mutating func setRecent(_ jobs: [Heavylock_V2_Job]) {
+    public mutating func setRecent(_ jobs: [Tuna_Job]) {
         self.recent = Array(jobs.filter { $0.state == .finished }.prefix(Self.recentLimit))
     }
 
-    private mutating func update(_ job: Heavylock_V2_Job) {
+    private mutating func update(_ job: Tuna_Job) {
         switch job.state {
         case .queued:
             self.active.removeAll { $0.jobID == job.jobID }
@@ -169,7 +169,7 @@ public struct MonitorState: Equatable, Sendable {
         self.recent.removeAll { $0.jobID == id }
     }
 
-    private static func sortedActive(_ jobs: [Heavylock_V2_Job]) -> [Heavylock_V2_Job] {
+    private static func sortedActive(_ jobs: [Tuna_Job]) -> [Tuna_Job] {
         jobs.sorted {
             ($0.hasAdmittedAt ? $0.admittedAt.seconds : Int64.max,
                 $0.hasAdmittedAt ? $0.admittedAt.nanos : Int32.max, $0.jobID)

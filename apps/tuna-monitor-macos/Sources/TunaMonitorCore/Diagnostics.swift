@@ -1,5 +1,5 @@
 import Foundation
-import HeavyLockV2
+import TunaContract
 
 /// Whether the opt-in, read-only diagnostics endpoint should listen:
 /// `--diagnostics-port N`, then `TUNA_MONITOR_DIAGNOSTICS_PORT`, otherwise off.

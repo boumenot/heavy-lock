@@ -13,13 +13,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/boumenot/heavy-lock/apps/tuna/attribution"
-	"github.com/boumenot/heavy-lock/apps/tuna/cli"
-	"github.com/boumenot/heavy-lock/apps/tuna/contract"
-	"github.com/boumenot/heavy-lock/apps/tuna/runner"
-	"github.com/boumenot/heavy-lock/apps/tuna/scheduler"
-	"github.com/boumenot/heavy-lock/apps/tuna/service"
-	"github.com/boumenot/heavy-lock/apps/tuna/transport"
+	"github.com/boumenot/tuna/apps/tuna/attribution"
+	"github.com/boumenot/tuna/apps/tuna/cli"
+	"github.com/boumenot/tuna/apps/tuna/contract"
+	"github.com/boumenot/tuna/apps/tuna/runner"
+	"github.com/boumenot/tuna/apps/tuna/scheduler"
+	"github.com/boumenot/tuna/apps/tuna/service"
+	"github.com/boumenot/tuna/apps/tuna/transport"
 )
 
 // version identifies this build to the broker and in client attribution.
@@ -41,7 +41,7 @@ const (
 		"       tuna service [options]\n" +
 		"       tuna <control> [options]\n\n" +
 		"Runner options:\n" +
-		"  --port <port>          v2 broker port on 127.0.0.1 (required)\n" +
+		"  --port <port>          broker port on 127.0.0.1 (required)\n" +
 		"  --weight <weight>      heavy (default), light, or a positive integer\n" +
 		"  --repository <repo>    attribute the job to [HOST/]OWNER/NAME instead of\n" +
 		"                         the working directory's git remote\n" +

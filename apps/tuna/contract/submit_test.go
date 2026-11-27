@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	tunapb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -12,27 +12,27 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-func sampleSubmission() *heavylockv2.SubmitJobRequest {
-	return &heavylockv2.SubmitJobRequest{
+func sampleSubmission() *tunapb.SubmitJobRequest {
+	return &tunapb.SubmitJobRequest{
 		IdempotencyKey: "key-one",
 		Command:        "echo 'hello world'",
 		Cwd:            proto.String("/work"),
 		Weight:         2,
-		Client:         &heavylockv2.ClientInfo{Name: proto.String("tuna"), Os: heavylockv2.ClientOS_CLIENT_OS_MACOS},
-		Attribution: &heavylockv2.Attribution{
+		Client:         &tunapb.ClientInfo{Name: proto.String("tuna"), Os: tunapb.ClientOS_CLIENT_OS_MACOS},
+		Attribution: &tunapb.Attribution{
 			Repository: proto.String("example/repo"),
 			Extra:      map[string]string{"z": "last", "a": "first"},
 		},
-		Runner: &heavylockv2.RunnerIncarnation{
+		Runner: &tunapb.RunnerIncarnation{
 			IncarnationId: "runner",
-			Process:       &heavylockv2.ProcessIdentity{Pid: 10, StartTime: Timestamp(12345)},
+			Process:       &tunapb.ProcessIdentity{Pid: 10, StartTime: Timestamp(12345)},
 		},
 	}
 }
 
 func TestCanonicalSubmitEquivalence(t *testing.T) {
 	original := sampleSubmission()
-	equivalent := proto.Clone(original).(*heavylockv2.SubmitJobRequest)
+	equivalent := proto.Clone(original).(*tunapb.SubmitJobRequest)
 	equivalent.IdempotencyKey = "another-key"
 	equivalent.Attribution.Extra = map[string]string{}
 	equivalent.Attribution.Extra["a"] = "first"
@@ -42,8 +42,8 @@ func TestCanonicalSubmitEquivalence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", want); got != "d70be78425abf884cb4697188648ed24f0eb867c9b196965bf7abf7618abb08f" {
-		t.Fatalf("canonical-v1 fingerprint changed: %s", got)
+	if got := fmt.Sprintf("%x", want); got != "bed23e6c8421c1a80b47c65c491ebb3393a31dc5aa31944fda82a78db4438aec" {
+		t.Fatalf("canonical fingerprint changed: %s", got)
 	}
 	got, err := CanonicalSubmitHash(equivalent, AdmissionQueued)
 	if err != nil {
@@ -53,12 +53,12 @@ func TestCanonicalSubmitEquivalence(t *testing.T) {
 		t.Fatal("map order and the lookup key must not change the payload hash")
 	}
 
-	withoutMetadata := proto.Clone(original).(*heavylockv2.SubmitJobRequest)
+	withoutMetadata := proto.Clone(original).(*tunapb.SubmitJobRequest)
 	withoutMetadata.Client = nil
 	withoutMetadata.Attribution = nil
-	emptyMetadata := proto.Clone(withoutMetadata).(*heavylockv2.SubmitJobRequest)
-	emptyMetadata.Client = &heavylockv2.ClientInfo{}
-	emptyMetadata.Attribution = &heavylockv2.Attribution{Extra: map[string]string{}}
+	emptyMetadata := proto.Clone(withoutMetadata).(*tunapb.SubmitJobRequest)
+	emptyMetadata.Client = &tunapb.ClientInfo{}
+	emptyMetadata.Attribution = &tunapb.Attribution{Extra: map[string]string{}}
 	withoutHash, err := CanonicalSubmitHash(withoutMetadata, AdmissionQueued)
 	if err != nil {
 		t.Fatal(err)
@@ -81,20 +81,20 @@ func TestCanonicalSubmitDetectsConflicts(t *testing.T) {
 	tests := []struct {
 		name   string
 		mode   AdmissionMode
-		change func(*heavylockv2.SubmitJobRequest)
+		change func(*tunapb.SubmitJobRequest)
 	}{
 		{name: "admission mode", mode: AdmissionNoWait},
-		{name: "command", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Command += "!" }},
-		{name: "optional presence", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Cwd = nil }},
-		{name: "metadata", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Attribution.Extra["a"] = "changed" }},
-		{name: "runner incarnation", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Runner.Process.StartTime.Nanos++ }},
-		{name: "os version", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Client.OsVersion = proto.String("26.1") }},
-		{name: "empty os version", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.Client.OsVersion = proto.String("") }},
-		{name: "retry lineage", mode: AdmissionQueued, change: func(r *heavylockv2.SubmitJobRequest) { r.RetryOfJobId = proto.String("predecessor") }},
+		{name: "command", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.Command += "!" }},
+		{name: "optional presence", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.Cwd = nil }},
+		{name: "metadata", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.Attribution.Extra["a"] = "changed" }},
+		{name: "runner incarnation", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.Runner.Process.StartTime.Nanos++ }},
+		{name: "os version", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.Client.OsVersion = proto.String("26.1") }},
+		{name: "empty os version", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.Client.OsVersion = proto.String("") }},
+		{name: "retry lineage", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.RetryOfJobId = proto.String("predecessor") }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			changed := proto.Clone(original).(*heavylockv2.SubmitJobRequest)
+			changed := proto.Clone(original).(*tunapb.SubmitJobRequest)
 			if tt.change != nil {
 				tt.change(changed)
 			}
@@ -131,7 +131,7 @@ func TestCanonicalSubmitRejectsUnknownOrInvalidInput(t *testing.T) {
 func TestCanonicalSubmitRejectsNewPopulatedFields(t *testing.T) {
 	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
 		Name:    proto.String("future.proto"),
-		Package: proto.String("heavylock.v2"),
+		Package: proto.String("tuna"),
 		Syntax:  proto.String("proto3"),
 		MessageType: []*descriptorpb.DescriptorProto{{
 			Name: proto.String("SubmitJobRequest"),

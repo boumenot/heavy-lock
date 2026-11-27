@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	heavylockv2 "github.com/boumenot/heavy-lock/apps/tuna/gen/heavylock/v2"
+	tunapb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -21,7 +21,7 @@ const (
 	AdmissionNoWait AdmissionMode = 2
 )
 
-func CanonicalSubmitHash(request *heavylockv2.SubmitJobRequest, mode AdmissionMode) ([32]byte, error) {
+func CanonicalSubmitHash(request *tunapb.SubmitJobRequest, mode AdmissionMode) ([32]byte, error) {
 	if request == nil {
 		return [32]byte{}, errors.New("submission is required")
 	}
@@ -35,15 +35,15 @@ func CanonicalSubmitHash(request *heavylockv2.SubmitJobRequest, mode AdmissionMo
 		return [32]byte{}, fmt.Errorf("invalid submission: %w", err)
 	}
 
-	// This versioned encoding is independent of protobuf map and wire ordering.
-	encoded := append([]byte("heavylock.v2.submit.canonical-v1\x00"), byte(mode))
+	// This encoding is independent of protobuf map and wire ordering.
+	encoded := append([]byte("tuna.submit.canonical\x00"), byte(mode))
 	encoded = appendString(encoded, request.Command)
 	encoded = appendOptionalString(encoded, request.Cwd)
 	encoded = binary.BigEndian.AppendUint32(encoded, request.Weight)
 
 	client := request.Client
 	if client == nil {
-		client = &heavylockv2.ClientInfo{}
+		client = &tunapb.ClientInfo{}
 	}
 	encoded = appendOptionalString(encoded, client.Name)
 	encoded = appendOptionalString(encoded, client.Version)
@@ -52,7 +52,7 @@ func CanonicalSubmitHash(request *heavylockv2.SubmitJobRequest, mode AdmissionMo
 
 	attribution := request.Attribution
 	if attribution == nil {
-		attribution = &heavylockv2.Attribution{}
+		attribution = &tunapb.Attribution{}
 	}
 	for _, field := range []*string{
 		attribution.Repository,
@@ -95,7 +95,7 @@ func CanonicalSubmitHash(request *heavylockv2.SubmitJobRequest, mode AdmissionMo
 		}
 	}
 	encoded = appendOptionalString(encoded, request.RetryOfJobId)
-	// Fields added after canonical-v1 follow as named extensions only when
+	// Fields added after the original encoding follow as named extensions only when
 	// present, so hashes of earlier submissions remain unchanged.
 	if client.OsVersion != nil {
 		encoded = appendString(encoded, "client.os_version")
@@ -149,13 +149,13 @@ func hasUnknownFields(message protoreflect.Message) bool {
 	}
 	var lastSupported protoreflect.FieldNumber
 	switch message.Descriptor().FullName() {
-	case "heavylock.v2.SubmitJobRequest":
+	case "tuna.SubmitJobRequest":
 		lastSupported = 8
-	case "heavylock.v2.ClientInfo":
+	case "tuna.ClientInfo":
 		lastSupported = 5
-	case "heavylock.v2.Attribution":
+	case "tuna.Attribution":
 		lastSupported = 9
-	case "heavylock.v2.RunnerIncarnation", "heavylock.v2.ProcessIdentity", "google.protobuf.Timestamp":
+	case "tuna.RunnerIncarnation", "tuna.ProcessIdentity", "google.protobuf.Timestamp":
 		lastSupported = 2
 	default:
 		return true
