@@ -295,6 +295,93 @@ import Testing
         #expect(await eventually { session.state.isLive })
     }
 
+    @Test func unknownReplayedEventRequiresFreshSnapshot() async throws {
+        let broker = FakeBroker()
+        var known = status()
+        known.queueMode = .enabled
+        let (session, first) = await self.liveSession(broker, snapshot: snapshotEvent(seq: 3, status: known))
+        defer { session.stop() }
+        #expect(session.state.isLive)
+
+        let resumed = broker.openStream()
+        first.finish(throwing: BrokerFailure(code: "unavailable", message: "disconnected"))
+        #expect(await eventually { !session.state.isLive })
+        #expect(await eventually { broker.snapshot.watches == [0, 3] })
+        #expect(broker.snapshot.healthChecks >= 2)
+
+        // Field 20 represents an event oneof case unknown to these bindings.
+        let future = try Heavylock_V2_BrokerEvent(serializedBytes: Data([0x08, 0x04, 0xa2, 0x01, 0x00]))
+        #expect(future.event == nil)
+        let refreshed = broker.openStream()
+        resumed.yield(future)
+        #expect(await eventually { broker.snapshot.watches == [0, 3, 0] })
+        #expect(!session.state.isLive)
+        #expect(session.state.lastEventSeq == 0)
+        #expect(!session.state.hasSnapshot)
+        #expect(session.state.status?.queueMode == .enabled)
+        #expect(session.state.notice?.contains("unrecognized") == true)
+        let banner = Presentation.banner(session.state, port: 1, now: Date())
+        #expect(banner.tone == .error)
+        #expect(banner.detail?.contains("it is not live") == true)
+        session.request(.pause)
+        #expect(broker.snapshot.performed.isEmpty)
+        #expect(session.state.controlError != nil)
+        var paused = status()
+        paused.queueMode = .paused
+        refreshed.yield(snapshotEvent(seq: 4, status: paused))
+        #expect(await eventually { session.state.isLive && session.state.status?.queueMode == .paused })
+    }
+
+    @Test func unknownLiveEventImmediatelyInvalidatesCachedState() async throws {
+        let broker = FakeBroker()
+        let (session, stream) = await self.liveSession(broker, snapshot: snapshotEvent(seq: 3))
+        defer { session.stop() }
+        let refreshed = broker.openStream()
+        let future = try Heavylock_V2_BrokerEvent(serializedBytes: Data([0x08, 0x04, 0xa2, 0x01, 0x00]))
+        stream.yield(future)
+        #expect(await eventually { broker.snapshot.watches == [0, 0] })
+        #expect(!session.state.isLive)
+        #expect(!session.state.hasSnapshot)
+        #expect(session.state.lastEventSeq == 0)
+        refreshed.yield(snapshotEvent(seq: 4))
+        #expect(await eventually { session.state.isLive && session.state.lastEventSeq == 4 })
+    }
+
+    @Test func emptyFirstEventRequiresFreshSnapshot() async {
+        let broker = FakeBroker()
+        let stream = broker.openStream()
+        let refreshed = broker.openStream()
+        let session = MonitorSession(client: broker, reconnectDelay: .milliseconds(20))
+        session.start()
+        defer { session.stop() }
+
+        stream.yield(Heavylock_V2_BrokerEvent())
+        #expect(await eventually { broker.snapshot.watches == [0, 0] })
+        #expect(!session.state.isLive)
+        #expect(!session.state.hasSnapshot)
+        #expect(session.state.lastEventSeq == 0)
+        #expect(session.state.notice?.contains("unrecognized") == true)
+        refreshed.yield(snapshotEvent(seq: 1))
+        #expect(await eventually { session.state.isLive && session.state.hasSnapshot })
+    }
+
+    @Test func unrecognizedEventRetriesWithReconnectDelay() async {
+        let broker = FakeBroker()
+        let stream = broker.openStream()
+        _ = broker.openStream()
+        let session = MonitorSession(client: broker, reconnectDelay: .milliseconds(500))
+        session.start()
+        defer { session.stop() }
+
+        stream.yield(Heavylock_V2_BrokerEvent())
+        #expect(await eventually { session.state.connection == .unavailable("unrecognized broker event; refreshing") })
+        let observedAt = ContinuousClock.now
+        #expect(broker.snapshot.watches == [0])
+        #expect(await eventually { broker.snapshot.watches == [0, 0] })
+        #expect(ContinuousClock.now - observedAt >= .milliseconds(350))
+        #expect(!session.state.isLive)
+    }
+
     @Test func brokerWithoutExplicitQueueStateIsIncompatible() async {
         var health = FakeBroker.liveHealth()
         health.serviceVersion = "2.0.0"

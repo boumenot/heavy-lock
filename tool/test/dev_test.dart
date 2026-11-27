@@ -213,6 +213,27 @@ void main() {
         expect(shell.calls.last, contains('RunnerFinishSafety'));
         expect(shell.calls.last, contains('RunnerFinishBlocking'));
         expect(shell.calls.last, contains('RunnerFinishDropped'));
+        expect(
+          shell.calls.last,
+          containsAll([
+            'MonitorDelivery',
+            'MonitorLoss',
+            'MonitorRestart',
+            'MonitorStorage',
+            'MonitorGap',
+            'MonitorUnknownSafe',
+            'MonitorEmptySafe',
+            'MonitorStaleLive',
+            'MonitorStaleMode',
+            'MonitorUnknownMode',
+            'MonitorBlindReplay',
+            'MonitorUnknownEvent',
+            'MonitorEmptyFirst',
+            'MonitorReplayReached',
+            'MonitorGapReached',
+            '--timeout',
+          ]),
+        );
 
         shell.calls.clear();
         shell.failing.add('python3 $root/docs/v2/model/check.py');

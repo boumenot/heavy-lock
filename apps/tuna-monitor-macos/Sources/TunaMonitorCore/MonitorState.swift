@@ -25,6 +25,8 @@ public struct MonitorState: Equatable, Sendable {
         case duplicate
         /// One or more events are missing; state must be refreshed from a snapshot.
         case gap
+        /// The event is empty or uses a oneof case this monitor does not understand.
+        case unrecognized
     }
 
     public static let recentLimit = 20
@@ -94,7 +96,7 @@ public struct MonitorState: Equatable, Sendable {
             self.lastUpdate = time
             return .applied
         case nil:
-            return .applied
+            return .unrecognized
         default:
             break
         }

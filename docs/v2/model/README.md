@@ -5,6 +5,9 @@ broker code or a proof of an implementation. The design record distinguishes
 user decisions from the model's simplifying assumptions and proposed RPC and
 storage layouts.
 
+The separate [monitor freshness model](MonitorFreshness.md) covers the
+broker-to-monitor stream, observed health, replay and stale presentation.
+
 ## Tooling and reproduction
 
 The pinned Nix shell includes `pkgs.tlaplus18` (TLA+ 1.8.0, TLC 2.18) and

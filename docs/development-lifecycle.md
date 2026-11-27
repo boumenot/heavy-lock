@@ -79,12 +79,12 @@ build/heavy-lock/heavy-lock-status --json
 the v2 monitor's broker integration test runs when
 `build/tuna/tuna-test-broker` exists, which `check all` builds first); use `build`,
 `test` or `check` with a target name for one application. The `tuna` test
-target also runs the bounded descendant-discovery and finish-report models
-and their witnesses; TLC logs go under `build/tuna-model`. Focused tests run
-directly, e.g. `cd tool && dart test` for the orchestrator. Regenerate v2
-bindings with `heavy-lock -- nix develop -c tool/generate_v2.sh`, or add
-`--check` to verify them. The opt-in Swift gRPC interoperability probe in
-the [README](../README.md#v2-prototype-and-contract-bindings) is an
+target also runs the bounded descendant-discovery, finish-report and monitor
+freshness models and their witnesses; TLC logs go under `build/tuna-model`.
+Focused tests run directly, e.g. `cd tool && dart test` for the orchestrator.
+Regenerate v2 bindings with `heavy-lock -- nix develop -c tool/generate_v2.sh`,
+or add `--check` to verify them. The opt-in Swift gRPC interoperability probe
+in the [README](../README.md#v2-prototype-and-contract-bindings) is an
 integration test and also uses the shared lock.
 
 If the installed runner is unavailable, replace `heavy-lock` with
