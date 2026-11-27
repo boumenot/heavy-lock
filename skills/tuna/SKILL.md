@@ -1,5 +1,5 @@
 ---
-name: heavy-work
+name: tuna
 description: Run heavy builds, full or coverage test suites, integration tests, benchmarks, and emulators through the shared tuna broker so parallel sessions do not overload this Mac.
 ---
 

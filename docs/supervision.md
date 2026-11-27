@@ -87,7 +87,7 @@ launchctl print "gui/$(id -u)/$label"
 tail -n 50 "$log"
 ```
 
-Clients and the heavy-work skill run `/Users/boumenot/.local/bin/tuna`; link
+Clients and the `tuna` skill run `/Users/boumenot/.local/bin/tuna`; link
 it to the installed executable once (`mkdir -p ~/.local/bin && ln -s "$bin"
 ~/.local/bin/tuna`) when that path does not already exist.
 

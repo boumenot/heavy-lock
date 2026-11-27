@@ -34,7 +34,7 @@ conversion stays for databases written by earlier builds.
 Keep repository worklog and verification/TDD/debug/review skills without
 fixed-model gates. "Implement/ship/merge/land #N" authorizes the
 `ship-worklog` loop; the lifecycle's shipping criteria add this
-repository's gates. [skills/heavy-work](../skills/heavy-work/SKILL.md) is the
+repository's gates. [skills/tuna](../skills/tuna/SKILL.md) is the
 portable consumer template for the installed `tuna` runner, and
 [skills/list-worklogs](../skills/list-worklogs/SKILL.md) a read-only
 worklog-list template. Every repository invoker of heavy work uses the

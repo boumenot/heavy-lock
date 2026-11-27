@@ -440,7 +440,7 @@ not process-tree cancellation or recovery.
 
 ## Global Copilot skill
 
-The portable consumer skill is [skills/heavy-work/SKILL.md](skills/heavy-work/SKILL.md).
+The portable consumer skill is [skills/tuna/SKILL.md](skills/tuna/SKILL.md).
 It runs the installed runner by absolute path,
 `/Users/boumenot/.local/bin/tuna --port 49783 -- <command>`, so install the
 broker and that link first ([supervision](docs/supervision.md#install)).
@@ -448,18 +448,20 @@ Then, from this checkout, choose **one** of:
 
 ```bash
 # Copy (repeat after upgrades):
-mkdir -p "$HOME/.copilot/skills/heavy-work"
-cp skills/heavy-work/SKILL.md "$HOME/.copilot/skills/heavy-work/SKILL.md"
+mkdir -p "$HOME/.copilot/skills/tuna"
+cp skills/tuna/SKILL.md "$HOME/.copilot/skills/tuna/SKILL.md"
 
 # Or symlink (only if the destination does not already exist):
 mkdir -p "$HOME/.copilot/skills"
-ln -s "$PWD/skills/heavy-work" "$HOME/.copilot/skills/heavy-work"
+ln -s "$PWD/skills/tuna" "$HOME/.copilot/skills/tuna"
 ```
 
-Back up an existing personal skill before replacing it. Do not use `ln -sf`
-over an existing directory. A symlink needs this checkout to remain at a
-stable absolute path. Restart/reload Copilot and invoke `/heavy-work` to
-confirm discovery. Other agent products have different skill directories.
+Back up an existing personal skill before replacing it. If you previously
+installed `heavy-work`, remove or disable that old skill after installing
+`tuna` so both are not loaded. Do not use `ln -sf` over an existing directory.
+A symlink needs this checkout to remain at a stable absolute path.
+Restart/reload Copilot and invoke `/tuna` to confirm discovery. Other agent
+products have different skill directories.
 
 [skills/list-worklogs](skills/list-worklogs/) is an optional portable
 read-only queue skill; install it the same way into
