@@ -300,6 +300,11 @@ func (c *Control) WatchEvents(req *pb.WatchEventsRequest, stream grpc.ServerStre
 			return controlError(storage.ErrEventsExpired)
 		default:
 		}
+		// A failed write publishes no event, so end the stream instead of
+		// heartbeating stale live state; clients reconnect and read Health.
+		if failure := c.store.Failure(); failure != nil {
+			return controlError(errors.Join(storage.ErrUnavailable, failure))
+		}
 		select {
 		case <-stream.Context().Done():
 			return stream.Context().Err()
