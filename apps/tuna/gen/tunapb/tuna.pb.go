@@ -2984,23 +2984,25 @@ type BrokerStatus struct {
 	// QUEUE_MODE_PAUSED, for older clients.
 	//
 	// Deprecated: Marked as deprecated in tuna.proto.
-	Paused             bool                   `protobuf:"varint,3,opt,name=paused,proto3" json:"paused,omitempty"`
-	PausedAt           *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=paused_at,json=pausedAt,proto3" json:"paused_at,omitempty"` // set while queue_mode is PAUSED
-	Recovering         bool                   `protobuf:"varint,5,opt,name=recovering,proto3" json:"recovering,omitempty"`
-	QueuedJobs         uint32                 `protobuf:"varint,6,opt,name=queued_jobs,json=queuedJobs,proto3" json:"queued_jobs,omitempty"`
-	RunningJobs        uint32                 `protobuf:"varint,7,opt,name=running_jobs,json=runningJobs,proto3" json:"running_jobs,omitempty"`
-	HeadBlockedReason  BlockedReason          `protobuf:"varint,8,opt,name=head_blocked_reason,json=headBlockedReason,proto3,enum=tuna.BlockedReason" json:"head_blocked_reason,omitempty"`
-	FreeMemoryBytes    *int64                 `protobuf:"varint,9,opt,name=free_memory_bytes,json=freeMemoryBytes,proto3,oneof" json:"free_memory_bytes,omitempty"`
-	LoadAverage_1M     *float64               `protobuf:"fixed64,10,opt,name=load_average_1m,json=loadAverage1m,proto3,oneof" json:"load_average_1m,omitempty"` // only this interval controls admission
-	StorageUnavailable bool                   `protobuf:"varint,11,opt,name=storage_unavailable,json=storageUnavailable,proto3" json:"storage_unavailable,omitempty"`
+	Paused            bool                   `protobuf:"varint,3,opt,name=paused,proto3" json:"paused,omitempty"`
+	PausedAt          *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=paused_at,json=pausedAt,proto3" json:"paused_at,omitempty"` // set while queue_mode is PAUSED
+	Recovering        bool                   `protobuf:"varint,5,opt,name=recovering,proto3" json:"recovering,omitempty"`
+	QueuedJobs        uint32                 `protobuf:"varint,6,opt,name=queued_jobs,json=queuedJobs,proto3" json:"queued_jobs,omitempty"`
+	RunningJobs       uint32                 `protobuf:"varint,7,opt,name=running_jobs,json=runningJobs,proto3" json:"running_jobs,omitempty"`
+	HeadBlockedReason BlockedReason          `protobuf:"varint,8,opt,name=head_blocked_reason,json=headBlockedReason,proto3,enum=tuna.BlockedReason" json:"head_blocked_reason,omitempty"`
+	FreeMemoryBytes   *int64                 `protobuf:"varint,9,opt,name=free_memory_bytes,json=freeMemoryBytes,proto3,oneof" json:"free_memory_bytes,omitempty"`
+	// Keep declarations adjacent for readable JSON; retain their wire numbers.
+	// Only the 1-minute interval controls admission.
+	LoadAverage_1M     *float64 `protobuf:"fixed64,10,opt,name=load_average_1m,json=loadAverage1m,proto3,oneof" json:"load_average_1m,omitempty"`
+	LoadAverage_5M     *float64 `protobuf:"fixed64,16,opt,name=load_average_5m,json=loadAverage5m,proto3,oneof" json:"load_average_5m,omitempty"`    // informational
+	LoadAverage_15M    *float64 `protobuf:"fixed64,17,opt,name=load_average_15m,json=loadAverage15m,proto3,oneof" json:"load_average_15m,omitempty"` // informational
+	StorageUnavailable bool     `protobuf:"varint,11,opt,name=storage_unavailable,json=storageUnavailable,proto3" json:"storage_unavailable,omitempty"`
 	// Held reservations not yet reconciled since the last broker restart.
 	// They count toward occupied but do not block unrelated admissions.
 	UnreconciledReservations uint32     `protobuf:"varint,12,opt,name=unreconciled_reservations,json=unreconciledReservations,proto3" json:"unreconciled_reservations,omitempty"`
 	BackfillLimit            uint32     `protobuf:"varint,13,opt,name=backfill_limit,json=backfillLimit,proto3" json:"backfill_limit,omitempty"`             // per-head bypass limit; 0 is strict FIFO
 	QueueMode                QueueMode  `protobuf:"varint,14,opt,name=queue_mode,json=queueMode,proto3,enum=tuna.QueueMode" json:"queue_mode,omitempty"`     // since API 2.1
 	QueueState               QueueState `protobuf:"varint,15,opt,name=queue_state,json=queueState,proto3,enum=tuna.QueueState" json:"queue_state,omitempty"` // since API 2.1
-	LoadAverage_5M           *float64   `protobuf:"fixed64,16,opt,name=load_average_5m,json=loadAverage5m,proto3,oneof" json:"load_average_5m,omitempty"`    // informational
-	LoadAverage_15M          *float64   `protobuf:"fixed64,17,opt,name=load_average_15m,json=loadAverage15m,proto3,oneof" json:"load_average_15m,omitempty"` // informational
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -3106,6 +3108,20 @@ func (x *BrokerStatus) GetLoadAverage_1M() float64 {
 	return 0
 }
 
+func (x *BrokerStatus) GetLoadAverage_5M() float64 {
+	if x != nil && x.LoadAverage_5M != nil {
+		return *x.LoadAverage_5M
+	}
+	return 0
+}
+
+func (x *BrokerStatus) GetLoadAverage_15M() float64 {
+	if x != nil && x.LoadAverage_15M != nil {
+		return *x.LoadAverage_15M
+	}
+	return 0
+}
+
 func (x *BrokerStatus) GetStorageUnavailable() bool {
 	if x != nil {
 		return x.StorageUnavailable
@@ -3139,20 +3155,6 @@ func (x *BrokerStatus) GetQueueState() QueueState {
 		return x.QueueState
 	}
 	return QueueState_QUEUE_STATE_UNSPECIFIED
-}
-
-func (x *BrokerStatus) GetLoadAverage_5M() float64 {
-	if x != nil && x.LoadAverage_5M != nil {
-		return *x.LoadAverage_5M
-	}
-	return 0
-}
-
-func (x *BrokerStatus) GetLoadAverage_15M() float64 {
-	if x != nil && x.LoadAverage_15M != nil {
-		return *x.LoadAverage_15M
-	}
-	return 0
 }
 
 type GetQueueRequest struct {
@@ -4487,16 +4489,16 @@ const file_tuna_proto_rawDesc = "" +
 	"\x13head_blocked_reason\x18\b \x01(\x0e2\x13.tuna.BlockedReasonR\x11headBlockedReason\x12/\n" +
 	"\x11free_memory_bytes\x18\t \x01(\x03H\x00R\x0ffreeMemoryBytes\x88\x01\x01\x12+\n" +
 	"\x0fload_average_1m\x18\n" +
-	" \x01(\x01H\x01R\rloadAverage1m\x88\x01\x01\x12/\n" +
+	" \x01(\x01H\x01R\rloadAverage1m\x88\x01\x01\x12+\n" +
+	"\x0fload_average_5m\x18\x10 \x01(\x01H\x02R\rloadAverage5m\x88\x01\x01\x12-\n" +
+	"\x10load_average_15m\x18\x11 \x01(\x01H\x03R\x0eloadAverage15m\x88\x01\x01\x12/\n" +
 	"\x13storage_unavailable\x18\v \x01(\bR\x12storageUnavailable\x12;\n" +
 	"\x19unreconciled_reservations\x18\f \x01(\rR\x18unreconciledReservations\x12%\n" +
 	"\x0ebackfill_limit\x18\r \x01(\rR\rbackfillLimit\x12.\n" +
 	"\n" +
 	"queue_mode\x18\x0e \x01(\x0e2\x0f.tuna.QueueModeR\tqueueMode\x121\n" +
 	"\vqueue_state\x18\x0f \x01(\x0e2\x10.tuna.QueueStateR\n" +
-	"queueState\x12+\n" +
-	"\x0fload_average_5m\x18\x10 \x01(\x01H\x02R\rloadAverage5m\x88\x01\x01\x12-\n" +
-	"\x10load_average_15m\x18\x11 \x01(\x01H\x03R\x0eloadAverage15m\x88\x01\x01B\x14\n" +
+	"queueStateB\x14\n" +
 	"\x12_free_memory_bytesB\x12\n" +
 	"\x10_load_average_1mB\x12\n" +
 	"\x10_load_average_5mB\x13\n" +

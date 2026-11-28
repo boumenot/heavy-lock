@@ -3,7 +3,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,19 +15,24 @@ import (
 	"github.com/boumenot/tuna/apps/tuna/contract"
 	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
 type compatibilityServer struct {
 	pb.UnimplementedControlServiceServer
 	version string
+	status  *pb.BrokerStatus
 }
 
 func (s compatibilityServer) GetHealth(context.Context, *pb.GetHealthRequest) (*pb.Health, error) {
 	return &pb.Health{Live: true, ServiceIdentity: contract.ServiceIdentity, ServiceVersion: s.version}, nil
 }
 
-func (compatibilityServer) GetStatus(context.Context, *pb.GetStatusRequest) (*pb.BrokerStatus, error) {
+func (s compatibilityServer) GetStatus(context.Context, *pb.GetStatusRequest) (*pb.BrokerStatus, error) {
+	if s.status != nil {
+		return s.status, nil
+	}
 	return &pb.BrokerStatus{}, nil
 }
 
@@ -71,6 +78,62 @@ func TestControlRejectsInvalidArgumentsBeforeConnecting(t *testing.T) {
 		if !handled || code != 64 || stdout.Len() != 0 || stderr.Len() == 0 {
 			t.Fatalf("%v = %d,%v stdout=%q stderr=%q", args, code, handled, stdout.String(), stderr.String())
 		}
+	}
+}
+
+func TestControlStatusJSONLoadAverageOrder(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := &pb.BrokerStatus{
+		LoadAverage_1M: proto.Float64(1.25), LoadAverage_5M: proto.Float64(0), LoadAverage_15M: proto.Float64(3.75),
+	}
+	server := grpc.NewServer()
+	pb.RegisterControlServiceServer(server, compatibilityServer{version: contract.ServiceVersion, status: status})
+	go server.Serve(listener)
+	t.Cleanup(server.Stop)
+
+	var stdout, stderr bytes.Buffer
+	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+	code, handled := Run(context.Background(), []string{"status", "--port", port, "--json"}, &stdout, &stderr, contract.ServiceVersion)
+	if !handled || code != 0 {
+		t.Fatalf("status --json = %d, handled %v; stdout %q, stderr %q", code, handled, stdout.String(), stderr.String())
+	}
+	decoder := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		t.Fatalf("invalid JSON object start %v: %v", token, err)
+	}
+	var keys []string
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		name, ok := token.(string)
+		if !ok {
+			t.Fatalf("invalid JSON key %v", token)
+		}
+		keys = append(keys, name)
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		t.Fatalf("invalid JSON object end %v: %v", token, err)
+	}
+	want := []string{"loadAverage1m", "loadAverage5m", "loadAverage15m"}
+	start := slices.Index(keys, want[0])
+	if start < 0 || start+len(want) > len(keys) || !slices.Equal(keys[start:start+len(want)], want) {
+		t.Errorf("load keys %v are not consecutive in serialized fields %v", want, keys)
+	}
+	var decoded pb.BrokerStatus
+	if err := protojson.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(&decoded, status) {
+		t.Errorf("decoded status = %v, want %v", &decoded, status)
 	}
 }
 

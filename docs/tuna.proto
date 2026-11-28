@@ -699,7 +699,11 @@ message BrokerStatus {
   uint32 running_jobs = 7;
   BlockedReason head_blocked_reason = 8;
   optional int64 free_memory_bytes = 9;
-  optional double load_average_1m = 10; // only this interval controls admission
+  // Keep declarations adjacent for readable JSON; retain their wire numbers.
+  // Only the 1-minute interval controls admission.
+  optional double load_average_1m = 10;
+  optional double load_average_5m = 16;  // informational
+  optional double load_average_15m = 17; // informational
   bool storage_unavailable = 11;
   // Held reservations not yet reconciled since the last broker restart.
   // They count toward occupied but do not block unrelated admissions.
@@ -707,8 +711,6 @@ message BrokerStatus {
   uint32 backfill_limit = 13;      // per-head bypass limit; 0 is strict FIFO
   QueueMode queue_mode = 14;       // since API 2.1
   QueueState queue_state = 15;     // since API 2.1
-  optional double load_average_5m = 16;  // informational
-  optional double load_average_15m = 17; // informational
 }
 
 message GetQueueRequest {}
