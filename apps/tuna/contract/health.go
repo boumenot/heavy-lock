@@ -12,7 +12,7 @@ import (
 
 const (
 	ServiceIdentity = "tuna"
-	ServiceVersion  = "3.0.0-dev.2"
+	ServiceVersion  = "3.0.0-dev.3"
 )
 
 var semverPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)

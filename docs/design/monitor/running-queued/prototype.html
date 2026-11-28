@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tuna Monitor · Running and Queued design</title>
+<style>
+:root{font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#252930;background:#e8eaed;--line:#d5d9df;--muted:#545c67;--blue:#0064ce;--green:#197338;--red:#bb1532;--amber:#875700;--run:#2f6db5;--wait:#6d7787}
+*{box-sizing:border-box}
+body{margin:0}
+button,select{font:inherit;color:inherit}
+button,select{background:#fff;border:1px solid #bfc5ce;border-radius:5px;padding:5px 9px}
+button{cursor:pointer}
+button:hover:not(:disabled){background:#edf3fb}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:3px solid #3789ed;outline-offset:-2px}
+.active{background:#dfebfd!important;border-color:#79a2df!important}
+header.page{padding:20px 24px 14px;background:#f6f7f9;border-bottom:1px solid var(--line)}
+h1{font-size:21px;margin:0 0 6px;font-weight:650}
+header.page p{margin:0;color:var(--muted);line-height:1.6;max-width:1000px}
+.controls{display:flex;gap:18px;align-items:center;padding:12px 24px;background:#f6f7f9;border-bottom:1px solid var(--line);flex-wrap:wrap}
+label{display:flex;align-items:center;gap:7px}
+.controls span{font-size:12px;color:var(--muted)}
+main{padding:24px;overflow-x:auto}
+
+/* window */
+.window{width:var(--w,1000px);height:650px;background:#fbfbfc;border:1px solid #b9bec6;border-radius:9px;overflow:hidden;box-shadow:0 5px 15px #1d263014;display:flex;flex-direction:column;container-type:inline-size;position:relative}
+.titlebar{height:32px;flex:none;background:#edeef0;display:flex;align-items:center;padding:0 12px;gap:6px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+.traffic{width:10px;height:10px;border-radius:50%;background:#ff6159;border:1px solid #d34e46}
+.traffic:nth-child(2){background:#ffbd2e;border-color:#d89e22}
+.traffic:nth-child(3){background:#28c840;border-color:#20a333}
+.titlebar span{margin:auto;transform:translateX(-20px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* broker header: incumbent banner + status line, compressed */
+.broker{flex:none;padding:8px 14px;border-bottom:1px solid var(--line);background:#f7f7f9;display:flex;gap:10px;align-items:flex-start}
+.broker .icon{font-weight:700;width:16px;text-align:center;line-height:20px}
+.broker .text{flex:1;min-width:0}
+.broker .title{font-weight:650;font-size:13px;line-height:20px}
+.broker .title .qs{font-weight:600;font-size:11px;margin-left:8px;padding:1px 6px;border-radius:4px;border:1px solid #c9ced6;background:#fff;color:#303640}
+.qs.blocked,.qs.recovering{color:var(--amber)!important;border-color:#dcc189!important;background:#fbf4e4!important}
+.qs.paused{color:#303640;background:#eceef1!important}
+.qs.error{color:var(--red)!important;border-color:#e3a7b1!important;background:#fbecee!important}
+.qs.unknown{color:var(--muted)!important;border-style:dashed!important}
+.broker .detail{font-size:11px;color:var(--muted);line-height:1.5}
+.broker .detail.err{color:var(--red)}
+.broker .detail.warn{color:var(--amber)}
+.broker .pausebtn{flex:none;font-size:12px;padding:4px 10px}
+
+.body{display:flex;flex:1;min-height:0}
+.jobs{flex:1;min-width:0;display:flex;flex-direction:column}
+
+/* strips: the ribbon analogue */
+.strips{flex:none;padding:8px 12px 7px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:auto 1fr;gap:5px 10px;align-items:center}
+.strips .lbl{font-size:10px;color:var(--muted);white-space:nowrap}
+.slots{display:flex;gap:3px;flex-wrap:wrap;align-items:center}
+.slot{height:20px;border-radius:3px;border:1px solid #c7cdd6;background:#fff;padding:0;font-size:10px;font-variant-numeric:tabular-nums;color:#303640;overflow:hidden;white-space:nowrap}
+.slot.free{background:repeating-linear-gradient(135deg,#fff 0 4px,#f0f2f5 4px 8px);color:var(--muted);cursor:default}
+.slot.held{background:#e1ebf8;border-color:#9fbbe0}
+.slot.reserved{background:#eef2f8;border-style:dashed;border-color:#9fbbe0}
+.slot.finishing{background:#e9edf2}
+.slot.over{background:#fbf4e4;border-color:#dcc189;color:var(--amber)}
+.slot.selected,.qchip.selected{outline:2px solid var(--blue);outline-offset:1px}
+.qchip{height:20px;min-width:20px;padding:0 5px;border-radius:3px;font-size:10px;font-variant-numeric:tabular-nums;border:1px solid #c7cdd6;background:#fff}
+.qchip.warn{background:#fbf4e4;border-color:#dcc189;color:var(--amber)}
+.qchip.pri{font-weight:650}
+.qchip.dim{opacity:.5}
+.slotnote{font-size:10px;color:var(--muted);margin-left:6px;white-space:nowrap}
+.slotnote.over{color:var(--amber)}
+
+.tabbar{padding:7px 12px;display:flex;gap:4px;flex:none;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabbar button{font-size:11px;padding:4px 8px}
+.matrix-wrap{flex:none;border-bottom:1px solid var(--line);background:#f7f8fa}
+.matrix-wrap>summary{padding:7px 12px;cursor:pointer;font-size:11px;font-weight:600}
+.matrix-wrap summary span{font-weight:400;color:var(--muted);margin-left:8px}
+.matrix-inner{max-height:170px;overflow:auto}
+.matrix{width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed}
+.matrix th{font-size:10px;color:var(--muted);font-weight:600}
+.matrix td,.matrix th{padding:5px 8px;border-top:1px solid #e0e3e7;text-align:center}
+.matrix td:first-child,.matrix th:first-child{text-align:left;width:120px}
+.matrix button{font-size:10px;padding:2px 5px}
+.filter-note{font-size:10px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;padding:5px 12px;border-bottom:1px solid var(--line)}
+.filter-note button{font-size:10px;padding:2px 5px}
+
+.list{flex:1;min-height:0;overflow:auto;position:relative}
+.list.stale{opacity:.6}
+.group{position:sticky;top:0;z-index:2;display:grid;grid-template-columns:44px 21px minmax(0,1fr) 124px 62px 56px;gap:8px;align-items:center;padding:0 12px;height:25px;font-size:10px;color:var(--muted);background:#f2f3f5;border-bottom:1px solid var(--line)}
+.group b{color:#303640;font-size:11px;font-weight:650}
+.group .r{grid-column:5/7;text-align:right}
+.job-row{display:grid;grid-template-columns:44px 21px minmax(0,1fr) 124px 62px 56px;gap:8px;align-items:center;padding:0 12px;height:32px;border-bottom:1px solid #e3e5e8;cursor:pointer;position:relative}
+.job-row:hover{background:#edf3fb}
+.job-row.selected{background:#e0ecfb}
+.job-row:before{content:"";position:absolute;left:73px;top:0;bottom:0;width:1px;background:#d5d9df}
+.stamp{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+.marker{border:1px solid #c7cdd6;background:#fff;border-radius:50%;width:20px;height:20px;text-align:center;line-height:18px;z-index:1;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
+.marker.run{color:var(--run);border-color:#9fbbe0}
+.marker.reserved{color:var(--run);border-style:dashed}
+.marker.finishing{color:var(--muted)}
+.marker.warn{color:var(--amber);border-color:#dcc189;background:#fbf4e4}
+.marker.pos{color:#303640}
+.marker.forced{color:var(--amber);border-color:#dcc189}
+.command{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.cmdcell{display:flex;align-items:center;gap:6px;min-width:0}
+.tag{flex:none;font-size:9px;font-weight:700;letter-spacing:.02em;padding:1px 4px;border-radius:3px;background:#f6ecd6;color:var(--amber)}
+.tag.p{background:#eef1f5;color:#303640;font-weight:650}
+.status{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.status.warn{color:var(--amber)}
+.status.muted{color:var(--muted)}
+.durationbar{width:62px;height:5px;border-radius:2px;background:#dce5ef;overflow:hidden;position:relative}
+.durationbar i{height:100%;display:block;background:#6f8fb8}
+.durationbar.open i{background:linear-gradient(90deg,#6f8fb8 calc(100% - 6px),transparent calc(100% - 6px)),repeating-linear-gradient(90deg,#6f8fb8 0 2px,transparent 2px 4px)}
+.durationbar.wait{background:#e6e8ec}
+.durationbar.wait i{background:#8c95a3}
+.missing{font-size:10px;text-align:center;color:var(--muted)}
+.time{font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+.rowacts{position:absolute;right:76px;top:4px;display:none;gap:3px;padding:0 4px;background:#edf3fb}
+.job-row:hover .rowacts,.job-row:focus-within .rowacts{display:flex}
+.job-row.selected .rowacts{background:#e0ecfb}
+.rowacts button{width:24px;height:24px;padding:0;font-size:12px;line-height:22px;border-radius:4px}
+.emptyrow{padding:14px 12px 14px 85px;color:var(--muted);font-size:11px;line-height:1.6;border-bottom:1px solid #e3e5e8}
+.emptyrow b{color:#303640;font-weight:600}
+.finished-mini{display:grid;grid-template-columns:44px 21px minmax(0,1fr) 96px 118px;gap:8px;align-items:center;padding:0 12px;height:30px;border-bottom:1px solid #e3e5e8;cursor:pointer;position:relative}
+.finished-mini:hover{background:#edf3fb}
+.finished-mini.selected{background:#e0ecfb}
+.ok{color:var(--green)}.fail{color:var(--red)}.cancel{color:var(--amber)}.unknown{color:var(--muted)}
+.minirib{display:flex;gap:2px}
+.minirib i{width:8px;height:14px;border-radius:2px;display:block}
+.minirib i.ok{background:#bcdcc6}.minirib i.fail{background:#e8a5ae}.minirib i.cancel{background:#e6cf9f}.minirib i.unknown{background:#cfd3d9}
+
+/* sidebar */
+.sidebar{width:262px;flex:none;background:#f0f2f5;border-left:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+.window-summary{flex:none;padding:11px 14px;border-bottom:1px solid #bcc3cc}
+.window-summary h2,.selection h2{font-size:12px;margin:0 0 8px;font-weight:650}
+.capbar{display:flex;height:8px;border-radius:3px;overflow:hidden;background:#e1e4e9;margin:2px 0 6px}
+.capbar i{display:block;height:100%;background:#6f8fb8;border-right:1px solid #f0f2f5}
+.capbar i.over{background:#c49a45}
+.capbar i.res{background:#a9bfdc}
+.counts{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;font-size:12px}
+.metrics{margin-top:9px;font-size:11px;color:var(--muted);line-height:1.7}
+.metrics b{color:#303640;font-weight:600}
+.metrics .warn{color:var(--amber)}
+.selection{flex:1;min-height:0;overflow:auto;padding:11px 14px}
+.selection .hint{font-size:11px;color:var(--muted);margin:0 0 8px}
+.selection .selected-state{font-size:12px;margin:0 0 8px;font-weight:650}
+.selection .command{font-size:11px;white-space:normal;overflow-wrap:anywhere;line-height:1.6;margin:0 0 9px}
+.selection dl{margin:0;font-size:11px;line-height:1.55}
+.selection dt{color:var(--muted);margin-top:8px}
+.selection dd{margin:2px 0 0;overflow-wrap:anywhere}
+.selection a{color:var(--blue);display:inline-block;margin-right:6px}
+.selection .note{font-size:10px;color:var(--muted);line-height:1.6;margin-top:10px}
+.selection .warning{font-size:11px;line-height:1.5;color:var(--amber);margin:6px 0 0}
+.actions{display:flex;flex-wrap:wrap;gap:5px;margin:2px 0 10px}
+.actions button{font-size:11px;padding:3px 8px}
+.actions .destructive{color:var(--red)}
+.no-selection{font-size:11px;line-height:1.6;color:var(--muted)}
+.footer{border-top:1px solid var(--line);padding:6px 12px;font-size:10px;color:var(--muted);flex:none;background:#f5f6f8;display:flex;justify-content:space-between;gap:12px}
+.footer .sim{color:#303640}
+
+/* sheet (native alert analogue) and toast */
+.sheet-backdrop{position:absolute;inset:32px 0 0 0;background:#2229;display:flex;justify-content:center;align-items:flex-start;z-index:10}
+.sheet{margin-top:0;width:min(420px,92%);background:#f6f7f9;border:1px solid #b9bec6;border-top:none;border-radius:0 0 10px 10px;box-shadow:0 10px 24px #0004;padding:16px 18px}
+.sheet h3{margin:0 0 8px;font-size:13px}
+.sheet pre{font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 8px;color:#303640}
+.sheet p{margin:0 0 6px;font-size:12px;line-height:1.5}
+.sheet .simnote{font-size:10px;color:var(--muted)}
+.sheet .btns{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.sheet .confirm{background:#d9363e;color:#fff;border-color:#b92c33}
+.toast{position:absolute;left:12px;bottom:34px;background:#303640;color:#fff;font-size:11px;padding:6px 10px;border-radius:5px;z-index:9;box-shadow:0 3px 8px #0003;transition:opacity .2s ease-out}
+
+.legend{max-width:1000px;font-size:12px;color:var(--muted);line-height:1.6;padding:14px 0}
+.legend summary{cursor:pointer;font-weight:600}
+.legend p{margin:8px 0}
+
+/* narrow-window behaviour (window width, not viewport) */
+@container (max-width:800px){
+ .sidebar{width:226px}
+ .job-row,.group{grid-template-columns:38px 21px minmax(0,1fr) 112px 50px}
+ .rowacts{right:62px}
+ .durationbar,.job-row .missing{display:none}
+ .group .r{grid-column:5/6}
+ .job-row:before{left:67px}
+ .finished-mini{grid-template-columns:38px 21px minmax(0,1fr) 92px}
+ .finished-mini .minirib{display:none}
+}
+@container (max-width:620px){
+ .body{flex-direction:column}
+ .jobs{min-height:0}
+ .sidebar{width:auto;border-left:none;border-top:1px solid #bcc3cc;flex:0 0 200px;flex-direction:row}
+ .window-summary{width:46%;border-bottom:none;border-right:1px solid #bcc3cc;overflow:auto}
+ .job-row,.group{grid-template-columns:21px minmax(0,1fr) 104px 46px}
+ .rowacts{right:56px}
+ .stamp,.group .s{display:none}
+ .job-row:before{left:22px}
+ .finished-mini{grid-template-columns:21px minmax(0,1fr) 88px}
+ .strips{grid-template-columns:1fr}
+ .strips .lbl{margin-top:2px}
+ .broker .detail.line2{display:none}
+}
+@media(max-width:650px){header.page,.controls{padding-left:12px;padding-right:12px}main{padding:12px}}
+</style>
+</head>
+<body>
+<header class="page"><h1>Running and Queued · compact design</h1><p>Applies the approved Recently finished principles to active work: single-line rows, row/keyboard selection, right-hand summary and selected-job inspector, a slot/queue-order strip in place of the outcome ribbon, start/queued-time markers, open-ended elapsed and wait bars, state tabs and a collapsed worklog matrix.<br>Interactive design review · <b>illustrative data, not live</b> · every control is a local simulation and never contacts a broker.</p></header>
+<div class="controls">
+ <label>Scenario <select id="scenario">
+  <option value="live" selected>Live · capacity full, head waiting</option>
+  <option value="paused">Paused · running work continues</option>
+  <option value="forced">Over capacity · force-started job</option>
+  <option value="stale">Broker unavailable · last known state</option>
+  <option value="idle">Idle · nothing running or queued</option>
+ </select></label>
+ <label>Window <select id="width"><option value="1000" selected>1000 px</option><option value="760">760 px</option><option value="560">560 px</option></select></label>
+ <span>Click a row or use ↑/↓ in the list. Actions live in the inspector and on the selected row.</span>
+</div>
+<main><div id="stage"></div>
+<details class="legend"><summary>Review notes · what is real, what is simulated</summary>
+<p><b>Fields.</b> Every fact shown exists on today's <code>Job</code>/<code>BrokerStatus</code> contract: state (reserved/running/finishing), weight, forced, admitted_by_backfill, attempt, admitted_at, started_at, process pid, free_memory_at_admission_bytes, the active job's checkpointed <code>ResourceSummary</code> (CPU time, peak CPU %, peak combined RSS, samples, completeness), cancellation progress and broker termination; for queued jobs queue_position, priority, queued_at, runner_connected, grace_remaining, blocked_reason and backfill_bypass_count; and status capacity, occupied, queue mode/state, head reason, free memory and load averages. No completion percentage, ETA or predicted start time is shown: the broker does not predict them.</p>
+<p><b>Running.</b> Elapsed is measured from started_at (root process start). A reserved job without started_at shows “awaiting launch” timed from admitted_at instead; there is no fabricated runtime. Bars are scaled to the longest elapsed among active rows and drawn open-ended (dotted tail) because the job has not finished. Resource figures are the last broker checkpoint and may lag; missing measurements read “not recorded”, never zero.</p>
+<p><b>Queued.</b> Order is (priority ascending, then queue sequence): lower integers run first, default 1337, and priority never preempts reserved or running work. Position is order, not a start time; resource checks use the last live sample and admission is decided by the broker at each decision. Move to Front/Back reorders and, like <code>MoveJob</code>, clamps the job's priority to its new neighbour when needed — the simulation shows that clamp. Priority editing exists as an API (<code>SetJobPriority</code>) but is not a monitor control today, so it is shown read-only.</p>
+<p><b>Controls.</b> Pause/Resume, Move to Front/Back, Force Start… and Cancel… mirror <code>ControlAction</code>; force-start and every cancellation show the incumbent confirmation text. The simulation updates local state only; it never admits jobs on its own, so after a cancel or resume the queue head is shown as admissible “at the next broker decision”. “Draining” is not a broker state: a paused queue with running work is shown as Paused, with reservations continuing.</p>
+<p><b>Truthfulness states.</b> Broker unavailable dims the lists, freezes clocks at the last update, shows the queue state as Unknown, and disables every control. Disconnected runners, oversized jobs, cancellation in progress and broker termination are row-level warnings and are collected under the Attention tab. The 1000 × 650 viewport is illustrative, as in the finished design; the Window selector demonstrates narrow layouts.</p>
+</details></main>
+<script>
+const NOW0=Date.UTC(2026,10,28,1,32,0);
+const GiB=1024**3,MiB=1024**2;
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const dur=s=>{if(s==null)return "—";s=Math.max(0,Math.floor(s));return s<60?s+"s":s<3600?Math.floor(s/60)+"m "+s%60+"s":Math.floor(s/3600)+"h "+Math.floor(s%3600/60)+"m"};
+const bytes=b=>b==null?"not recorded":b>=GiB?(b/GiB).toFixed(1)+" GB":Math.round(b/MiB)+" MB";
+const hm=t=>new Date(t).toISOString().slice(11,16);
+const full=t=>new Date(t).toISOString().replace("T"," ").slice(0,19);
+const ago=m=>NOW0-m*1000;
+
+function fixtures(){
+ const active=[
+  {id:"j-0412",state:"running",command:"nix develop -c dart tool/dev.dart check all",cwd:"~/.copilot/copilot-worktrees/tuna/boumenot-compact-history",worklog:"#77",wlTitle:"Compact Recently finished history",session:"5f2c91ab",repo:"boumenot/tuna",branch:"boumenot-compact-history",commit:"a17c4e2",client:"macOS 26.1 · arm64 · tuna 2.4.0",weight:2,forced:false,backfill:false,attempt:1,admittedAt:ago(1490),startedAt:ago(1487),pid:48211,freeMem:21.6*GiB,res:{cpu:4120,peak:612,rss:7.9*GiB,samples:296,completeness:"complete"}},
+  {id:"j-0415",state:"running",command:"nix develop -c go test -race ./apps/tuna/scheduler ./apps/tuna/storage ./apps/tuna/broker -count=1 -run 'TestAdmission|TestBackfill|TestCancellationAcknowledgementTimeout'",cwd:"~/.copilot/copilot-worktrees/tuna/boumenot-finish-report",worklog:"#68",wlTitle:"Runner finish report",session:"9e01d7c4",repo:"boumenot/tuna",branch:"boumenot-finish-report",commit:"3be09f1",client:"macOS 26.1 · arm64 · tuna 2.4.0",weight:1,forced:false,backfill:true,attempt:2,admittedAt:ago(611),startedAt:ago(609),pid:50877,freeMem:17.2*GiB,res:{cpu:1630,peak:388,rss:2.3*GiB,samples:121,completeness:"partial",reason:"2 short-lived descendants exited between samples"},cancelReq:ago(14)},
+  {id:"j-0417",state:"running",command:"swift test --package-path apps/tuna-monitor-macos",cwd:null,worklog:null,session:null,repo:null,branch:null,commit:null,client:null,weight:2,forced:false,backfill:false,attempt:1,admittedAt:ago(204),startedAt:ago(201),pid:51302,freeMem:null,res:null},
+  {id:"j-0419",state:"reserved",command:"xcodebuild -scheme TunaMonitor -configuration Release -derivedDataPath build/DerivedData build",cwd:"~/Repos/tuna",worklog:"#81",wlTitle:null,session:"c3aa0d12",repo:"boumenot/tuna",branch:"master",commit:"e9d02aa",client:"macOS 26.1 · arm64 · tuna 2.4.0",weight:1,forced:false,backfill:false,attempt:1,admittedAt:ago(6),startedAt:null,pid:null,freeMem:15.9*GiB,res:null}
+ ];
+ const queue=[
+  {id:"j-0420",command:"nix develop -c dart tool/dev.dart check tuna-monitor-macos --verbose --diagnostics-port 49801",cwd:"~/.copilot/copilot-worktrees/tuna/boumenot-dock-tile",worklog:"#79",wlTitle:"Dock tile stop light",session:"17d0be55",repo:"boumenot/tuna",branch:"boumenot-dock-tile",commit:"0c1f9a3",client:"macOS 26.1 · arm64 · tuna 2.4.0",weight:3,priority:100,seq:20,queuedAt:ago(342),connected:true,bypass:1},
+  {id:"j-0418",command:"go test ./...",cwd:"~/Repos/tuna",worklog:"#68",wlTitle:"Runner finish report",session:"9e01d7c4",repo:"boumenot/tuna",branch:"boumenot-finish-report",commit:"3be09f1",client:"macOS 26.1 · arm64 · tuna 2.4.0",weight:1,priority:1337,seq:18,queuedAt:ago(1102),connected:true,bypass:0},
+  {id:"j-0421",command:"nix build .#tuna --print-build-logs --option sandbox relaxed",cwd:"~/.copilot/copilot-worktrees/tuna/boumenot-nix-package",worklog:"#61",wlTitle:"Nix package",session:null,repo:"boumenot/tuna",branch:"boumenot-nix-package",commit:null,client:"macOS 26.1 · arm64 · tuna 2.4.0",weight:2,priority:1337,seq:21,queuedAt:ago(188),connected:false,grace:41,bypass:0},
+  {id:"j-0422",command:"dart test test/dev_test.dart",cwd:null,worklog:null,session:null,repo:null,branch:null,commit:null,client:null,weight:1,priority:1337,seq:22,queuedAt:ago(95),connected:true,bypass:0},
+  {id:"j-0423",command:"swift test --package-path packages/tuna-contract-swift --parallel",cwd:"~/Repos/tuna",worklog:"worklog-notes",wlTitle:null,session:"c3aa0d12",repo:"boumenot/tuna",branch:"master",commit:"e9d02aa",client:"macOS 26.1 · arm64 · tuna 2.4.0",weight:1,priority:2000,seq:23,queuedAt:ago(40),connected:true,bypass:0},
+  {id:"j-0398",command:"nix develop -c dart tool/dev.dart check all --coverage --integration --emulator pixel-9",cwd:"~/Repos/tuna",worklog:"#64",wlTitle:"Installer",session:null,repo:"boumenot/tuna",branch:"boumenot-installer",commit:"77ab210",client:"macOS 26.1 · arm64 · tuna 2.3.1",weight:8,priority:1337,seq:3,queuedAt:ago(7420),connected:true,bypass:0,oversized:true}
+ ];
+ const kinds=["ok","ok","fail","ok","cancel","ok","ok","ok","ok","fail","ok","unknown","ok","ok","cancel","ok","fail","ok","ok","ok","ok","ok","fail","unknown","ok"];
+ const cmds=["nix develop -c dart tool/dev.dart check all","go test -race ./scheduler ./storage -count=1","swift test --package-path apps/tuna-monitor-macos","nix build .#tuna","dart test test/dev_test.dart"];
+ const wl=["#77","#68","#77","#61",null];
+ const recent=kinds.map((k,i)=>({id:"j-"+String(411-i).padStart(4,"0"),kind:k,command:cmds[i%5],worklog:wl[i%5],finished:ago(300+i*190),elapsed:k==="cancel"&&i%2?null:40+(i*73)%560}));
+ return {active,queue,recent};
+}
+
+const S={scenario:"live",tab:"active",worklog:null,selected:null,matrixOpen:false,now:NOW0,sheet:null,toast:null,data:null,mode:"enabled",capacity:6,connection:"live",lastUpdate:NOW0,resourceOk:true,nextSeq:30};
+function load(name){
+ S.scenario=name;S.data=fixtures();S.mode="enabled";S.capacity=6;S.connection="live";S.now=NOW0;S.lastUpdate=NOW0;S.worklog=null;S.tab="active";
+ const d=S.data;
+ if(name==="paused"){S.mode="paused";S.pausedAt=ago(380)}
+ if(name==="forced"){const j=d.queue.splice(1,1)[0];d.active.push({...j,state:"running",forced:true,backfill:false,attempt:1,admittedAt:ago(52),startedAt:ago(50),pid:52040,freeMem:14.1*GiB,res:{cpu:61,peak:97,rss:640*MiB,samples:9,completeness:"complete"}});d.active[1].weight=2}
+ if(name==="stale"){S.connection="unavailable";S.lastUpdate=NOW0;S.now=NOW0+192000}
+ if(name==="idle"){d.active=[];d.queue=[]}
+ sortQueue();S.selected=(d.active[0]||d.queue[0]||{}).id||null;
+}
+const live=()=>S.connection==="live";
+const now=()=>live()?S.now:S.lastUpdate;
+function sortQueue(){S.data.queue.sort((a,b)=>a.priority-b.priority||a.seq-b.seq)}
+const occupied=()=>S.data.active.reduce((s,j)=>s+j.weight,0);
+const runningCount=()=>S.data.active.filter(j=>j.state==="running").length;
+const free=()=>Math.max(0,S.capacity-occupied());
+function oversized(j){return j.weight>S.capacity}
+
+/* queue state, following scheduler.md precedence; the simulation never admits */
+function queueState(){
+ if(!live())return {state:"unknown",head:null};
+ const q=S.data.queue;
+ if(S.mode==="paused")return {state:"paused",head:q.length?"Paused":null};
+ if(!q.length)return {state:occupied()>0?"running":"idle",head:null};
+ const head=q.find(j=>!oversized(j));
+ if(!head)return {state:"blocked",head:null,allOversized:true};
+ if(!head.connected)return {state:"blocked",head:"Runner disconnected",headId:head.id};
+ if(head.weight<=free())return S.resourceOk?{state:"running",head:"Admissible at the next broker decision",headId:head.id,admissible:true}:{state:"blocked",head:"Waiting for memory/load checks",headId:head.id};
+ const follower=q.find(j=>j!==head&&!oversized(j)&&j.connected&&j.weight<=free());
+ if(follower&&head.bypass<1)return {state:"running",head:"Waiting for capacity; backfill may admit a follower",headId:head.id};
+ return {state:"blocked",head:"Waiting for capacity",headId:head.id};
+}
+const qsName={idle:"Idle",running:"Running",blocked:"Blocked",paused:"Paused",recovering:"Recovering",error:"Error",unknown:"Unknown"};
+
+function queuedStatus(j,qs){
+ if(!live()&&!oversized(j)&&j.connected)return {text:"Last known · not live",muted:true};
+ if(oversized(j))return {text:`Exceeds capacity (w${j.weight})`,warn:true};
+ if(!j.connected)return {text:"Disconnected"+(j.grace!=null?` · ${j.grace}s grace`:""),warn:true};
+ if(j.cancelReq)return {text:"Cancellation requested",warn:true};
+ if(qs.headId===j.id)return {text:{"Waiting for capacity":"Head · needs capacity","Waiting for memory/load checks":"Head · memory/load check","Runner disconnected":"Head · runner offline","Admissible at the next broker decision":"Head · admissible","Waiting for capacity; backfill may admit a follower":"Head · backfill possible"}[qs.head]||"Head",warn:qs.state==="blocked",full:qs.head};
+ if(S.mode==="paused")return {text:"Paused",warn:false,muted:true};
+ return {text:"Waiting",warn:false,muted:true};
+}
+function activeWarnings(j){const w=[];if(j.cancelReq)w.push("Cancellation requested"+(j.cancelAck?" and acknowledged":"")+"; not yet complete");if(j.brokerTerm)w.push("Broker is terminating the job's processes: "+j.brokerTerm);return w}
+function queuedWarnings(j,qs){const w=[];if(oversized(j))w.push(`Weight ${j.weight} exceeds capacity ${S.capacity}: normal admission will not start this job. Force-start or cancel it.`);if(!j.connected)w.push("Runner disconnected"+(j.grace!=null?`; ${j.grace}s grace left`:""));if(j.cancelReq)w.push("Cancellation requested; not yet complete");return w}
+const attention=j=>j.state?activeWarnings(j).length>0||j.forced:queuedWarnings(j).length>0;
+
+function wlKey(j){return j.worklog||"Unattributed"}
+function activeElapsed(j){return j.startedAt!=null?(now()-j.startedAt)/1000:null}
+function sinceAdmit(j){return (now()-j.admittedAt)/1000}
+function wait(j){return (now()-j.queuedAt)/1000}
+
+function summary(){
+ const d=S.data,waits=d.queue.map(wait),els=d.active.map(activeElapsed).filter(v=>v!=null);
+ return {occupied:occupied(),capacity:S.capacity,running:runningCount(),reserved:d.active.filter(j=>j.state==="reserved").length,finishing:d.active.filter(j=>j.state==="finishing").length,queued:d.queue.length,queuedWeight:d.queue.reduce((s,j)=>s+j.weight,0),oldestWait:waits.length?Math.max(...waits):null,longestRun:els.length?Math.max(...els):null,attention:[...d.active,...d.queue].filter(attention).length,free:free()};
+}
+
+function visibleIds(){
+ const d=S.data,f=j=>!S.worklog||wlKey(j)===S.worklog;
+ const t=S.tab;
+ const a=(t==="active"||t==="running"||t==="attention")?d.active.filter(f).filter(j=>t!=="attention"||attention(j)):[];
+ const q=(t==="active"||t==="queued"||t==="attention")?d.queue.filter(f).filter(j=>t!=="attention"||attention(j)):[];
+ const r=t==="finished"?d.recent.filter(f):[];
+ return {a,q,r,ids:[...a,...q,...r].map(j=>j.id)};
+}
+function ensureSelection(){const v=visibleIds();if(!v.ids.includes(S.selected))S.selected=v.ids[0]||null}
+function findJob(id){const d=S.data;return d.active.find(j=>j.id===id)||d.queue.find(j=>j.id===id)||d.recent.find(j=>j.id===id)}
+
+/* ---------- rendering ---------- */
+function brokerHeader(qs){
+ const s=summary(),st=S.data;
+ if(!live())return `<div class="broker"><span class="icon fail">⊘</span><div class="text"><div class="title">Broker unavailable: connection refused on 127.0.0.1:49783 <span class="qs unknown">Queue unknown</span></div><div class="detail err">Showing the last known state from ${dur((S.now-S.lastUpdate)/1000)} ago; it is not live. Controls are disabled.</div></div><button class="pausebtn" disabled>Pause Queue</button></div>`;
+ const tone=qs.state==="blocked"?"warn":"";
+ const loads="load 1m 7.82 / 5m 6.10 / 15m 5.44";
+ return `<div class="broker"><span class="icon ${tone?"cancel":S.mode==="paused"?"unknown":"ok"}">${tone?"⚠":S.mode==="paused"?"‖":"●"}</span><div class="text"><div class="title">Live · broker 2.4.0 <span class="qs ${qs.state}">Queue ${qsName[qs.state].toLowerCase()}</span></div>
+ <div class="detail">Capacity ${s.occupied}/${s.capacity}${s.occupied>s.capacity?' · <span class="cancel">over capacity (force-started work)</span>':""} · ${s.running} running · ${s.queued} queued · 18.4 GB free · ${loads}</div>
+ ${S.mode==="paused"?`<div class="detail line2">Paused ${dur((now()-S.pausedAt)/1000)} ago · reservations continue; no new normal admissions.</div>`:qs.head?`<div class="detail line2 ${qs.state==="blocked"?"warn":""}">Queue head: ${esc(qs.head)}</div>`:qs.allOversized?`<div class="detail line2 warn">Every queued job exceeds capacity; normal admission cannot start any of them.</div>`:""}
+ </div><button class="pausebtn" data-act="${S.mode==="paused"?"resume":"pause"}">${S.mode==="paused"?"Resume Queue":"Pause Queue"}</button></div>`;
+}
+
+function strips(qs){
+ const d=S.data;let slots="";
+ let used=0;
+ for(const j of d.active){const over=used+j.weight>S.capacity;used+=j.weight;
+  slots+=`<button class="slot ${j.state==="reserved"?"reserved":j.state==="finishing"?"finishing":"held"} ${over||j.forced?"over":""} ${S.selected===j.id?"selected":""}" data-pick="${j.id}" style="width:${j.weight*26-3}px" title="${esc(j.id)} · weight ${j.weight} · ${j.state}${j.forced?" · forced":""}" aria-label="${esc(j.id)} weight ${j.weight}">${j.weight>1?"w"+j.weight:""}${j.forced?"⚡":""}</button>`}
+ for(let i=0;i<free();i++)slots+=`<span class="slot free" style="width:23px" title="Free slot"></span>`;
+ const over=occupied()-S.capacity;
+ const note=over>0?`<span class="slotnote over">${occupied()}/${S.capacity} · ${over} over</span>`:`<span class="slotnote">${occupied()}/${S.capacity} held · ${free()} free</span>`;
+ const chips=d.queue.map((j,i)=>{const w=queuedWarnings(j).length;return `<button class="qchip ${w?"warn":""} ${j.priority!==1337?"pri":""} ${S.selected===j.id?"selected":""}" data-pick="${j.id}" title="#${i+1} · ${esc(j.id)} · priority ${j.priority} · weight ${j.weight}${w?" · needs attention":""}" aria-label="Queue position ${i+1}, priority ${j.priority}">${i+1}${j.priority!==1337?"·p"+j.priority:""}${w?" ⚠":""}</button>`}).join("");
+ return `<div class="strips"><span class="lbl">Slots</span><div class="slots">${slots}${note}</div><span class="lbl">Admission order</span><div class="slots">${chips||'<span class="slotnote">Queue is empty</span>'}${d.queue.length?'<span class="slotnote">head → · priority, then FIFO</span>':""}</div></div>`;
+}
+
+function tabs(){
+ const d=S.data,s=summary();
+ const t=[["active","Active",d.active.length+d.queue.length],["running","Running",d.active.length],["queued","Queued",d.queue.length],["attention","Attention",s.attention],["finished","Recently finished",d.recent.length]];
+ return `<div class="tabbar" role="tablist" aria-label="Filter jobs">${t.map(([k,l,n])=>`<button role="tab" data-tab="${k}" class="${S.tab===k?"active":""}" aria-selected="${S.tab===k}">${l} ${n}</button>`).join("")}</div>`;
+}
+
+function matrix(){
+ const d=S.data,g=new Map;const add=(j,c)=>{const k=wlKey(j);if(!g.has(k))g.set(k,{run:0,q:0,fin:0});g.get(k)[c]++};
+ d.active.forEach(j=>add(j,"run"));d.queue.forEach(j=>add(j,"q"));d.recent.forEach(j=>add(j,"fin"));
+ return `<details id="matrix" class="matrix-wrap" ${S.matrixOpen?"open":""}><summary>Worklog activity matrix <span>${g.size} groups · running, queued and last ${d.recent.length} finished</span></summary><div class="matrix-inner"><table class="matrix"><thead><tr><th>Worklog</th><th>Running</th><th>Queued</th><th>Finished</th><th></th></tr></thead><tbody>${[...g].map(([k,c])=>`<tr><td>${esc(k)}</td><td>${c.run}</td><td>${c.q}</td><td>${c.fin}</td><td><button data-group="${esc(k)}" class="${S.worklog===k?"active":""}">Show</button></td></tr>`).join("")}</tbody></table></div></details>`;
+}
+
+function actionsFor(j){
+ if(!j||!j.state&&j.priority==null)return [];
+ if(j.state)return j.state==="finished"?[]:[["cancel","Cancel…","⊗"]];
+ const q=S.data.queue,a=[];
+ if(q[0]?.id!==j.id)a.push(["front","Move to Front","⤒"]);
+ if(q[q.length-1]?.id!==j.id)a.push(["back","Move to Back","⤓"]);
+ a.push(["force","Force Start…","⚡"],["cancel","Cancel…","⊗"]);return a;
+}
+function rowActs(j){const a=actionsFor(j);return a.length?`<span class="rowacts">${a.map(([k,l,i])=>`<button data-act="${k}" data-id="${j.id}" title="${l} (simulated)" aria-label="${l}" ${live()?"":"disabled"}>${i}</button>`).join("")}</span>`:""}
+
+function activeRow(j,max){
+ const el=activeElapsed(j),warn=activeWarnings(j).length>0;
+ const mk=j.forced?`<span class="marker forced" title="Force-started">⚡</span>`:j.state==="reserved"?`<span class="marker reserved" title="Reserved · awaiting launch">◌</span>`:j.state==="finishing"?`<span class="marker finishing" title="Finishing">◑</span>`:warn?`<span class="marker warn">!</span>`:`<span class="marker run" title="Running">▶</span>`;
+ const status=j.cancelReq?["Cancelling",true]:j.state==="reserved"?["Awaiting launch",false]:j.state==="finishing"?["Finishing",false]:["Running",false];
+ const stamp=j.startedAt??j.admittedAt;
+ const bar=el==null?`<span class="missing" title="Not started; no runtime yet">—</span>`:`<span class="durationbar open" title="Elapsed so far, relative to the longest active job; open-ended, no ETA"><i style="width:${Math.max(4,el/max*100)}%"></i></span>`;
+ return `<div class="job-row ${S.selected===j.id?"selected":""}" role="option" aria-selected="${S.selected===j.id}" data-select="${j.id}" tabindex="${S.selected===j.id?0:-1}"><span class="stamp" title="${j.startedAt?"Started":"Admitted"} ${full(stamp)} UTC">${hm(stamp)}</span>${mk}<span class="cmdcell">${j.forced?'<span class="tag" title="Force-started: admitted out of order, bypassing resource checks">FORCED</span>':""}<span class="command" title="${esc(j.command)}">${esc(j.command)}</span></span><span class="status ${status[1]?"warn":"muted"}">${status[0]} · w${j.weight}</span>${bar}<span class="time">${el==null?dur(sinceAdmit(j)):dur(el)}</span>${rowActs(j)}</div>`;
+}
+function queuedRow(j,i,max,qs){
+ const st=queuedStatus(j,qs),w=wait(j);
+ return `<div class="job-row ${S.selected===j.id?"selected":""}" role="option" aria-selected="${S.selected===j.id}" data-select="${j.id}" tabindex="${S.selected===j.id?0:-1}"><span class="stamp" title="Queued ${full(j.queuedAt)} UTC">${hm(j.queuedAt)}</span><span class="marker ${st.warn?"warn":"pos"}" title="Queue position ${i+1}">${i+1}</span><span class="cmdcell">${j.priority!==1337?`<span class="tag p" title="Priority ${j.priority}; default 1337, lower runs first">p${j.priority}</span>`:""}<span class="command" title="${esc(j.command)}">${esc(j.command)}</span></span><span class="status ${st.warn?"warn":st.muted?"muted":""}" title="${esc(st.full||st.text)}">${esc(st.text)}</span><span class="durationbar wait open" title="Waiting so far, relative to the longest wait; not a start-time estimate"><i style="width:${Math.max(4,w/max*100)}%"></i></span><span class="time">${dur(w)}</span>${rowActs(j)}</div>`;
+}
+function finishedRow(j,max){
+ const sym={ok:"✓",fail:"×",cancel:"−",unknown:"?"},lab={ok:"Success",fail:"Failed",cancel:"Cancelled",unknown:"Unknown"};
+ return `<div class="job-row ${S.selected===j.id?"selected":""}" role="option" aria-selected="${S.selected===j.id}" data-select="${j.id}" tabindex="${S.selected===j.id?0:-1}"><span class="stamp">${hm(j.finished)}</span><span class="marker ${j.kind}">${sym[j.kind]}</span><span class="command" title="${esc(j.command)}">${esc(j.command)}</span><span class="status ${j.kind}">${lab[j.kind]}</span>${j.elapsed==null?'<span class="missing">—</span>':`<span class="durationbar"><i style="width:${j.elapsed/max*100}%"></i></span>`}<span class="time">${dur(j.elapsed)}</span></div>`;
+}
+function finishedMini(){
+ const r=S.data.recent,c=k=>r.filter(j=>j.kind===k).length;
+ return `<div class="group"><span class="s"></span><span></span><b>Recently finished</b><span>last ${r.length}</span></div><div class="finished-mini" data-tab-link="finished" tabindex="-1" title="Open the Recently finished view"><span class="stamp">${hm(r[0].finished)}</span><span class="marker">⋯</span><span style="font-size:11px"><span class="ok">✓ ${c("ok")}</span> · <span class="fail">× ${c("fail")}</span> · <span class="cancel">− ${c("cancel")}</span> · <span class="unknown">? ${c("unknown")}</span> <span class="unknown">· open view →</span></span><span class="minirib">${r.slice(0,12).map(j=>`<i class="${j.kind}"></i>`).join("")}</span></div>`;
+}
+
+function list(qs){
+ const v=visibleIds(),stale=!live();
+ const els=S.data.active.map(activeElapsed).filter(x=>x!=null),maxA=Math.max(1,...els,...S.data.active.map(sinceAdmit));
+ const maxQ=Math.max(1,...S.data.queue.map(wait));
+ let h="";
+ if(S.tab==="finished"){const max=Math.max(...v.r.map(j=>j.elapsed||0),1);h+=`<div class="group"><span class="s">UTC</span><span></span><b>Recently finished · ${v.r.length} jobs</b><span>Outcome</span><span class="r">Elapsed · scaled / actual</span></div>`+v.r.map(j=>finishedRow(j,max)).join("")+`<div class="emptyrow">Compact continuity view. The approved Recently finished design (#77) owns its ribbon, outcome tabs and matrix.</div>`;return wrapList(h,stale)}
+ if(S.tab!=="queued"){
+  h+=`<div class="group"><span class="s">Start</span><span></span><b>Running · ${v.a.length}</b><span>State · weight</span><span class="r">Elapsed so far</span></div>`;
+  h+=v.a.length?v.a.map(j=>activeRow(j,maxA)).join(""):`<div class="emptyrow">${S.tab==="attention"?"No running jobs need attention.":S.worklog?"No running jobs for this worklog.":`<b>No running jobs.</b> ${S.data.queue.length?"Queued work is waiting; see the queue head below.":"Capacity is free; submitted work is admitted by the broker."}`}</div>`;
+ }
+ if(S.tab!=="running"){
+  h+=`<div class="group"><span class="s">Queued</span><span></span><b>Queued · ${v.q.length}</b><span>Admission status</span><span class="r">Waiting so far</span></div>`;
+  h+=v.q.length?v.q.map(j=>queuedRow(j,S.data.queue.indexOf(j),maxQ,qs)).join(""):`<div class="emptyrow">${S.tab==="attention"?"No queued jobs need attention.":S.worklog?"No queued jobs for this worklog.":"<b>Queue is empty.</b> New submissions appear here in priority order, then FIFO."}</div>`;
+ }
+ if(S.tab==="active"&&!S.worklog)h+=finishedMini();
+ return wrapList(h,stale);
+}
+function wrapList(h,stale){return `<div class="list ${stale?"stale":""}" role="listbox" aria-label="Jobs">${h}</div>`}
+
+function measureBlock(j){
+ if(!j.res)return `<dt>Resources · last checkpoint</dt><dd>Not recorded yet${j.state==="reserved"?" (not launched)":""}</dd>`;
+ const r=j.res;
+ return `<dt>Resources · last checkpoint</dt><dd>CPU ${dur(r.cpu)} · peak ${r.peak}% · peak RSS ${bytes(r.rss)}<br>${r.samples} samples · ${r.completeness}${r.reason?`: ${esc(r.reason)}`:""}</dd>`;
+}
+function links(j){
+ const L=(l,k)=>`<a href="#" data-demo="${k}" title="Illustrative ${k} link">${esc(l)} ↗</a>`;
+ const wl=j.worklog?(j.worklog.startsWith("#")?L(j.worklog+(j.wlTitle?" "+j.wlTitle:""),"worklog")+(j.wlTitle?"":'<span class="unknown">Title unavailable</span>'):"worklog "+esc(j.worklog)):"No worklog";
+ return `<dt>Worklog / session</dt><dd>${wl}<br>${j.session?L("Copilot session "+j.session,"session"):"No agent session recorded"}</dd><dt>Checkout</dt><dd>${j.cwd?L(j.cwd,"Finder"):"Working directory not recorded"}</dd><dt>Attribution / client</dt><dd>${esc([j.repo,j.branch,j.commit].filter(Boolean).join(" · ")||"No attribution recorded")}<br>${esc(j.client||"Client not recorded")}</dd>`;
+}
+function inspector(qs){
+ const j=findJob(S.selected);
+ if(!j)return `<div class="selection"><h2>Selected job</h2><p class="no-selection">${S.data.active.length+S.data.queue.length?"No visible job selected. Choose another tab or clear the worklog filter.":"Nothing is running or queued. Details appear here when a job is submitted; the broker admits it when capacity and checks allow."}</p></div>`;
+ const acts=actionsFor(j),dis=live()?"":"disabled";
+ const actHtml=acts.length?`<div class="actions">${acts.map(([k,l])=>`<button data-act="${k}" data-id="${j.id}" class="${k==="cancel"?"destructive":""}" ${dis}>${l}</button>`).join("")}</div>`:"";
+ const head=`<div class="selection" data-selected="${j.id}"><h2>Selected job</h2><p class="hint">${esc(j.id)} · ${live()?"click a row or use ↑/↓":"last known state · not live"}</p>`;
+ if(j.kind)return head+`<p class="selected-state ${j.kind}">${{ok:"✓ Success",fail:"× Failed",cancel:"− Cancelled",unknown:"? Unknown"}[j.kind]}</p><p class="command">${esc(j.command)}</p><dl><dt>Finished · UTC</dt><dd>${full(j.finished)}</dd><dt>Elapsed</dt><dd>${j.elapsed==null?"Not recorded":dur(j.elapsed)+" wall-clock"}</dd></dl><p class="note">Full finished-job inspector is specified by the approved Recently finished design.</p></div>`;
+ if(j.state){
+  const el=activeElapsed(j),w=activeWarnings(j);
+  const label=j.cancelReq?"Cancelling":{running:"Running",reserved:"Reserved · awaiting launch",finishing:"Finishing"}[j.state];
+  return head+`<p class="selected-state" style="color:${j.cancelReq?"var(--amber)":"var(--run)"}">${j.forced?"⚡ ":"▶ "}${label} · ${el==null?dur(sinceAdmit(j))+" since admission":dur(el)+" so far"}</p>${actHtml}<p class="command">${esc(j.command)}</p>${w.map(x=>`<p class="warning">⚠ ${esc(x)}</p>`).join("")}<dl>
+  <dt>Started · admitted (UTC)</dt><dd>${j.startedAt?full(j.startedAt):"Not started"} · ${full(j.admittedAt)}</dd>
+  <dt>Admission</dt><dd>weight ${j.weight} of ${S.capacity}${j.forced?" · FORCED (bypassed order and checks)":""}${j.backfill?" · admitted by backfill":""} · attempt ${j.attempt}<br>Free memory at admission: ${bytes(j.freeMem)}</dd>
+  <dt>Process</dt><dd>${j.pid?"pid "+j.pid:"No process recorded yet"}</dd>
+  ${measureBlock(j)}${links(j)}</dl><p class="note">Elapsed is root-process wall-clock time so far. Tuna does not estimate progress or completion time. Resource figures are the broker's last checkpoint and may lag.</p></div>`;
+ }
+ const i=S.data.queue.indexOf(j),w=queuedWarnings(j),st=queuedStatus(j,qs);
+ const ahead=S.data.queue.slice(0,i).filter(x=>!oversized(x)).reduce((s,x)=>s+x.weight,0);
+ return head+`<p class="selected-state">#${i+1} of ${S.data.queue.length} · waiting ${dur(wait(j))}</p>${actHtml}<p class="command">${esc(j.command)}</p>${w.map(x=>`<p class="warning">⚠ ${esc(x)}</p>`).join("")}<dl>
+ <dt>Admission status</dt><dd>${esc(st.full||st.text)}</dd>
+ <dt>Priority</dt><dd>${j.priority}${j.priority===1337?" (default)":j.priority<1337?" · ahead of default work":" · behind default work"}<br><span class="unknown">Lower numbers run first; never preempts running jobs. Read-only here.</span></dd>
+ <dt>Weight · capacity now</dt><dd>needs ${j.weight} · ${free()} of ${S.capacity} free · ${ahead} weight queued ahead</dd>
+ <dt>Queued (UTC)</dt><dd>${full(j.queuedAt)}</dd>
+ <dt>Runner</dt><dd>${j.connected?"Connected":"Disconnected"+(j.grace!=null?` · ${j.grace}s grace left`:"")}${j.bypass?`<br>Bypassed by backfill ${j.bypass}× while head`:""}</dd>
+ ${links(j)}</dl><p class="note">Position is order, not a start time. The broker decides admission from capacity and its last memory/load sample at each decision; checks passing now do not reserve a slot.</p></div>`;
+}
+function sidebar(qs){
+ const s=summary();
+ const segs=S.data.active.map((j,i)=>{const pre=S.data.active.slice(0,i).reduce((a,x)=>a+x.weight,0);return `<i class="${pre+j.weight>S.capacity||j.forced?"over":j.state==="reserved"?"res":""}" style="flex:${j.weight}"></i>`}).join("")+(s.free?`<span style="flex:${s.free}"></span>`:"");
+ return `<aside class="sidebar" aria-label="Summary and selected job"><div class="window-summary"><h2>${live()?"Now":"Last known"} · capacity ${s.occupied}/${s.capacity}</h2><div class="capbar" title="Held capacity by job weight">${segs}</div>
+ <div class="counts"><span style="color:var(--run)">▶ ${s.running} Running</span><span>◌ ${s.reserved} Reserved</span><span># ${s.queued} Queued</span><span class="${s.attention?"cancel":"unknown"}">⚠ ${s.attention} Attention</span></div>
+ <div class="metrics"><b>Longest running ${dur(s.longestRun)}</b> · oldest wait ${dur(s.oldestWait)}<br>Queued weight ${s.queuedWeight} · free slots ${s.free}${s.occupied>s.capacity?` · <span class="warn">${s.occupied-s.capacity} over</span>`:""}<br>Queue ${qsName[qs.state].toLowerCase()}${qs.head&&qs.state!=="paused"?" · head: "+esc(qs.head.toLowerCase()):""}</div></div>${inspector(qs)}</aside>`;
+}
+
+function render(){
+ ensureSelection();const qs=queueState();
+ const list0=document.querySelector(".list")?.scrollTop||0,side0=document.querySelector(".selection")?.scrollTop||0,focused=document.activeElement?.dataset?.select;
+ document.querySelector("#stage").innerHTML=`<section class="window" style="--w:${S.width||1000}px">
+ <div class="titlebar"><i class="traffic"></i><i class="traffic"></i><i class="traffic"></i><span>Tuna Monitor · illustrative</span></div>
+ ${brokerHeader(qs)}
+ <div class="body"><div class="jobs">${S.tab==="finished"?"":strips(qs)}${tabs()}${matrix()}${S.worklog?`<div class="filter-note"><span>${esc(S.worklog)} only</span><button id="clear-group">All worklogs</button></div>`:""}${list(qs)}</div>${sidebar(qs)}</div>
+ <div class="footer"><span>Illustrative data, not live · bars are relative, open-ended, no ETA</span><span class="sim">Controls simulate locally · no broker requests</span></div>
+ ${S.sheet?sheet():""}${S.toast?`<div class="toast" role="status">${esc(S.toast)}</div>`:""}</section>`;
+ const l=document.querySelector(".list");if(l)l.scrollTop=list0;const sel=document.querySelector(".selection");if(sel)sel.scrollTop=side0;
+ document.querySelector("#matrix").addEventListener("toggle",e=>{S.matrixOpen=e.target.open});
+ if(focused)document.querySelector(`[data-select="${focused}"]`)?.focus({preventScroll:true});
+ if(S.sheet)document.querySelector(".sheet .keep")?.focus();
+}
+
+/* ---------- simulated controls (local only) ---------- */
+function sheet(){const {kind,job}=S.sheet;
+ const title=kind==="force"?"Force-start this job?":`Cancel this ${job.state==="reserved"?"reserved":job.state?"running":"queued"} job?`;
+ const msg=kind==="force"?"It starts now, out of queue order and even while the queue is paused, bypassing capacity, memory and load checks. Its weight still counts toward occupied capacity, so the machine may be overloaded.":job.state?"Its processes are stopped immediately without a graceful shutdown. This cannot be undone.":"It loses its queue position. If it is admitted before the request arrives, it is stopped instead.";
+ return `<div class="sheet-backdrop"><div class="sheet" role="alertdialog" aria-modal="true" aria-label="${esc(title)}"><h3>${title}</h3><pre>${esc(job.command)}</pre><p>${msg}</p><p class="simnote">Design simulation: confirming changes this page only.</p><div class="btns"><button class="keep" data-sheet="keep">${kind==="force"?"Don't Start":"Keep Job"}</button><button class="confirm" data-sheet="confirm">${kind==="force"?"Force Start":"Cancel Job"}</button></div></div></div>`}
+function toast(t){S.toast=t;render();clearTimeout(toast.t);toast.t=setTimeout(()=>{S.toast=null;render()},2600)}
+function act(kind,id){
+ if(!live())return;
+ if(kind==="pause"){S.mode="paused";S.pausedAt=S.now;return toast("Simulated: queue paused. Running jobs continue.")}
+ if(kind==="resume"){S.mode="enabled";return toast("Simulated: queue resumed. The broker decides the next admission.")}
+ const j=findJob(id),q=S.data.queue;if(!j)return;
+ if(kind==="front"){const f=q[0];const clamp=j.priority>f.priority;j.priority=Math.min(j.priority,f.priority);j.seq=f.seq-1;sortQueue();S.selected=j.id;return toast(`Simulated move to front${clamp?` · priority clamped to ${j.priority}`:""}.`)}
+ if(kind==="back"){const b=q[q.length-1];const clamp=j.priority<b.priority;j.priority=Math.max(j.priority,b.priority);j.seq=b.seq+1;sortQueue();S.selected=j.id;return toast(`Simulated move to back${clamp?` · priority clamped to ${j.priority}`:""}.`)}
+ if(kind==="force"||kind==="cancel"){S.sheet={kind,job:j};render()}
+}
+function confirmSheet(){const {kind,job}=S.sheet;S.sheet=null;const d=S.data;
+ if(kind==="force"){d.queue.splice(d.queue.indexOf(job),1);d.active.push({...job,state:"running",forced:true,backfill:false,attempt:1,admittedAt:S.now,startedAt:S.now+1000,pid:53000+S.nextSeq++,freeMem:18.4*GiB,res:null});S.selected=job.id;return toast("Simulated force start · weight counts toward occupied capacity.")}
+ if(job.state){job.cancelReq=S.now;setTimeout(()=>{if(job.cancelReq&&!job.done){job.cancelAck=S.now;render()}},1500);return toast("Simulated cancellation request · shown until the job finishes.")}
+ d.queue.splice(d.queue.indexOf(job),1);d.recent.unshift({id:job.id,kind:"cancel",command:job.command,worklog:job.worklog,finished:S.now,elapsed:null});d.recent.length=Math.min(d.recent.length,25);toast("Simulated: cancelled before start; moved to Recently finished.")}
+
+/* ---------- events ---------- */
+function select(id,focus){S.selected=id;render();document.querySelector(".selection")&&(document.querySelector(".selection").scrollTop=0);if(focus)document.querySelector(`[data-select="${id}"]`)?.focus()}
+document.querySelector("#scenario").onchange=e=>{load(e.target.value);render()};
+document.querySelector("#width").onchange=e=>{S.width=Number(e.target.value);render()};
+document.addEventListener("click",e=>{
+ const sh=e.target.closest("[data-sheet]");if(sh){if(sh.dataset.sheet==="confirm")confirmSheet();else{S.sheet=null;render()}return}
+ const a=e.target.closest("[data-act]");if(a){e.stopPropagation();act(a.dataset.act,a.dataset.id);return}
+ const row=e.target.closest("[data-select]");if(row){select(row.dataset.select,true);return}
+ const pick=e.target.closest("[data-pick]");if(pick){const id=pick.dataset.pick;if(!visibleIds().ids.includes(id)){S.tab="active";S.worklog=null}select(id);document.querySelector(`[data-select="${id}"]`)?.scrollIntoView({block:"nearest"});return}
+ const tab=e.target.closest("[data-tab]");if(tab){S.tab=tab.dataset.tab;render();return}
+ const tl=e.target.closest("[data-tab-link]");if(tl){S.tab=tl.dataset.tabLink;render();return}
+ const g=e.target.closest("[data-group]");if(g){S.worklog=g.dataset.group;render();return}
+ if(e.target.closest("#clear-group")){S.worklog=null;render();return}
+ const demo=e.target.closest("[data-demo]");if(demo){e.preventDefault();demo.textContent=demo.textContent.replace(" ↗","")+" (demo link)";demo.removeAttribute("href")}
+});
+document.addEventListener("keydown",e=>{
+ if(S.sheet&&e.key==="Escape"){S.sheet=null;render();return}
+ const row=e.target.closest?.("[data-select]");if(!row||e.target!==row)return;
+ const ids=visibleIds().ids,i=ids.indexOf(row.dataset.select);
+ if(e.key==="ArrowDown"||e.key==="ArrowUp"){e.preventDefault();const n=ids[Math.max(0,Math.min(ids.length-1,i+(e.key==="ArrowDown"?1:-1)))];select(n,true);document.querySelector(`[data-select="${n}"]`)?.scrollIntoView({block:"nearest"})}
+ else if(e.key==="Home"||e.key==="End"){e.preventDefault();select(ids[e.key==="Home"?0:ids.length-1],true)}
+ else if(e.key==="Enter"||e.key===" "){e.preventDefault();select(row.dataset.select,true)}
+});
+let pointerDown=false;
+document.addEventListener("pointerdown",()=>pointerDown=true,true);
+document.addEventListener("pointerup",()=>setTimeout(()=>pointerDown=false),true);
+setInterval(()=>{if(live()&&!S.frozen){S.now+=1000;if(!S.sheet&&!pointerDown)render()}},1000);
+
+const params=new URLSearchParams(location.search);
+load(params.get("scenario")||"live");S.width=Number(params.get("width")||1000);
+document.querySelector("#scenario").value=S.scenario;document.querySelector("#width").value=String(S.width);
+if(params.get("select"))S.selected=params.get("select");
+if(params.has("freeze"))S.frozen=true;
+window.design={S,summary,queueState,visibleIds,render,act,confirmSheet,select,load};
+render();
+if(params.has("selftest")){
+ S.frozen=true;const out=[],ok=(n,c)=>out.push((c?"PASS ":"FAIL ")+n);
+ const key=(k)=>{const el=document.activeElement;el.dispatchEvent(new KeyboardEvent("keydown",{key:k,bubbles:true}))};
+ load("live");render();
+ let s=summary();ok("live occupied 6/6",s.occupied===6&&s.capacity===6);ok("live running=3 reserved=1 queued=6",s.running===3&&s.reserved===1&&s.queued===6);
+ ok("live longest running 1487s",s.longestRun===1487);ok("live oldest wait 7420s",s.oldestWait===7420);ok("queued weight 16",s.queuedWeight===16);
+ ok("attention=3 (cancelling, disconnected, oversized)",s.attention===3);
+ let qs=queueState();ok("queue blocked on capacity, head p100",qs.state==="blocked"&&qs.head==="Waiting for capacity"&&qs.headId==="j-0420");
+ ok("queue order priority then FIFO",S.data.queue.map(j=>j.id).join()==="j-0420,j-0398,j-0418,j-0421,j-0422,j-0423");
+ document.querySelector('[data-select="j-0415"]').click();ok("row click selects + inspector",S.selected==="j-0415"&&document.querySelector(".selection").dataset.selected==="j-0415");
+ document.querySelector('[data-select="j-0415"]').focus();key("ArrowDown");ok("ArrowDown selects next",S.selected==="j-0417"&&document.activeElement.dataset.select==="j-0417");
+ key("ArrowDown");key("ArrowDown");ok("ArrowDown crosses into Queued",S.selected==="j-0420");key("ArrowUp");ok("ArrowUp back",S.selected==="j-0419");
+ key("End");ok("End selects last queued",S.selected==="j-0423");
+ act("front","j-0423");ok("move to front clamps priority to 100",S.data.queue[0].id==="j-0423"&&S.data.queue[0].priority===100);
+ act("back","j-0423");ok("move to back clamps priority to 1337",S.data.queue.at(-1).id==="j-0423"&&S.data.queue.at(-1).priority===1337);
+ act("cancel","j-0417");ok("cancel opens confirmation",!!document.querySelector(".sheet"));confirmSheet();s=summary();ok("cancel running marks request, keeps capacity",S.data.active.find(j=>j.id==="j-0417").cancelReq&&s.occupied===6);
+ act("force","j-0418");confirmSheet();s=summary();ok("force start → over capacity 7/6",s.occupied===7&&document.querySelector(".slotnote.over"));
+ act("pause");ok("pause → paused",queueState().state==="paused");act("resume");
+ load("live");S.tab="queued";render();ok("Queued tab shows only queued rows",document.querySelectorAll(".job-row").length===6);
+ S.tab="attention";render();ok("Attention tab rows",document.querySelectorAll(".job-row").length===summary().attention);
+ S.tab="active";S.worklog="#68";render();ok("worklog filter",visibleIds().ids.join()==="j-0415,j-0418");S.worklog=null;
+ load("stale");render();ok("stale: unknown queue, controls disabled",queueState().state==="unknown"&&[...document.querySelectorAll("[data-act]")].every(b=>b.disabled));
+ load("idle");render();ok("idle: empty states",document.querySelectorAll(".emptyrow").length===2&&queueState().state==="idle");
+ load("paused");render();ok("paused head reason",queueState().state==="paused"&&document.querySelector(".pausebtn").textContent==="Resume Queue");
+ for(const w of [760,560]){load("live");S.width=w;render();const win=document.querySelector(".window").getBoundingClientRect(),list=document.querySelector(".list").getBoundingClientRect(),cmd=document.querySelector(".job-row .command").getBoundingClientRect();ok(`width ${w}: no overflow, list visible, command ≥120px`,document.querySelector(".window").scrollWidth<=w&&list.height>80&&cmd.width>=120)}
+ load(params.get("scenario")||"live");S.width=1000;render();
+ const passed=out.filter(l=>l.startsWith("PASS ")).length,failed=out.length-passed;
+ out.push(`RESULT ${passed}/${out.length} passed, ${failed} failed`);
+ const pre=document.createElement("pre");pre.id="selftest";pre.dataset.passed=passed;pre.dataset.failed=failed;pre.textContent=out.join("\n");document.body.prepend(pre);
+}
+</script>
+</body>
+</html>

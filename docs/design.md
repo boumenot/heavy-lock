@@ -2153,14 +2153,17 @@ submission can still commit after an absent lookup, so absence does not
 authorize an automatic new-key retry.
 
 **Delegated decision: listing size.** `ListJobs` covers queued, running
-and finished jobs, newest first by `(queued_at, job_id)`. It filters
-by state, repository, client name and a queue-time range. It uses keyset
-pagination with opaque tokens; the initial default page size is 50 and the
-maximum is 500. These follow the assistant's proposed defaults: smaller
-pages limit individual response size but require more round trips, while
-larger pages can reduce round trips at the cost of memory and response
-latency. Measure actual usage before tuning; handling of a request above the
-maximum remains open.
+and finished jobs, by default newest first by `(queued_at, job_id)`. An
+explicit finished-only request can instead order by `(finished_at, job_id)`;
+the user selected this bounded broker/API approach for #77. Each page's
+event sequence is read atomically with that page, so a client can fence
+buffered event updates. It filters by state, repository, client name and a
+queue-time range. It uses keyset pagination with opaque tokens; pages do not
+share a snapshot. The default page size is 50 and the maximum is 500;
+requests above the maximum are rejected. The schema-v5 completion index
+avoids scanning and sorting retained history for the monitor's unfiltered
+last-X request. Wall-clock completion order is deterministic for the recorded
+timestamps, not a monotonic physical clock.
 `GetQueue` separately returns current queue order, including manual moves.
 
 **Unauthenticated.** Any local process that can connect may submit, list,
@@ -2913,15 +2916,21 @@ message ListJobsRequest {
   google.protobuf.Timestamp queued_before = 5; // exclusive
   uint32 page_size = 6;                    // 0 means 50; maximum 500
   string page_token = 7;
+  // When true, states must contain exactly FINISHED. Order newest first by
+  // (finished_at, job_id) instead of the default (queued_at, job_id).
+  bool order_by_finished_at = 8;
 }
 
 message ListJobsResponse {
-  // Newest first by (queued_at, job_id). Keyset pagination: the
-  // token encodes the last key and filters, avoiding offset shifts. It is
-  // not a snapshot: concurrent inserts, updates or deletes may affect
-  // later pages.
+  // Newest first by the requested ordering. Keyset pagination: the token
+  // encodes the last key and filters, avoiding offset shifts. Pagination is
+  // not a snapshot: concurrent inserts, updates or deletes may affect later
+  // pages.
   repeated Job jobs = 1;
   string next_page_token = 2;              // empty when no more pages
+  // Last committed event reflected in this page, read atomically with jobs.
+  // A later page has its own sequence; zero means no events have committed.
+  int64 event_seq = 3;
 }
 
 message GetJobRequest {
@@ -3044,7 +3053,7 @@ lexically first such key is reported.
 | `GET` | `/events` | `WatchEvents` | SSE snapshot, replay, changes and heartbeats; see below |
 | `GET` | `/status` | `GetStatus` | Capacity, occupancy (may exceed capacity after force-start), pause, blocked-head reason, live readings |
 | `GET` | `/queue` | `GetQueue` | Waiting jobs in queue order, head first |
-| `GET` | `/jobs` | `ListJobs` | Query: `states` (repeatable), `repository`, `clientName`, `queuedAfter`, `queuedBefore`, `pageSize`, `pageToken` |
+| `GET` | `/jobs` | `ListJobs` | Query: `states` (repeatable), `repository`, `clientName`, `queuedAfter`, `queuedBefore`, `pageSize`, `pageToken`, `orderByFinishedAt` |
 | `GET` | `/jobs/{job_id}` | `GetJob` | Full job record |
 | `GET` | `/submissions/{idempotency_key}` | `GetSubmission` | Diagnose a job or durable no-wait/deleted key; absent is only point-in-time |
 | `POST` | `/jobs/{job_id}/cancel` | `CancelJob` | Body: optional `reason`. Monitor confirmation is a UI step, not enforced by the API |
@@ -3197,7 +3206,7 @@ replace `NOT NULL`, `CHECK`, enabled foreign keys or broker-side
 validation; the schema uses all of them.
 
 ```sql
--- Tuna SQLite schema (schema version 4).
+-- Tuna SQLite schema (schema version 5).
 --
 -- A new database is created at the current version and records every
 -- migration version it includes. Older databases are migrated in place by
@@ -3531,7 +3540,7 @@ CREATE INDEX jobs_repository ON jobs (repository, queued_at_ns DESC, id)
   WHERE repository IS NOT NULL;
 CREATE INDEX jobs_client_name ON jobs (client_name, queued_at_ns DESC, id)
   WHERE client_name IS NOT NULL;
-CREATE INDEX jobs_finished ON jobs (finished_at_ns)
+CREATE INDEX jobs_finished ON jobs (finished_at_ns DESC, id DESC)
   WHERE state = 'finished';
 
 -- Waiting jobs only. Equal priorities use queue_seq; reorder rewrites it. Because
@@ -3659,8 +3668,9 @@ INSERT INTO schema_migrations (version, applied_at_ns, description)
   FROM (SELECT 1 AS version, 'initial schema' AS description
         UNION ALL SELECT 2, 'explicit queue mode'
         UNION ALL SELECT 3, 'client OS version'
-        UNION ALL SELECT 4, 'queue priority');
-PRAGMA user_version = 4;
+        UNION ALL SELECT 4, 'queue priority'
+        UNION ALL SELECT 5, 'finished job ordering');
+PRAGMA user_version = 5;
 
 COMMIT;
 ```

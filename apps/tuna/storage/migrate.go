@@ -10,7 +10,7 @@ import (
 
 // SchemaVersion is the version schema.sql creates and every opened database
 // is migrated to.
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // A migration upgrades a database from version-1 to version inside the
 // caller's transaction. expected holds the current schema's object
@@ -27,6 +27,7 @@ var migrations = []migration{
 	{version: 2, description: "explicit queue mode", apply: migrateQueueMode},
 	{version: 3, description: "client OS version", apply: migrateClientOSVersion},
 	{version: 4, description: "queue priority", apply: migrateQueuePriority},
+	{version: 5, description: "finished job ordering", apply: migrateFinishedOrder},
 }
 
 // migrate upgrades an older database in one immediate transaction and
@@ -121,5 +122,17 @@ func migrateClientOSVersion(ctx context.Context, conn *sql.Conn, _ map[string]st
 
 func migrateQueuePriority(ctx context.Context, conn *sql.Conn, _ map[string]string) error {
 	_, err := conn.ExecContext(ctx, "ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 1337 CHECK (priority BETWEEN -2147483648 AND 2147483647)")
+	return err
+}
+
+func migrateFinishedOrder(ctx context.Context, conn *sql.Conn, expected map[string]string) error {
+	definition, ok := expected["jobs_finished"]
+	if !ok {
+		return errors.New("schema has no jobs_finished index")
+	}
+	if _, err := conn.ExecContext(ctx, "DROP INDEX jobs_finished"); err != nil {
+		return err
+	}
+	_, err := conn.ExecContext(ctx, definition)
 	return err
 }

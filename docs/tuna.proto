@@ -742,15 +742,21 @@ message ListJobsRequest {
   google.protobuf.Timestamp queued_before = 5; // exclusive
   uint32 page_size = 6;                    // 0 means 50; maximum 500
   string page_token = 7;
+  // When true, states must contain exactly FINISHED. Order newest first by
+  // (finished_at, job_id) instead of the default (queued_at, job_id).
+  bool order_by_finished_at = 8;
 }
 
 message ListJobsResponse {
-  // Newest first by (queued_at, job_id). Keyset pagination: the
-  // token encodes the last key and filters, avoiding offset shifts. It is
-  // not a snapshot: concurrent inserts, updates or deletes may affect
-  // later pages.
+  // Newest first by the requested ordering. Keyset pagination: the token
+  // encodes the last key and filters, avoiding offset shifts. Pagination is
+  // not a snapshot: concurrent inserts, updates or deletes may affect later
+  // pages.
   repeated Job jobs = 1;
   string next_page_token = 2;              // empty when no more pages
+  // Last committed event reflected in this page, read atomically with jobs.
+  // A later page has its own sequence; zero means no events have committed.
+  int64 event_seq = 3;
 }
 
 message GetJobRequest {

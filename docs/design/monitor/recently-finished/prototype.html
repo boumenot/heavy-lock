@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tuna · Selected Recently finished design</title>
+<style>
+:root{font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#252930;background:#e8eaed;--line:#d5d9df;--muted:#545c67;--blue:#0064ce;--green:#197338;--red:#bb1532;--amber:#875700}
+
+*{box-sizing:border-box}
+body{margin:0}
+button,select{font:inherit;color:inherit}
+button,select{background:#fff;border:1px solid #bfc5ce;border-radius:5px;padding:5px 9px}
+button{cursor:pointer}
+button:hover{background:#edf3fb}
+button:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:3px solid #3789ed;outline-offset:-2px}
+.active{background:#dfebfd!important;border-color:#79a2df!important}
+header{padding:20px 24px 14px;background:#f6f7f9;border-bottom:1px solid var(--line)}
+h1{font-size:21px;margin:0 0 6px;font-weight:650}
+header p{margin:0;color:var(--muted);line-height:1.6;max-width:1000px}
+.controls{display:flex;gap:18px;align-items:center;padding:12px 24px;background:#f6f7f9;border-bottom:1px solid var(--line)}
+label{display:flex;align-items:center;gap:7px}
+.controls span{font-size:12px;color:var(--muted)}
+main{padding:24px;overflow-x:auto}
+.window{width:1000px;height:650px;background:#fbfbfc;border:1px solid #b9bec6;border-radius:9px;overflow:hidden;box-shadow:0 5px 15px #1d263014;display:flex;flex-direction:column}
+.titlebar{height:32px;flex:none;background:#edeef0;display:flex;align-items:center;padding:0 12px;gap:6px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+.traffic{width:10px;height:10px;border-radius:50%;background:#ff6159;border:1px solid #d34e46}
+.traffic:nth-child(2){background:#ffbd2e;border-color:#d89e22}
+.traffic:nth-child(3){background:#28c840;border-color:#20a333}
+.titlebar span{margin:auto;transform:translateX(-20px)}
+.sectionhead{padding:12px 14px;display:flex;justify-content:space-between;border-bottom:1px solid var(--line);background:#f7f7f9}
+.sectionhead strong{font-size:14px}
+.sectionhead span{color:var(--muted);font-size:11px}
+.body{display:flex;flex:1;min-height:0}
+.sidebar{width:236px;flex:none;background:#f0f2f5;border-left:1px solid var(--line);overflow:auto}
+.window-summary{padding:12px 14px;border-bottom:1px solid #bcc3cc}
+.window-summary h2,.selection h2{font-size:12px;margin:0 0 9px;font-weight:650}
+.counts{display:grid;grid-template-columns:1fr 1fr;gap:7px 12px;font-size:12px}
+.ok{color:var(--green)}
+.fail{color:var(--red)}
+.cancel{color:var(--amber)}
+.unknown{color:var(--muted)}
+.symbol{font-weight:700}
+.metrics{margin-top:12px;font-size:11px;color:var(--muted);line-height:1.75}
+.metrics b{color:#303640;font-weight:600}
+.selection{padding:12px 14px}
+.selection .hint{font-size:11px;color:var(--muted);margin:0 0 9px}
+.selection .selected-outcome{font-size:12px;margin:0 0 9px;font-weight:650}
+.selection .command{font-size:11px;white-space:normal;overflow-wrap:anywhere;line-height:1.6;margin:0 0 10px}
+.selection dl{margin:0;font-size:11px;line-height:1.55}
+.selection dt{color:var(--muted);margin-top:9px}
+.selection dd{margin:2px 0 0;overflow-wrap:anywhere}
+.selection a{color:var(--blue);display:inline-block;margin-right:6px}
+.selection .note{font-size:10px;color:var(--muted);line-height:1.6;margin-top:12px}
+.selection .warning{font-size:11px;line-height:1.6}
+.history{flex:1;min-width:0;display:flex;flex-direction:column}
+.ribbon-wrap{padding:10px 12px 8px;border-bottom:1px solid var(--line);flex:none}
+.ribbon-label{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:6px}
+.sequence{display:flex;gap:4px;flex-wrap:wrap}
+.sequence button{padding:0;width:20px;height:20px;font-size:11px;border-radius:3px}
+.sequence .ok{background:#e4f0e8}
+.sequence .fail{background:#f8e5e8}
+.sequence .cancel{background:#f6ecd6}
+.sequence button.selected{outline:2px solid var(--blue);outline-offset:1px}
+.sequence button.dim{opacity:.5}
+.tabbar{padding:8px 12px;display:flex;gap:4px;flex:none;border-bottom:1px solid var(--line)}
+.tabbar button{font-size:11px;padding:4px 8px}
+.matrix-wrap{flex:none;border-bottom:1px solid var(--line);background:#f7f8fa}
+.matrix-wrap>summary{padding:8px 12px;cursor:pointer;font-size:11px;font-weight:600}
+.matrix-wrap summary span{font-weight:400;color:var(--muted);margin-left:8px}
+.matrix-inner{max-height:195px;overflow:auto}
+.matrix{width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed}
+.matrix th{font-size:10px;color:var(--muted);font-weight:600}
+.matrix td,.matrix th{padding:6px 8px;border-top:1px solid #e0e3e7;text-align:center}
+.matrix td:first-child,.matrix th:first-child{text-align:left;width:135px}
+.matrix button{font-size:10px;padding:2px 5px}
+.filter-note{font-size:10px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;padding:6px 12px;border-bottom:1px solid var(--line)}
+.filter-note button{font-size:10px;padding:2px 5px}
+.columnhead,.job-row{display:grid;grid-template-columns:39px 21px minmax(0,1fr) 66px 62px 50px;gap:8px;align-items:center;padding:0 12px}
+.columnhead{font-size:10px;color:var(--muted);height:25px;flex:none;background:#f2f3f5;border-bottom:1px solid var(--line)}
+.columnhead .runtime-label{grid-column:5/7;text-align:right}
+.list{flex:1;min-height:0;overflow:auto}
+.job-row{height:32px;border-bottom:1px solid #e3e5e8;cursor:pointer;position:relative}
+.job-row:hover{background:#edf3fb}
+.job-row.selected{background:#e0ecfb}
+.stamp{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+.marker{border:1px solid #c7cdd6;background:#fff;border-radius:50%;width:20px;height:20px;text-align:center;line-height:18px;z-index:1}
+.job-row:before{content:"";position:absolute;left:68px;top:0;bottom:0;width:1px;background:#d5d9df}
+.command{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.outcome{font-size:10px;white-space:nowrap}
+.durationbar{width:62px;height:5px;border-radius:2px;background:#dce5ef;overflow:hidden}
+.durationbar i{height:100%;display:block;background:#768ca8}
+.durationbar.fail i{background:#b65a62}
+.durationbar.cancel i{background:#aa8953}
+.missing{font-size:10px;text-align:center;color:var(--muted)}
+.time{font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+.footer{border-top:1px solid var(--line);padding:6px 12px;font-size:10px;color:var(--muted);flex:none;background:#f5f6f8}
+.empty{padding:50px 25px;text-align:center;color:var(--muted);line-height:1.7}
+.empty h3{font-size:14px;color:#303640}
+.legend{max-width:1000px;font-size:12px;color:var(--muted);line-height:1.6;padding:14px 0}
+.legend summary{cursor:pointer;font-weight:600}
+.legend p{margin:8px 0}
+.no-selection{font-size:11px;line-height:1.6;color:var(--muted)}
+
+.sidebar{display:flex;flex-direction:column;overflow:hidden}
+.window-summary{flex:none}
+.selection{flex:1;min-height:0;overflow:auto}
+
+@media(max-width:650px){header,.controls{padding-left:12px;padding-right:12px}
+.controls{flex-wrap:wrap;gap:8px}
+main{padding:12px}
+.controls span{width:100%}
+}
+
+</style>
+</head>
+<body>
+<header><h1>Recently finished · selected combination</h1><p>11 Outcome ribbon + 5 Summary sidebar + 10 Finish timeline + 12 Elapsed ruler + 17 Outcome tabs + 19 Worklog outcome matrix.<br>Interactive design review · illustrative data, not live · only the finished section is shown.</p></header>
+<div class="controls"><label>Last <select id="limit"><option>10</option><option selected>25</option><option>50</option></select> jobs</label><label>Fixture <select id="fixture"><option value="mixed">Mixed outcomes</option><option value="empty">Empty history</option></select></label><span>Click a row to inspect it in the right-hand panel.</span></div>
+<main><div id="stage"></div>
+<details class="legend"><summary>Review notes · measurements and interactions</summary>
+<p>This assembled concept uses a fixed 1000 × 650 section viewport to accommodate the selected pieces; the original 25 concepts remain unchanged. The summary rail from 5 is on the right, with a selected-job inspector beneath its last-X summary. Clicking a row selects the job; the ribbon also selects jobs.</p>
+<p>Tabs filter the selected last-X window. The ribbon, sidebar summary and worklog matrix always count the complete window, not just the filtered list. “Show” in the matrix narrows the list by worklog; the outcome tab still applies. Selection follows the visible list when changing filters. A ribbon selection clears filters if necessary to reveal that job. The worklog matrix starts collapsed.</p>
+<p>The same 50 synthetic jobs from the original gallery are ordered newest first by fixed finish time. 10 / 25 / 50 are demonstration choices, not a production default. Elapsed is root-command wall-clock runtime, not CPU time, utilization or time saved. Missing elapsed values are excluded from statistics and have no runtime bar. Bars use the longest measured job in the full last-X window, even when filtering. CPU availability and completeness are disclosed per job. Worklog / session / checkout links are local demo affordances, not fabricated real destinations.</p>
+<p>Success = exit 0; failure = nonzero exit or launch failed; cancellation = cancelled before start or signaled with a cancellation request; unclassified = unknown. These grouping rules are design assumptions for review, not changes to production policy. Running, Queued, broker, retention and protocol are unchanged.</p>
+</details></main>
+<script>
+const commandFixtures=[
+["nix develop -c dart tool/dev.dart check all","tuna","#77","compact-history"],
+["go test -race ./scheduler ./storage -count=1","tuna","#68","finish-report"],
+["swift test --package-path apps/tuna-monitor-macos","tuna","#77","compact-history"],
+["nix build .#tuna","tuna","#61","nix-package"],
+["dart test test/dev_test.dart","tuna","#64","installer"],
+["go test ./...","tuna","#68","finish-report"],
+["nix develop -c dart tool/dev.dart check tuna-monitor-macos --verbose --diagnostics-port 49801","tuna","#77","compact-history"],
+["swift test --package-path packages/tuna-contract-swift","tuna","#61","bindings"],
+["dart tool/dev.dart check all","tuna",null,null],
+["nix develop -c go test ./runner -run TestCancellationAcknowledgementTimeout -count=1","tuna","#68","cancel-path"]
+];
+const jobs=Array.from({length:50},(_,i)=>{
+ const c=commandFixtures[i%10],kind=i%13===11?"unknown":i%7===2?"fail":i%9===4?"cancel":"ok";
+ const launch=kind==="fail"&&i%2===0,before=kind==="cancel"&&i%2===0;
+ return {id:"demo-"+String(1050-i),command:c[0],repo:i%8===6?null:c[1],worklog:i%8===6?null:c[2],branch:c[3],session:i%5===3?null:"demo-session-"+String(i+1).padStart(2,"0"),cwd:i%8===6?null:"~/Worktrees/tuna/"+(c[3]||"unattributed"),commit:i%8===6?null:"a17c"+String(100+i),kind,elapsed:before||launch||i%8===5?null:37+(i*73)%580,cpu:i%5===0?null:20+(i*97)%720,complete:i%3!==0,finished:new Date(Date.UTC(2026,10,27,23,30-i*3)),weight:i%4+1,attempt:i%10===1?2:1,forced:i===3,backfill:i===9,warning:i===4?"Broker took over termination: cancellation not acknowledged in time":i===11?"Outcome unknown":null,outcome:kind==="ok"?"exit 0":kind==="fail"?(launch?"launch failed":"exit 1"):kind==="cancel"?(before?"cancelled before start":"signal SIGTERM · cancellation requested"):"outcome unknown"};
+});
+const symbols={ok:"✓",fail:"×",cancel:"−",unknown:"?"},labels={ok:"Success",fail:"Failed",cancel:"Cancelled",unknown:"Unknown"};
+const state={limit:25,empty:false,filter:"all",worklog:null,selected:"demo-1050",matrixOpen:false};
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt=n=>{if(n==null)return "—";const s=Math.round(n);return s<60?s+"s":Math.floor(s/60)+"m "+s%60+"s"};
+const subset=()=>state.empty?[]:jobs.slice(0,state.limit);
+const worklog=j=>j.worklog||"Unattributed";
+function stats(a){const v=a.map(j=>j.elapsed).filter(v=>v!=null).sort((a,b)=>a-b),n=v.length,sum=v.reduce((a,b)=>a+b,0);return {total:a.length,ok:a.filter(j=>j.kind==="ok").length,fail:a.filter(j=>j.kind==="fail").length,cancel:a.filter(j=>j.kind==="cancel").length,unknown:a.filter(j=>j.kind==="unknown").length,n,sum,mean:n?sum/n:null,median:n?(v[Math.floor((n-1)/2)]+v[Math.floor(n/2)])/2:null,max:n?v[n-1]:null}}
+const visible=a=>a.filter(j=>(state.filter==="all"||j.kind===state.filter)&&(!state.worklog||worklog(j)===state.worklog));
+function ensureSelection(a){const v=visible(a);if(!v.some(j=>j.id===state.selected))state.selected=v[0]?.id||null}
+function link(label,kind){return `<a href="#" data-demo="${esc(kind)}" title="Illustrative ${esc(kind)} link">${esc(label)} ↗</a>`}
+function inspector(j){if(!j)return `<div class="selection"><h2>Selected job</h2><p class="no-selection">${state.empty?"No retained jobs to select. Details will appear here when history is available.":"No visible job selected. Choose another outcome or clear the worklog filter."}</p></div>`;
+ return `<div class="selection" data-selected="${j.id}"><h2>Selected job</h2><p class="hint">${j.id} · click a row to change</p><p class="selected-outcome ${j.kind}">${symbols[j.kind]} ${labels[j.kind]} · ${esc(j.outcome)}</p><p class="command">${esc(j.command)}</p><dl><dt>Finished · UTC</dt><dd>${j.finished.toISOString().replace("T"," ").replace(".000Z","")}</dd><dt>Elapsed / observed CPU</dt><dd>${fmt(j.elapsed)} wall-clock · ${fmt(j.cpu)} CPU</dd><dt>Worklog / session</dt><dd>${j.worklog?link(j.worklog,"worklog"):"No worklog"} ${j.session?link("Session "+j.session.slice(-2),"session"):"No session"}</dd><dt>Checkout</dt><dd>${j.cwd?link(j.cwd,"Finder checkout"):"Checkout unavailable"}</dd><dt>Attribution</dt><dd>${esc(j.repo||"Repository unavailable")} · ${esc(j.branch||"Branch unavailable")}<br>${esc(j.commit||"Commit unavailable")}</dd><dt>Admission / client</dt><dd>weight ${j.weight} · attempt ${j.attempt}${j.forced?" · FORCED":""}${j.backfill?" · backfill":""}<br>macOS · arm64 · tuna (illustrative)</dd></dl>${j.warning?`<p class="warning ${j.kind}">⚠ ${esc(j.warning)}</p>`:""}<p class="note">Elapsed ${j.elapsed==null?"not recorded; excluded from aggregates":"is root-command wall-clock runtime"}. CPU ${j.cpu==null?"unavailable":j.complete?"observed process-tree measurement":"incomplete process-tree measurement; sampling gaps"}. Missing values are never zero.</p></div>`}
+function sidebar(a){const s=stats(a),j=a.find(j=>j.id===state.selected);return `<aside class="sidebar" aria-label="Window summary and selected job"><div class="window-summary"><h2>Last ${s.total} finished jobs</h2><div class="counts">${["ok","fail","cancel","unknown"].map(k=>`<span class="${k}">${symbols[k]} ${s[k]} ${labels[k]}</span>`).join("")}</div><div class="metrics"><b>Mean ${fmt(s.mean)}</b> · median ${fmt(s.median)}<br>Longest ${fmt(s.max)} · measured ${s.n}/${s.total}<br>Root wall-clock elapsed · not CPU</div></div>${inspector(j)}</aside>`}
+function matrix(a){const groups=new Map;for(const j of a){const k=worklog(j);if(!groups.has(k))groups.set(k,[]);groups.get(k).push(j)}return `<details id="matrix" class="matrix-wrap" ${state.matrixOpen?"open":""}><summary>Worklog outcome matrix <span>${groups.size} groups · full last-${state.limit} window</span></summary><div class="matrix-inner"><table class="matrix"><thead><tr><th>Worklog</th><th>Success</th><th>Failed</th><th>Cancelled</th><th>Unknown</th><th>Records</th></tr></thead><tbody>${[...groups].map(([k,g])=>{const z=stats(g);return `<tr data-matrix-group="${esc(k)}"><td>${esc(k)}</td>${["ok","fail","cancel","unknown"].map(c=>`<td class="${c}">${z[c]}</td>`).join("")}<td><button data-group="${esc(k)}" class="${state.worklog===k?"active":""}">Show ${g.length}</button></td></tr>`}).join("")}</tbody></table></div></details>`}
+function jobRow(j,s){return `<div class="job-row ${state.selected===j.id?"selected":""}" data-select="${j.id}" tabindex="0" aria-label="${esc(labels[j.kind]+" · "+j.command)}" aria-current="${state.selected===j.id}"><span class="stamp" title="${j.finished.toISOString()}">${j.finished.toISOString().slice(11,16)}</span><span class="marker symbol ${j.kind}">${symbols[j.kind]}</span><span class="command" title="${esc(j.command)}">${esc(j.command)}</span><span class="outcome ${j.kind}" title="${esc(j.outcome)}">${labels[j.kind]}</span>${j.elapsed==null?'<span class="missing" title="Elapsed not recorded">—</span>':`<span class="durationbar ${j.kind}" title="Elapsed relative to longest measured job in last ${state.limit}"><i style="width:${j.elapsed/s.max*100}%"></i></span>`}<span class="time">${fmt(j.elapsed)}</span></div>`}
+function render(){const a=subset(),s=stats(a),v=visible(a);ensureSelection(a);const old=document.querySelector(".list")?.scrollTop||0,side=document.querySelector(".sidebar")?.scrollTop||0;
+ document.querySelector("#stage").innerHTML=`
+ <section class="window">
+  <div class="titlebar"><i class="traffic"></i><i class="traffic"></i><i class="traffic"></i><span>Tuna Monitor · Recently finished concept</span></div>
+  <div class="sectionhead"><strong>Recently finished</strong><span>Last ${state.limit} · ${a.length} retained · illustrative</span></div>
+  <div class="body">
+   <div class="history">
+    <div class="ribbon-wrap"><div class="ribbon-label"><span>Outcome ribbon · full window</span><span>Newest → oldest</span></div><div class="sequence">${a.map(j=>`<button data-ribbon="${j.id}" class="${j.kind} ${state.selected===j.id?"selected":""} ${!v.includes(j)?"dim":""}" aria-label="${j.id} · ${labels[j.kind]}" title="${j.id} · ${labels[j.kind]}">${symbols[j.kind]}</button>`).join("")||'<span class="missing">No retained outcomes</span>'}</div></div>
+    <div class="tabbar" aria-label="Filter by outcome">${["all","fail","cancel","unknown","ok"].map(k=>`<button data-filter="${k}" class="${state.filter===k?"active":""}" aria-pressed="${state.filter===k}">${k==="all"?"All":labels[k]} ${k==="all"?s.total:s[k]}</button>`).join("")}</div>
+    ${matrix(a)}${state.worklog?`<div class="filter-note"><span>${esc(state.worklog)} · ${v.length} matching jobs · ${state.filter==="all"?"all outcomes":labels[state.filter]}</span><button id="clear-group">All worklogs</button></div>`:""}
+    <div class="columnhead"><span>UTC</span><span></span><span>Command · ${v.length} of ${a.length} jobs</span><span>Outcome</span><span class="runtime-label">Elapsed · scaled / actual</span></div>
+    <div class="list">${v.length?v.map(j=>jobRow(j,s)).join(""):`<div class="empty"><h3>${a.length?"No matching jobs":"No retained finished jobs"}</h3><p>${a.length?"Choose another outcome or clear the worklog filter.<br>The summary still counts the complete window.":"When jobs finish, this section will summarize the latest selected window.<br>Missing history is not a successful run."}</p></div>`}</div>
+   </div>
+   ${sidebar(a)}
+  </div>
+  <div class="footer">Elapsed = root wall-clock runtime · “—” = not recorded · click row = select · illustrative, not live</div>
+ </section>`;
+ document.querySelector(".list").scrollTop=old;document.querySelector(".sidebar").scrollTop=side;
+ document.querySelector("#matrix").addEventListener("toggle",e=>{state.matrixOpen=e.target.open});
+}
+function select(id){state.selected=id;render();document.querySelector(".selection").scrollTop=0;}
+document.querySelector("#limit").onchange=e=>{state.limit=Number(e.target.value);render()};
+document.querySelector("#fixture").onchange=e=>{state.empty=e.target.value==="empty";render()};
+document.addEventListener("click",e=>{
+ const row=e.target.closest("[data-select]");if(row){select(row.dataset.select);return}
+ const ribbon=e.target.closest("[data-ribbon]");if(ribbon){const id=ribbon.dataset.ribbon;if(!visible(subset()).some(j=>j.id===id)){state.filter="all";state.worklog=null}select(id);document.querySelector(`[data-select="${id}"]`)?.scrollIntoView({block:"nearest"});return}
+ const tab=e.target.closest("[data-filter]");if(tab){state.filter=tab.dataset.filter;render();return}
+ const group=e.target.closest("[data-group]");if(group){state.worklog=group.dataset.group;render();return}
+ if(e.target.closest("#clear-group")){state.worklog=null;render();return}
+ const demo=e.target.closest("[data-demo]");if(demo){e.preventDefault();demo.textContent=demo.textContent.replace(" ↗","")+" (demo link)";demo.removeAttribute("href");}
+});
+document.addEventListener("keydown",e=>{const row=e.target.closest("[data-select]");if(row&&e.target===row&&(e.key==="Enter"||e.key===" ")){e.preventDefault();const id=row.dataset.select;select(id);document.querySelector(`[data-select="${id}"]`)?.focus({preventScroll:true})}});
+window.combined={jobs,state,stats,subset,visible,render};render();
+</script>
+</body>
+</html>

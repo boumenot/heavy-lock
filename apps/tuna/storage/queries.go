@@ -14,6 +14,8 @@ import (
 
 var ErrPageToken = errors.New("invalid page token or changed filters")
 
+const finishedJobsSource = "jobs INDEXED BY jobs_finished"
+
 type pageKey struct {
 	At      int64  `json:"at"`
 	ID      string `json:"id"`
@@ -28,6 +30,9 @@ func (r *Reader) EventSequence() (int64, error) {
 
 // ListJobs uses a keyset cursor tied to the exact filters, never an offset.
 func (r *Reader) ListJobs(req *pb.ListJobsRequest) (*pb.ListJobsResponse, error) {
+	if req.OrderByFinishedAt && (len(req.States) != 1 || req.States[0] != pb.JobState_JOB_STATE_FINISHED) {
+		return nil, errors.New("finished ordering requires exactly the finished state")
+	}
 	filters := proto.Clone(req).(*pb.ListJobsRequest)
 	filters.PageToken, filters.PageSize = "", 0
 	filterJSON, err := protojson.Marshal(filters)
@@ -41,9 +46,20 @@ func (r *Reader) ListJobs(req *pb.ListJobsRequest) (*pb.ListJobsResponse, error)
 			return nil, ErrPageToken
 		}
 	}
-	query := "SELECT id FROM jobs WHERE 1=1"
+	source := "jobs"
+	if req.OrderByFinishedAt {
+		// SQLite otherwise chooses the state/queued index and sorts the
+		// complete retained history before applying the page limit.
+		source = finishedJobsSource
+	}
+	query := "SELECT id FROM " + source + " WHERE 1=1"
 	var args []any
-	if len(req.States) > 0 {
+	orderColumn := "queued_at_ns"
+	if req.OrderByFinishedAt {
+		orderColumn = "finished_at_ns"
+		// The literal predicate lets SQLite use the partial finished index.
+		query += " AND state='finished'"
+	} else if len(req.States) > 0 {
 		query += " AND state IN ("
 		for i, state := range req.States {
 			if i > 0 {
@@ -86,8 +102,8 @@ func (r *Reader) ListJobs(req *pb.ListJobsRequest) (*pb.ListJobsResponse, error)
 		args = append(args, at)
 	}
 	if req.PageToken != "" {
-		query += " AND (queued_at_ns<? OR (queued_at_ns=? AND id<?))"
-		args = append(args, key.At, key.At, key.ID)
+		query += " AND (" + orderColumn + ",id) < (?,?)"
+		args = append(args, key.At, key.ID)
 	}
 	size := req.PageSize
 	if size == 0 {
@@ -96,13 +112,17 @@ func (r *Reader) ListJobs(req *pb.ListJobsRequest) (*pb.ListJobsResponse, error)
 	if size > 500 {
 		return nil, ErrPageToken
 	}
-	query += " ORDER BY queued_at_ns DESC,id DESC LIMIT ?"
+	query += " ORDER BY " + orderColumn + " DESC,id DESC LIMIT ?"
 	args = append(args, size+1)
+	sequence, err := r.EventSequence()
+	if err != nil {
+		return nil, err
+	}
 	ids, err := r.ids(query, args...)
 	if err != nil {
 		return nil, err
 	}
-	result := &pb.ListJobsResponse{}
+	result := &pb.ListJobsResponse{EventSeq: sequence}
 	for i, id := range ids {
 		if uint32(i) == size {
 			break
@@ -115,11 +135,15 @@ func (r *Reader) ListJobs(req *pb.ListJobsRequest) (*pb.ListJobsResponse, error)
 	}
 	if uint32(len(ids)) > size {
 		last := result.Jobs[len(result.Jobs)-1]
-		at, err := contract.UnixNano(last.QueuedAt)
+		at := last.QueuedAt
+		if req.OrderByFinishedAt {
+			at = last.FinishedAt
+		}
+		nanos, err := contract.UnixNano(at)
 		if err != nil {
 			return nil, err
 		}
-		data, err := json.Marshal(pageKey{At: at, ID: last.JobId, Filters: string(filterJSON)})
+		data, err := json.Marshal(pageKey{At: nanos, ID: last.JobId, Filters: string(filterJSON)})
 		if err != nil {
 			return nil, err
 		}

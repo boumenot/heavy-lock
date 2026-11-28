@@ -66,7 +66,9 @@ private struct UnavailableClient: BrokerClient {
         AsyncThrowingStream { $0.finish(throwing: BrokerFailure(code: "error", message: self.message)) }
     }
 
-    func recentFinishedJobs(limit: UInt32) async throws -> [Tuna_Job] { [] }
+    func recentFinishedJobs(limit: UInt32) async throws -> Tuna_ListJobsResponse {
+        throw BrokerFailure(code: "error", message: self.message)
+    }
 
     func perform(_ action: ControlAction) async throws {
         throw BrokerFailure(code: "error", message: self.message)

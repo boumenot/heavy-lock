@@ -29,7 +29,13 @@ public struct MonitorState: Equatable, Sendable {
         case unrecognized
     }
 
-    public static let recentLimit = 20
+    public enum RecentLoad: Equatable, Sendable {
+        case loading
+        case available
+        case unavailable(String)
+    }
+
+    public static let recentLimit = 50
 
     public var connection: Connection = .connecting
     public var health: Tuna_Health?
@@ -44,6 +50,9 @@ public struct MonitorState: Equatable, Sendable {
     public var active: [Tuna_Job] = []
     /// Retained finished jobs, newest first.
     public var recent: [Tuna_Job] = []
+    /// The event sequence reflected in the last successful history query.
+    public private(set) var recentSnapshotSeq: Int64 = 0
+    public var recentLoad: RecentLoad = .loading
     /// The last broker event sequence reflected; 0 before the first snapshot.
     public var lastEventSeq: Int64 = 0
     /// When the last stream message (including a heartbeat) arrived.
@@ -58,6 +67,12 @@ public struct MonitorState: Equatable, Sendable {
     public init() {}
 
     public var isLive: Bool { self.connection == .live }
+
+    /// A queried history can be ahead of the stream until its events arrive.
+    public var isRecentCurrent: Bool {
+        self.isLive && self.hasSnapshot && self.recentLoad == .available
+            && self.lastEventSeq >= self.recentSnapshotSeq
+    }
 
     /// The queue state to show now: the broker's own while live, `.error`
     /// when it reports failed storage and `.unspecified` (unknown) otherwise.
@@ -90,6 +105,7 @@ public struct MonitorState: Equatable, Sendable {
             self.lastEventSeq = event.eventSeq
             self.lastUpdate = time
             self.hasSnapshot = true
+            self.recentLoad = .loading
             return .applied
         case .heartbeat:
             guard self.hasSnapshot, event.eventSeq <= self.lastEventSeq else { return .gap }
@@ -105,7 +121,7 @@ public struct MonitorState: Equatable, Sendable {
         guard event.eventSeq == self.lastEventSeq + 1 else { return .gap }
         switch event.event {
         case .jobChanged(let job):
-            self.update(job)
+            self.update(job, updateRecent: self.recentLoad == .available && event.eventSeq > self.recentSnapshotSeq)
         case .queueChanged(let queue):
             self.queue = queue.jobs
             self.headBlockedReason = queue.headBlockedReason
@@ -117,7 +133,7 @@ public struct MonitorState: Equatable, Sendable {
             self.headBlockedReason = status.headBlockedReason
             self.queueState = status.queueState
         case .jobDeleted(let id):
-            self.remove(id)
+            self.remove(id, updateRecent: self.recentLoad == .available && event.eventSeq > self.recentSnapshotSeq)
         default:
             break
         }
@@ -131,14 +147,17 @@ public struct MonitorState: Equatable, Sendable {
     public mutating func requireSnapshot(notice: String) {
         self.lastEventSeq = 0
         self.hasSnapshot = false
+        self.recentLoad = .loading
         self.notice = notice
     }
 
-    public mutating func setRecent(_ jobs: [Tuna_Job]) {
-        self.recent = Array(jobs.filter { $0.state == .finished }.prefix(Self.recentLimit))
+    public mutating func setRecent(_ jobs: [Tuna_Job], through eventSeq: Int64) {
+        self.recent = Array(Self.sortedRecent(jobs.filter { $0.state == .finished }).prefix(Self.recentLimit))
+        self.recentSnapshotSeq = eventSeq
+        self.recentLoad = .available
     }
 
-    private mutating func update(_ job: Tuna_Job) {
+    private mutating func update(_ job: Tuna_Job, updateRecent: Bool) {
         switch job.state {
         case .queued:
             self.active.removeAll { $0.jobID == job.jobID }
@@ -155,18 +174,28 @@ public struct MonitorState: Equatable, Sendable {
         case .finished:
             self.queue.removeAll { $0.jobID == job.jobID }
             self.active.removeAll { $0.jobID == job.jobID }
-            self.recent.removeAll { $0.jobID == job.jobID }
-            self.recent.insert(job, at: 0)
-            if self.recent.count > Self.recentLimit { self.recent.removeLast(self.recent.count - Self.recentLimit) }
+            if updateRecent {
+                self.recent.removeAll { $0.jobID == job.jobID }
+                self.recent = Array(Self.sortedRecent(self.recent + [job]).prefix(Self.recentLimit))
+            }
         default:
             break
         }
     }
 
-    private mutating func remove(_ id: String) {
+    private mutating func remove(_ id: String, updateRecent: Bool) {
         self.queue.removeAll { $0.jobID == id }
         self.active.removeAll { $0.jobID == id }
-        self.recent.removeAll { $0.jobID == id }
+        if updateRecent { self.recent.removeAll { $0.jobID == id } }
+    }
+
+    private static func sortedRecent(_ jobs: [Tuna_Job]) -> [Tuna_Job] {
+        jobs.sorted {
+            ($0.hasFinishedAt ? $0.finishedAt.seconds : Int64.min,
+                $0.hasFinishedAt ? $0.finishedAt.nanos : Int32.min, $0.jobID)
+                > ($1.hasFinishedAt ? $1.finishedAt.seconds : Int64.min,
+                    $1.hasFinishedAt ? $1.finishedAt.nanos : Int32.min, $1.jobID)
+        }
     }
 
     private static func sortedActive(_ jobs: [Tuna_Job]) -> [Tuna_Job] {

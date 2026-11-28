@@ -163,7 +163,7 @@ The optional `$bin.previous` backup is also retained.
 Earlier builds installed the agent `com.github.boumenot.heavy-lock.tuna`
 running `~/Library/Application Support/heavy-lock/bin/tuna`, with state in
 `~/Library/Application Support/heavy-lock/v2`. The current build changes the
-contract identity (`tuna`, service version `3.0.0-dev.2`), the REST paths
+contract identity (`tuna`, service version `3.0.0-dev.3`), the REST paths
 (no `/v1` prefix), the default state and lock directory and the agent label,
 so old and new runners, brokers and monitors refuse each other and must be
 replaced together. History is not migrated; the new broker starts with an

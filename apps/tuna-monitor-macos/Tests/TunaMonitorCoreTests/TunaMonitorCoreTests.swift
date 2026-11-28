@@ -17,6 +17,7 @@ import Testing
         #expect(state.lastEventSeq == 5)
         #expect(state.queue.map(\.jobID) == ["q1"])
         #expect(state.active.map(\.jobID) == ["r1"])
+        state.setRecent([], through: 5)
 
         #expect(state.apply(jobEvent(seq: 6, job("q1", .running)), at: self.now) == .applied)
         #expect(state.queue.isEmpty)
@@ -83,6 +84,132 @@ import Testing
         var state = MonitorState()
         _ = state.apply(snapshotEvent(seq: 1, active: [first, job("missing", .running), second]), at: self.now)
         #expect(state.active.map(\.jobID) == ["b", "a", "missing"])
+    }
+
+    @Test func finishedUpdatesStayInCompletionOrderRatherThanEventOrder() {
+        var state = MonitorState()
+        _ = state.apply(snapshotEvent(seq: 1), at: self.now)
+        state.setRecent([], through: 1)
+        var newest = job("a", .finished)
+        newest.finishedAt.seconds = 300
+        var older = job("b", .finished)
+        older.finishedAt.seconds = 100
+        var tied = job("c", .finished)
+        tied.finishedAt.seconds = 300
+
+        _ = state.apply(jobEvent(seq: 2, newest), at: self.now)
+        _ = state.apply(jobEvent(seq: 3, older), at: self.now)
+        _ = state.apply(jobEvent(seq: 4, tied), at: self.now)
+        #expect(state.recent.map(\.jobID) == ["c", "a", "b"])
+    }
+
+    @Test func historySnapshotDoesNotResurrectAnAlreadyDeletedJob() {
+        var state = MonitorState()
+        _ = state.apply(snapshotEvent(seq: 1), at: self.now)
+        state.connection = .live
+        // The list query saw both the finish and deletion while the stream
+        // still has those earlier events buffered.
+        state.setRecent([], through: 3)
+        #expect(!state.isRecentCurrent)
+        var finished = job("deleted", .finished)
+        finished.finishedAt.seconds = 10
+        _ = state.apply(jobEvent(seq: 2, finished), at: self.now)
+        #expect(state.recent.isEmpty)
+        var deletion = Tuna_BrokerEvent()
+        deletion.eventSeq = 3
+        deletion.jobDeleted = finished.jobID
+        _ = state.apply(deletion, at: self.now)
+        #expect(state.recent.isEmpty)
+        #expect(state.isRecentCurrent)
+    }
+}
+
+@Suite struct FinishedHistoryTests {
+    @Test func summaryUsesOnlyTheSelectedWindowAndMeasuredWallTime() {
+        var success = job("success", .finished)
+        success.outcome.kind = .exited
+        success.outcome.exitCode = 0
+        success.resources.elapsed.seconds = 0
+        var failure = job("failure", .finished)
+        failure.outcome.kind = .exited
+        failure.outcome.exitCode = 2
+        failure.resources.elapsed.seconds = 30
+        failure.resources.elapsed.nanos = 500_000_000
+        var cancelled = job("cancelled", .finished)
+        cancelled.outcome.kind = .signaled
+        cancelled.cancelRequestedAt.seconds = 123
+        cancelled.resources.elapsed.seconds = 60
+        var signal = job("signal", .finished)
+        signal.outcome.kind = .signaled
+        let unknown = job("unknown", .finished)
+        var outsideWindow = job("outside", .finished)
+        outsideWindow.outcome.kind = .launchFailed
+
+        let history = FinishedHistory(
+            jobs: [success, failure, cancelled, signal, unknown, outsideWindow], limit: 5)
+        #expect(history.entries.map(\.job.jobID) == ["success", "failure", "cancelled", "signal", "unknown"])
+        #expect(history.summary.total == 5)
+        #expect(history.summary.counts[.success] == 1)
+        #expect(history.summary.counts[.failed] == 2)
+        #expect(history.summary.counts[.cancelled] == 1)
+        #expect(history.summary.counts[.unknown] == 1)
+        #expect(history.summary.measured == 3)
+        #expect(abs((history.summary.mean ?? 0) - 30.166_666_666_7) < 0.000_001)
+        #expect(history.summary.median == 30.5)
+        #expect(history.summary.longest == 60)
+        #expect(history.visible(outcome: .failed, worklog: nil).map(\.job.jobID) == ["failure", "signal"])
+        #expect(history.summary.total == 5)
+    }
+
+    @Test func classifiesIncompleteAndCancellationEvidenceWithoutGuessing() {
+        var missingExit = job("missing-exit", .finished)
+        missingExit.outcome.kind = .exited
+        var launch = job("launch", .finished)
+        launch.outcome.kind = .launchFailed
+        var disconnected = job("disconnected", .finished)
+        disconnected.outcome.kind = .removedDisconnected
+        var beforeStart = job("before-start", .finished)
+        beforeStart.outcome.kind = .cancelledBeforeStart
+        var badMeasurement = job("bad-measurement", .finished)
+        badMeasurement.resources.elapsed.seconds = -1
+
+        #expect(FinishedHistory.classify(missingExit) == .unknown)
+        #expect(FinishedHistory.classify(launch) == .failed)
+        #expect(FinishedHistory.classify(disconnected) == .failed)
+        #expect(FinishedHistory.classify(beforeStart) == .cancelled)
+        let history = FinishedHistory(jobs: [badMeasurement], limit: 10)
+        #expect(history.summary.measured == 0)
+        #expect(history.summary.mean == nil)
+        #expect(history.summary.median == nil)
+        #expect(history.summary.longest == nil)
+    }
+
+    @Test func worklogGroupsKeepRepositoriesAndUnattributedJobsDistinct() {
+        var first = job("first", .finished)
+        first.attribution.repository = "one/repo"
+        first.attribution.worklog = "#7"
+        first.outcome.kind = .exited
+        first.outcome.exitCode = 0
+        var second = job("second", .finished)
+        second.attribution.repository = "other/repo"
+        second.attribution.worklog = "#7"
+        second.outcome.kind = .launchFailed
+        var noRepo = job("no-repo", .finished)
+        noRepo.attribution.worklog = "#7"
+        noRepo.cwd = "/tmp/first-checkout"
+        var otherCheckout = noRepo
+        otherCheckout.jobID = "other-checkout"
+        otherCheckout.cwd = "/tmp/other-checkout"
+        let none = job("none", .finished)
+        let history = FinishedHistory(jobs: [first, second, noRepo, otherCheckout, none], limit: 10)
+
+        #expect(history.groups.count == 5)
+        #expect(history.groups.map(\.total) == [1, 1, 1, 1, 1])
+        let firstWorklog = history.entries[0].worklog
+        #expect(history.visible(outcome: nil, worklog: firstWorklog).map(\.job.jobID) == ["first"])
+        #expect(history.visible(outcome: .failed, worklog: firstWorklog).isEmpty)
+        #expect(history.summary.counts[.failed] == 1)
+        #expect(history.groups.last?.label == "No worklog")
     }
 }
 
@@ -290,6 +417,7 @@ import Testing
     ) {
         let stream = broker.openStream()
         let session = MonitorSession(client: broker, reconnectDelay: .milliseconds(20))
+        broker.setRecentSequence(snapshot.eventSeq)
         session.start()
         stream.yield(snapshot)
         _ = await eventually { session.state.isLive }
@@ -305,6 +433,90 @@ import Testing
         #expect(await eventually { session.state.recent.map(\.jobID) == ["old"] })
         #expect(broker.snapshot.watches == [0])
         #expect(broker.snapshot.healthChecks == 1)
+    }
+
+    @Test func deletingAVisibleFinishedJobRefillsTheWindow() async {
+        let broker = FakeBroker()
+        var first = job("first", .finished)
+        first.finishedAt.seconds = 30
+        var second = job("second", .finished)
+        second.finishedAt.seconds = 20
+        var replacement = job("replacement", .finished)
+        replacement.finishedAt.seconds = 10
+        broker.setRecent([first, second])
+        let (session, stream) = await self.liveSession(broker, snapshot: snapshotEvent(seq: 1))
+        defer { session.stop() }
+        #expect(session.state.isRecentCurrent)
+
+        broker.setRecent([second, replacement], through: 2)
+        var deletion = Tuna_BrokerEvent()
+        deletion.eventSeq = 2
+        deletion.jobDeleted = first.jobID
+        stream.yield(deletion)
+        #expect(await eventually {
+            session.state.recent.map(\.jobID) == ["second", "replacement"]
+                && session.state.isRecentCurrent
+        })
+        #expect(broker.snapshot.recentRequests == 2)
+    }
+
+    @Test func failedHistoryQueryIsVisibleAndRetriedOnHeartbeat() async {
+        let broker = FakeBroker()
+        broker.failRecent(BrokerFailure(code: "unavailable", message: "history request failed"))
+        let (session, stream) = await self.liveSession(broker, snapshot: snapshotEvent(seq: 1))
+        defer { session.stop() }
+        #expect(session.state.isLive)
+        #expect(session.state.recentLoad == .unavailable("history request failed"))
+        #expect(!session.state.isRecentCurrent)
+
+        broker.failRecent(nil)
+        broker.setRecent([job("recovered", .finished)], through: 1)
+        stream.yield(heartbeatEvent(seq: 1))
+        #expect(await eventually { session.state.isRecentCurrent })
+        #expect(session.state.recent.map(\.jobID) == ["recovered"])
+        #expect(broker.snapshot.recentRequests == 2)
+    }
+
+    @Test func staleHistoryResponseIsRejectedAndRetried() async {
+        let broker = FakeBroker()
+        broker.setRecent([job("stale", .finished)], through: 4)
+        let stream = broker.openStream()
+        let session = MonitorSession(client: broker, reconnectDelay: .milliseconds(20))
+        defer { session.stop() }
+        session.start()
+        stream.yield(snapshotEvent(seq: 5))
+        #expect(await eventually { session.state.isLive })
+        #expect(session.state.recentLoad == .unavailable("history is older than the event stream"))
+        #expect(session.state.recent.isEmpty)
+        #expect(!session.state.isRecentCurrent)
+
+        broker.setRecent([job("current", .finished)], through: 5)
+        stream.yield(heartbeatEvent(seq: 5))
+        #expect(await eventually { session.state.isRecentCurrent })
+        #expect(session.state.recent.map(\.jobID) == ["current"])
+    }
+
+    @Test func historyAheadOfStreamIsNotCurrentUntilBufferedEventsCatchUp() async {
+        let broker = FakeBroker()
+        broker.setRecent([], through: 3)
+        let stream = broker.openStream()
+        let session = MonitorSession(client: broker, reconnectDelay: .milliseconds(20))
+        defer { session.stop() }
+        session.start()
+        stream.yield(snapshotEvent(seq: 1))
+        #expect(await eventually { session.state.isLive })
+        #expect(!session.state.isRecentCurrent)
+        let finished = job("deleted", .finished)
+        stream.yield(jobEvent(seq: 2, finished))
+        #expect(await eventually { session.state.lastEventSeq == 2 })
+        #expect(session.state.recent.isEmpty)
+        #expect(!session.state.isRecentCurrent)
+        var deletion = Tuna_BrokerEvent()
+        deletion.eventSeq = 3
+        deletion.jobDeleted = finished.jobID
+        stream.yield(deletion)
+        #expect(await eventually { session.state.isRecentCurrent })
+        #expect(session.state.recent.isEmpty)
     }
 
     @Test func gapRewatchesFromSnapshotWithNotice() async {

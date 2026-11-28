@@ -10,6 +10,36 @@ broker-to-monitor stream, observed health, replay and stale presentation.
 The [SSE replay model](SSEReplay.md) covers listener-incarnation fencing,
 reconnect, retention gaps and delivery of the HTTP event feed.
 
+## Finished-history synchronization
+
+`FinishedHistory.tla` checks the bounded last-X projection when a list
+response and the event stream observe different broker sequences. `Finish`
+and `Delete` abstract committed job events; `StartRead` captures the page and
+sequence in the same transaction, as `storage.Reader.ListJobs` does.
+`FinishRead` models delivery of that response to
+`MonitorSession.refreshRecent`; `Deliver` corresponds to
+`MonitorState.apply`, with the page's sequence fencing already-reflected
+events. A displayed deletion triggers a refill. `FailRead` models a failed
+request, retried by the monitor on heartbeat, and `Resnapshot` models a
+gap or expired replay. The real consumer processes stream events serially
+with a history request. The model abstracts timestamp ordering as a fixed
+rank, the database implementation, transport, metadata-only updates and UI.
+
+The safe configuration checks types, the window bound, the projection at the
+page/stream sequence and the visible projection. With weak fairness for
+reads and delivery, bounded failures and no indefinitely arriving jobs, it
+also checks eventual synchronization. With three jobs, a two-job window,
+four events, one failed read and one resnapshot, TLC explored 30,599 distinct
+states (97,679 generated) without a violation; all modeled actions were
+enabled. Removing the fence produces a concrete stale resurrection: a job
+finishes, is deleted, the query observes the deletion, and an older buffered
+finish reintroduces it. The Swift
+`historySnapshotDoesNotResurrectAnAlreadyDeletedJob` regression exercises
+that trace. A separate reachability witness confirms a page can be ahead of
+the stream. All three profiles run in the regular Tuna test target.
+These checks do not prove the implementation, arbitrary history sizes,
+actual transport delivery or unmodeled wall-clock behavior.
+
 ## Queue priority model
 
 `QueuePriority.tla` models serialized submissions, no-wait decisions,
