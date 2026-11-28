@@ -202,6 +202,66 @@ func TestPriorityGRPCRESTAndCLI(t *testing.T) {
 	}
 }
 
+func TestFinishedOrderGRPCAndREST(t *testing.T) {
+	_, s, client, port := controlServer(t, 100000)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := s.MarkReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.PauseQueue(ctx, &pb.PauseQueueRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, key := range []string{
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222",
+	} {
+		result, _, err := s.Submit(ctx, &pb.SubmitJobRequest{
+			IdempotencyKey: key, Command: "example", Weight: 1,
+			Runner: &pb.RunnerIncarnation{
+				IncarnationId: key, Process: &pb.ProcessIdentity{Pid: 123, StartTime: contract.Timestamp(1)},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, result.Job.JobId)
+	}
+	for _, id := range []string{ids[1], ids[0]} {
+		if _, err := client.CancelJob(ctx, &pb.CancelJobRequest{JobId: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	request := &pb.ListJobsRequest{
+		States: []pb.JobState{pb.JobState_JOB_STATE_FINISHED}, PageSize: 1, OrderByFinishedAt: true,
+	}
+	first, err := client.ListJobs(ctx, request)
+	if err != nil || len(first.GetJobs()) != 1 || first.GetNextPageToken() == "" || first.GetEventSeq() == 0 {
+		t.Fatalf("first gRPC page = %v, %v", first, err)
+	}
+	code, data := rest(t, port, http.MethodGet, "/jobs?states=JOB_STATE_FINISHED&orderByFinishedAt=true&pageSize=1", "")
+	var restPage pb.ListJobsResponse
+	if code != http.StatusOK || protojson.Unmarshal(data, &restPage) != nil || !proto.Equal(first, &restPage) {
+		t.Fatalf("REST page differs from gRPC: %d %s, gRPC=%v", code, data, first)
+	}
+	request.PageToken = first.NextPageToken
+	second, err := client.ListJobs(ctx, request)
+	if err != nil || len(second.GetJobs()) != 1 || second.GetNextPageToken() != "" ||
+		first.Jobs[0].JobId == second.Jobs[0].JobId {
+		t.Fatalf("second gRPC page = %v, %v", second, err)
+	}
+	firstAt, secondAt := first.Jobs[0].FinishedAt.AsTime(), second.Jobs[0].FinishedAt.AsTime()
+	if firstAt.Before(secondAt) || (firstAt.Equal(secondAt) && first.Jobs[0].JobId < second.Jobs[0].JobId) {
+		t.Fatalf("pages are not completion-ordered: %v then %v", first.Jobs[0], second.Jobs[0])
+	}
+	code, data = rest(t, port, http.MethodGet, "/jobs?orderByFinishedAt=true", "")
+	if code != http.StatusBadRequest {
+		t.Fatalf("REST accepted finished order without a finished filter: %d %s", code, data)
+	}
+}
+
 func TestSnapshotReplayPruningRequiresRefresh(t *testing.T) {
 	c, s, client, _ := controlServer(t, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

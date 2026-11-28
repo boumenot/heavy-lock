@@ -233,7 +233,7 @@ func handlePreflight(w http.ResponseWriter, r *http.Request, methods map[string]
 func listJobsRequest(r *http.Request) (*tunapb.ListJobsRequest, error) {
 	query, err := parseQuery(r, map[string]bool{
 		"states": true, "repository": false, "clientName": false, "queuedAfter": false,
-		"queuedBefore": false, "pageSize": false, "pageToken": false,
+		"queuedBefore": false, "pageSize": false, "pageToken": false, "orderByFinishedAt": false,
 	})
 	if err != nil {
 		return nil, err
@@ -275,6 +275,16 @@ func listJobsRequest(r *http.Request) (*tunapb.ListJobsRequest, error) {
 	}
 	if value, ok := query["pageToken"]; ok {
 		request.PageToken = value[0]
+	}
+	if value, ok := query["orderByFinishedAt"]; ok {
+		switch value[0] {
+		case "true":
+			request.OrderByFinishedAt = true
+		case "false":
+			request.OrderByFinishedAt = false
+		default:
+			return nil, invalidField("orderByFinishedAt", "orderByFinishedAt must be true or false")
+		}
 	}
 	return request, nil
 }

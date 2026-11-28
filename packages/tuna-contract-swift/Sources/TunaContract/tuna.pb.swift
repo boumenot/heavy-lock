@@ -2312,6 +2312,10 @@ public nonisolated struct Tuna_ListJobsRequest: Sendable {
 
   public var pageToken: String = String()
 
+  /// When true, states must contain exactly FINISHED. Order newest first by
+  /// (finished_at, job_id) instead of the default (queued_at, job_id).
+  public var orderByFinishedAt: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -2327,14 +2331,18 @@ public nonisolated struct Tuna_ListJobsResponse: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// Newest first by (queued_at, job_id). Keyset pagination: the
-  /// token encodes the last key and filters, avoiding offset shifts. It is
-  /// not a snapshot: concurrent inserts, updates or deletes may affect
-  /// later pages.
+  /// Newest first by the requested ordering. Keyset pagination: the token
+  /// encodes the last key and filters, avoiding offset shifts. Pagination is
+  /// not a snapshot: concurrent inserts, updates or deletes may affect later
+  /// pages.
   public var jobs: [Tuna_Job] = []
 
   /// empty when no more pages
   public var nextPageToken: String = String()
+
+  /// Last committed event reflected in this page, read atomically with jobs.
+  /// A later page has its own sequence; zero means no events have committed.
+  public var eventSeq: Int64 = 0
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -4749,7 +4757,7 @@ nonisolated extension Tuna_Queue: SwiftProtobuf.Message, SwiftProtobuf._MessageI
 
 nonisolated extension Tuna_ListJobsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListJobsRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}states\0\u{1}repository\0\u{3}client_name\0\u{3}queued_after\0\u{3}queued_before\0\u{3}page_size\0\u{3}page_token\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}states\0\u{1}repository\0\u{3}client_name\0\u{3}queued_after\0\u{3}queued_before\0\u{3}page_size\0\u{3}page_token\0\u{3}order_by_finished_at\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4764,6 +4772,7 @@ nonisolated extension Tuna_ListJobsRequest: SwiftProtobuf.Message, SwiftProtobuf
       case 5: try { try decoder.decodeSingularMessageField(value: &self._queuedBefore) }()
       case 6: try { try decoder.decodeSingularUInt32Field(value: &self.pageSize) }()
       case 7: try { try decoder.decodeSingularStringField(value: &self.pageToken) }()
+      case 8: try { try decoder.decodeSingularBoolField(value: &self.orderByFinishedAt) }()
       default: break
       }
     }
@@ -4795,6 +4804,9 @@ nonisolated extension Tuna_ListJobsRequest: SwiftProtobuf.Message, SwiftProtobuf
     if !self.pageToken.isEmpty {
       try visitor.visitSingularStringField(value: self.pageToken, fieldNumber: 7)
     }
+    if self.orderByFinishedAt != false {
+      try visitor.visitSingularBoolField(value: self.orderByFinishedAt, fieldNumber: 8)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -4806,6 +4818,7 @@ nonisolated extension Tuna_ListJobsRequest: SwiftProtobuf.Message, SwiftProtobuf
     if lhs._queuedBefore != rhs._queuedBefore {return false}
     if lhs.pageSize != rhs.pageSize {return false}
     if lhs.pageToken != rhs.pageToken {return false}
+    if lhs.orderByFinishedAt != rhs.orderByFinishedAt {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -4813,7 +4826,7 @@ nonisolated extension Tuna_ListJobsRequest: SwiftProtobuf.Message, SwiftProtobuf
 
 nonisolated extension Tuna_ListJobsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListJobsResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}jobs\0\u{3}next_page_token\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}jobs\0\u{3}next_page_token\0\u{3}event_seq\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4823,6 +4836,7 @@ nonisolated extension Tuna_ListJobsResponse: SwiftProtobuf.Message, SwiftProtobu
       switch fieldNumber {
       case 1: try { try decoder.decodeRepeatedMessageField(value: &self.jobs) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.nextPageToken) }()
+      case 3: try { try decoder.decodeSingularInt64Field(value: &self.eventSeq) }()
       default: break
       }
     }
@@ -4835,12 +4849,16 @@ nonisolated extension Tuna_ListJobsResponse: SwiftProtobuf.Message, SwiftProtobu
     if !self.nextPageToken.isEmpty {
       try visitor.visitSingularStringField(value: self.nextPageToken, fieldNumber: 2)
     }
+    if self.eventSeq != 0 {
+      try visitor.visitSingularInt64Field(value: self.eventSeq, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Tuna_ListJobsResponse, rhs: Tuna_ListJobsResponse) -> Bool {
     if lhs.jobs != rhs.jobs {return false}
     if lhs.nextPageToken != rhs.nextPageToken {return false}
+    if lhs.eventSeq != rhs.eventSeq {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

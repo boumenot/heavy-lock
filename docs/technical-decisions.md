@@ -24,6 +24,8 @@ runner or monitor refuses the new one and vice versa; they must be replaced
 together (see [supervision](supervision.md#migrating-an-earlier-installation)).
 The queue-priority addition advances the prerelease to `3.0.0-dev.2` so an
 older broker cannot silently ignore a new runner's requested priority.
+The completion-ordered query and its event fence advance it to
+`3.0.0-dev.3`; a dev.2 broker, runner or monitor cannot be mixed with dev.3.
 
 ## Queue admission priority
 
@@ -193,8 +195,17 @@ snapshot with a notice. A heartbeat timeout of max(15 s, 3 × the advertised
 interval) marks the broker unavailable. When not live it keeps the last
 known state, dimmed and labelled with its age, and refuses controls; a
 pending confirmation is re-checked for liveness before sending. Recent
-history is the newest 20 finished jobs from `ListJobs`, reloaded on each
-snapshot and maintained from job events. Running/queued counts and
+history loads at most 50 jobs by `(finished_at, job_id)` on each snapshot,
+then reconciles the atomic page sequence with ordered events. It refills
+after a displayed deletion and reports failed or still-catching-up loads as
+not current. The selected window defaults to 20, preserving the previous
+monitor convention, with 10, 20, 25 and 50 available. Its outcome ribbon,
+statistics and collapsed worklog matrix describe the full window; outcome
+and worklog filters affect only the list. The inspector follows row
+selection on the right. Elapsed statistics exclude missing root wall-clock
+measurements, disclose coverage and are not CPU measurements. The
+[approved reference](design/monitor/recently-finished/) records the
+cross-platform design. Running/queued counts and
 occupancy are derived from the event-maintained queue and active jobs,
 because the broker emits `status_changed` only for some transitions (not
 reservations or starts); capacity, pause and resource figures come from the

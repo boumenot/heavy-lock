@@ -112,6 +112,9 @@ CASES = {
     "SSEReplayFair": None,
     "SSEReplayOldEpoch": "EpochFenced",
     "SSEReplayReached": "NeverResume",
+    "FinishedHistorySafe": None,
+    "FinishedHistoryNoFence": "CorrectProjection",
+    "FinishedHistoryAhead": "NeverAhead",
 }
 
 
@@ -133,7 +136,7 @@ def main():
                     "tlc", "-workers", "1", "-fpmem", "0.05",
                     "-noGenerateSpecTE", "-metadir", tmp,
                 ]
-                if case.startswith(("Monitor", "RunnerExit", "QueuePriority", "SSEReplay")):
+                if case.startswith(("Monitor", "RunnerExit", "QueuePriority", "SSEReplay", "FinishedHistory")):
                     command.extend(["-coverage", "1"])
                 command.extend([
                     "-config", f"{case}.cfg",
@@ -144,6 +147,7 @@ def main():
                         else "MonitorFreshness.tla" if case.startswith("Monitor")
                         else "QueuePriority.tla" if case.startswith("QueuePriority")
                         else "SSEReplay.tla" if case.startswith("SSEReplay")
+                        else "FinishedHistory.tla" if case.startswith("FinishedHistory")
                         else "BrokerRunner.tla"
                     ),
                 ])

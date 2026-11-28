@@ -20,10 +20,12 @@ struct MonitorView: View {
                 List {
                     self.section("Running", jobs: state.active, state: state, now: context.date, empty: "No running jobs")
                     self.section("Queued", jobs: state.queue, state: state, now: context.date, empty: "Queue is empty")
-                    self.section(
-                        "Recently finished", jobs: state.recent, state: state, now: context.date,
-                        empty: "No retained finished jobs"
-                    )
+                    Section("Recently finished") {
+                        FinishedHistoryView(state: state) { job in
+                            self.finishedDetails(job, state: state, now: context.date)
+                        }
+                        .listRowInsets(EdgeInsets())
+                    }
                 }
                 .opacity(state.isLive ? 1 : 0.55)
             }
@@ -165,6 +167,97 @@ struct MonitorView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func finishedDetails(_ job: Tuna_Job, state: MonitorState, now: Date) -> some View {
+        let row = Presentation.row(job, capacity: state.status?.capacity, now: now)
+        VStack(alignment: .leading, spacing: 5) {
+            Text(row.command)
+                .font(.caption.monospaced())
+                .fixedSize(horizontal: false, vertical: true)
+            if row.forced {
+                Text("FORCED")
+                    .font(.caption.bold())
+                    .foregroundStyle(.orange)
+                    .help("Force-started: admitted out of order, bypassing resource checks")
+            }
+            Text(row.summary).font(.caption)
+            if job.hasOutcome, job.outcome.hasDetail {
+                Text(job.outcome.detail).font(.caption)
+            }
+            if job.hasCancelRequestedAt {
+                let when = DateFormatter.localizedString(
+                    from: job.cancelRequestedAt.date, dateStyle: .short, timeStyle: .medium)
+                Text("Cancellation requested \(when)").font(.caption)
+                if job.hasCancelReason { Text("Reason: \(job.cancelReason)").font(.caption) }
+                if job.hasCancelAcknowledgedAt {
+                    let when = DateFormatter.localizedString(
+                        from: job.cancelAcknowledgedAt.date, dateStyle: .short, timeStyle: .medium)
+                    Text("Cancellation acknowledged \(when)").font(.caption)
+                }
+                if job.hasOutcome, job.outcome.kind == .signaled {
+                    Text("A request does not establish what caused the signal.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let worklog = row.worklog { self.worklogLink(worklog, cwd: row.cwd) }
+            if let session = row.session { Self.sessionLink(session) }
+            if let cwd = row.cwd { self.checkoutLink(cwd, display: row.cwdDisplay ?? cwd) }
+            ForEach(row.details, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+            if job.attribution.hasPurpose { Text("Purpose: \(job.attribution.purpose)").font(.caption) }
+            if job.attribution.hasBuildTarget { Text("Target: \(job.attribution.buildTarget)").font(.caption) }
+            if job.attribution.hasBuildConfiguration {
+                Text("Configuration: \(job.attribution.buildConfiguration)").font(.caption)
+            }
+            self.finishedResources(job)
+            ForEach(row.warnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    @ViewBuilder
+    private func finishedResources(_ job: Tuna_Job) -> some View {
+        if job.hasResources {
+            let resources = job.resources
+            if resources.hasCpuTime {
+                let cpu = FinishedHistory.measurement(seconds: resources.cpuTime.seconds, nanos: resources.cpuTime.nanos)
+                Text("Observed CPU \(FinishedHistory.formatElapsed(cpu))").font(.caption)
+            } else {
+                Text("Observed CPU not recorded").font(.caption).foregroundStyle(.secondary)
+            }
+            if resources.hasPeakCpuPercent {
+                Text("Peak CPU \(resources.peakCpuPercent.formatted(.number.precision(.fractionLength(1))))%")
+                    .font(.caption)
+            }
+            if resources.hasPeakCombinedRssBytes {
+                Text(
+                    "Peak observed RSS "
+                        + ByteCountFormatter.string(fromByteCount: resources.peakCombinedRssBytes, countStyle: .memory)
+                )
+                .font(.caption)
+            }
+            let completeness: String =
+                switch resources.completeness {
+                case .complete: "complete"
+                case .partial: "partial"
+                case .unavailable: "unavailable"
+                default: "unspecified"
+                }
+            Text("Process-tree measurements: \(completeness) · \(resources.sampleCount) samples")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if resources.hasIncompletenessReason {
+                Text(resources.incompletenessReason).font(.caption).foregroundStyle(.secondary)
+            }
+        } else {
+            Text("Resource measurements not recorded").font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder

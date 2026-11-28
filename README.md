@@ -303,6 +303,13 @@ offsets as `%2B`. Responses use protobuf JSON: timestamps are RFC 3339 strings,
 durations are strings such as `"1.234s"`, scalar defaults are emitted and
 unknown optionals are absent. Errors use
 `google.rpc.Status` JSON with the same code/message/details as gRPC.
+`GET /jobs?states=JOB_STATE_FINISHED&orderByFinishedAt=true` orders retained
+finished jobs by `(finished_at, job_id)` descending; without that option the
+order remains `(queued_at, job_id)` descending. Each page includes the
+event sequence read atomically with that page. Cursors are keyset-based, not
+cross-page snapshots, and completion timestamps are wall-clock observations
+that can move backwards.
+
 To follow broker events without polling:
 
 ```bash
@@ -329,7 +336,7 @@ remain gRPC-only.
 
 Health reports a SemVer service version. Stable clients require the same
 major and the minimum minor they need; prerelease clients and brokers require
-an exact version match. This unreleased contract uses `3.0.0-dev.2`, so
+an exact version match. This unreleased contract uses `3.0.0-dev.3`, so
 update the broker, runner and monitor together.
 
 gRPC `WatchEvents` starts from an atomic snapshot/cursor at sequence 0;
@@ -431,8 +438,17 @@ live it keeps the last known state dimmed and labelled with its age, never
 as live, and disables controls.
 
 It shows capacity, occupancy, running/queued counts, pause state and the
-head's blocked reason; running jobs; queued jobs in order; and up to 20
-recently finished jobs from `ListJobs`, refreshed on each snapshot.
+head's blocked reason; running jobs; queued jobs in order; and a compact
+Recently finished section. The monitor keeps the latest 50 completions and
+summarizes the last 20 by default; 10, 20, 25 and 50 are selectable. It
+reconciles the completion-ordered `ListJobs` page's event sequence with the
+stream, refills after deletion, and labels unavailable or catching-up history
+as not current. Outcome counts, the ribbon and worklog matrix describe the
+full selected window; tabs and matrix selection filter the rows. The
+collapsed-by-default matrix and a row-selected right-hand inspector preserve
+details and links. Elapsed statistics are root-command wall-clock time, not
+CPU, and show how many jobs had measurements. See the
+[approved cross-platform reference](docs/design/monitor/recently-finished/).
 Running and queued counts and occupancy come from the job events, because
 the broker does not publish `status_changed` for every start or finish.
 Rows show the command, state, weight, outcome and warnings, including a

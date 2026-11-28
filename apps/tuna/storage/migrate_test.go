@@ -19,6 +19,9 @@ var schemaV2 string
 //go:embed testdata/schema_v3.sql
 var schemaV3 string
 
+//go:embed testdata/schema_v4.sql
+var schemaV4 string
+
 // v1Database creates a database exactly as the version-1 broker did and
 // applies setup to it.
 func v1Database(t *testing.T, setup string) string {
@@ -181,6 +184,33 @@ func TestMigrateV3PreservesQueuedJobs(t *testing.T) {
 		if len(queue.Jobs) != 2 || queue.Jobs[0].JobId != first || queue.Jobs[1].JobId != second ||
 			queue.Jobs[0].Priority != 1337 || queue.Jobs[1].Priority != 1337 {
 			t.Fatalf("migrated queue: %v", queue)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMigrateV4PreservesFinishedJobs(t *testing.T) {
+	const id = "11111111-1111-4111-8111-111111111111"
+	path := oldDatabase(t, schemaV4, `
+		INSERT INTO jobs(id,idempotency_key,request_sha256,command,weight,state,queued_at_ns,finished_at_ns,outcome_kind,service_version)
+		VALUES('`+id+`','`+id+`',zeroblob(32),'finished',1,'finished',1,2,'cancelled_before_start','old');`)
+	store, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	err = store.View(context.Background(), func(r *Reader) error {
+		page, err := r.ListJobs(&pb.ListJobsRequest{
+			States: []pb.JobState{pb.JobState_JOB_STATE_FINISHED}, OrderByFinishedAt: true,
+		})
+		if err != nil {
+			return err
+		}
+		if len(page.Jobs) != 1 || page.Jobs[0].JobId != id {
+			t.Fatalf("migrated history: %v", page.Jobs)
 		}
 		return nil
 	})

@@ -77,6 +77,20 @@ func TestControlRejectsInvalidTimestampBounds(t *testing.T) {
 	}
 }
 
+func TestFinishedOrderRequiresOnlyFinishedState(t *testing.T) {
+	c := &Control{}
+	for _, states := range [][]pb.JobState{
+		nil,
+		{pb.JobState_JOB_STATE_RUNNING},
+		{pb.JobState_JOB_STATE_FINISHED, pb.JobState_JOB_STATE_RUNNING},
+	} {
+		_, err := c.ListJobs(context.Background(), &pb.ListJobsRequest{States: states, OrderByFinishedAt: true})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("states %v: %v", states, err)
+		}
+	}
+}
+
 func TestGetStatusReportsErrorWhenStorageFails(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "broker.db")

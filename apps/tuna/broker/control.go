@@ -150,6 +150,9 @@ func (c *Control) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb.Li
 			return nil, invalid("states", "expected a nonzero JobState")
 		}
 	}
+	if req.OrderByFinishedAt && (len(req.States) != 1 || req.States[0] != pb.JobState_JOB_STATE_FINISHED) {
+		return nil, invalid("states", "finished ordering requires exactly the finished state")
+	}
 	var after, before int64
 	var err error
 	if req.QueuedAfter != nil {

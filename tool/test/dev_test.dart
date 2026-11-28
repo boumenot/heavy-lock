@@ -196,6 +196,9 @@ void main() {
             'SSEReplayFair',
             'SSEReplayOldEpoch',
             'SSEReplayReached',
+            'FinishedHistorySafe',
+            'FinishedHistoryNoFence',
+            'FinishedHistoryAhead',
             '--timeout',
           ]),
         );

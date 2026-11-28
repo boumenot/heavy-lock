@@ -3275,16 +3275,19 @@ func (x *Queue) GetQueueState() QueueState {
 }
 
 type ListJobsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	States        []JobState             `protobuf:"varint,1,rep,packed,name=states,proto3,enum=tuna.JobState" json:"states,omitempty"` // empty means all
-	Repository    *string                `protobuf:"bytes,2,opt,name=repository,proto3,oneof" json:"repository,omitempty"`
-	ClientName    *string                `protobuf:"bytes,3,opt,name=client_name,json=clientName,proto3,oneof" json:"client_name,omitempty"`
-	QueuedAfter   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=queued_after,json=queuedAfter,proto3" json:"queued_after,omitempty"`    // inclusive
-	QueuedBefore  *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=queued_before,json=queuedBefore,proto3" json:"queued_before,omitempty"` // exclusive
-	PageSize      uint32                 `protobuf:"varint,6,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`            // 0 means 50; maximum 500
-	PageToken     string                 `protobuf:"bytes,7,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	States       []JobState             `protobuf:"varint,1,rep,packed,name=states,proto3,enum=tuna.JobState" json:"states,omitempty"` // empty means all
+	Repository   *string                `protobuf:"bytes,2,opt,name=repository,proto3,oneof" json:"repository,omitempty"`
+	ClientName   *string                `protobuf:"bytes,3,opt,name=client_name,json=clientName,proto3,oneof" json:"client_name,omitempty"`
+	QueuedAfter  *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=queued_after,json=queuedAfter,proto3" json:"queued_after,omitempty"`    // inclusive
+	QueuedBefore *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=queued_before,json=queuedBefore,proto3" json:"queued_before,omitempty"` // exclusive
+	PageSize     uint32                 `protobuf:"varint,6,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`            // 0 means 50; maximum 500
+	PageToken    string                 `protobuf:"bytes,7,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	// When true, states must contain exactly FINISHED. Order newest first by
+	// (finished_at, job_id) instead of the default (queued_at, job_id).
+	OrderByFinishedAt bool `protobuf:"varint,8,opt,name=order_by_finished_at,json=orderByFinishedAt,proto3" json:"order_by_finished_at,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ListJobsRequest) Reset() {
@@ -3366,14 +3369,24 @@ func (x *ListJobsRequest) GetPageToken() string {
 	return ""
 }
 
+func (x *ListJobsRequest) GetOrderByFinishedAt() bool {
+	if x != nil {
+		return x.OrderByFinishedAt
+	}
+	return false
+}
+
 type ListJobsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Newest first by (queued_at, job_id). Keyset pagination: the
-	// token encodes the last key and filters, avoiding offset shifts. It is
-	// not a snapshot: concurrent inserts, updates or deletes may affect
-	// later pages.
+	// Newest first by the requested ordering. Keyset pagination: the token
+	// encodes the last key and filters, avoiding offset shifts. Pagination is
+	// not a snapshot: concurrent inserts, updates or deletes may affect later
+	// pages.
 	Jobs          []*Job `protobuf:"bytes,1,rep,name=jobs,proto3" json:"jobs,omitempty"`
 	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"` // empty when no more pages
+	// Last committed event reflected in this page, read atomically with jobs.
+	// A later page has its own sequence; zero means no events have committed.
+	EventSeq      int64 `protobuf:"varint,3,opt,name=event_seq,json=eventSeq,proto3" json:"event_seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3420,6 +3433,13 @@ func (x *ListJobsResponse) GetNextPageToken() string {
 		return x.NextPageToken
 	}
 	return ""
+}
+
+func (x *ListJobsResponse) GetEventSeq() int64 {
+	if x != nil {
+		return x.EventSeq
+	}
+	return 0
 }
 
 type GetJobRequest struct {
@@ -4581,7 +4601,7 @@ const file_tuna_proto_rawDesc = "" +
 	"\x04jobs\x18\x01 \x03(\v2\t.tuna.JobR\x04jobs\x12C\n" +
 	"\x13head_blocked_reason\x18\x02 \x01(\x0e2\x13.tuna.BlockedReasonR\x11headBlockedReason\x121\n" +
 	"\vqueue_state\x18\x03 \x01(\x0e2\x10.tuna.QueueStateR\n" +
-	"queueState\"\xdf\x02\n" +
+	"queueState\"\x90\x03\n" +
 	"\x0fListJobsRequest\x12&\n" +
 	"\x06states\x18\x01 \x03(\x0e2\x0e.tuna.JobStateR\x06states\x12#\n" +
 	"\n" +
@@ -4593,12 +4613,14 @@ const file_tuna_proto_rawDesc = "" +
 	"\rqueued_before\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\fqueuedBefore\x12\x1b\n" +
 	"\tpage_size\x18\x06 \x01(\rR\bpageSize\x12\x1d\n" +
 	"\n" +
-	"page_token\x18\a \x01(\tR\tpageTokenB\r\n" +
+	"page_token\x18\a \x01(\tR\tpageToken\x12/\n" +
+	"\x14order_by_finished_at\x18\b \x01(\bR\x11orderByFinishedAtB\r\n" +
 	"\v_repositoryB\x0e\n" +
-	"\f_client_name\"Y\n" +
+	"\f_client_name\"v\n" +
 	"\x10ListJobsResponse\x12\x1d\n" +
 	"\x04jobs\x18\x01 \x03(\v2\t.tuna.JobR\x04jobs\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12\x1b\n" +
+	"\tevent_seq\x18\x03 \x01(\x03R\beventSeq\"&\n" +
 	"\rGetJobRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"?\n" +
 	"\x14GetSubmissionRequest\x12'\n" +

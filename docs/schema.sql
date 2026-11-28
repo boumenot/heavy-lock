@@ -1,4 +1,4 @@
--- Tuna SQLite schema (schema version 4).
+-- Tuna SQLite schema (schema version 5).
 --
 -- A new database is created at the current version and records every
 -- migration version it includes. Older databases are migrated in place by
@@ -332,7 +332,7 @@ CREATE INDEX jobs_repository ON jobs (repository, queued_at_ns DESC, id)
   WHERE repository IS NOT NULL;
 CREATE INDEX jobs_client_name ON jobs (client_name, queued_at_ns DESC, id)
   WHERE client_name IS NOT NULL;
-CREATE INDEX jobs_finished ON jobs (finished_at_ns)
+CREATE INDEX jobs_finished ON jobs (finished_at_ns DESC, id DESC)
   WHERE state = 'finished';
 
 -- Waiting jobs only. Equal priorities use queue_seq; reorder rewrites it. Because
@@ -460,7 +460,8 @@ INSERT INTO schema_migrations (version, applied_at_ns, description)
   FROM (SELECT 1 AS version, 'initial schema' AS description
         UNION ALL SELECT 2, 'explicit queue mode'
         UNION ALL SELECT 3, 'client OS version'
-        UNION ALL SELECT 4, 'queue priority');
-PRAGMA user_version = 4;
+        UNION ALL SELECT 4, 'queue priority'
+        UNION ALL SELECT 5, 'finished job ordering');
+PRAGMA user_version = 5;
 
 COMMIT;

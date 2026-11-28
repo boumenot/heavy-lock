@@ -85,6 +85,11 @@ commit still makes the outcome unavailable and requires reconciliation.
   pruning/deletion. Future or expired cursors fail. Cursor zero requests a
   fresh broker snapshot, not event replay. Pruning never touches job history,
   permanent keys or active recovery state.
+- `ListJobs` retains its default queue-time order. A finished-only request can
+  instead use the partial `(finished_at_ns DESC, id DESC)` index for bounded
+  completion-order pages; the page and its event sequence share one read
+  transaction. Keyset cursors are not cross-page snapshots. Completion
+  timestamps are wall-clock observations and may move backwards.
 
 Reader returns durable fields only. Policy-derived fields (capacity, blocked
 reasons, grace remaining, launch timeout, recovery status) must be computed by
@@ -106,8 +111,11 @@ The authoritative schema remains `docs/schema.sql`; run
 `go -C apps/tuna generate ./storage` to refresh the embedded copy. A focused
 test rejects a stale copy. Opening migrates older databases one version at a
 time with the steps in `storage/migrate.go` (version 2 adds the explicit
-queue mode, version 3 the client OS version) and refuses newer ones; every
-schema change needs a migration whose result matches `schema.sql` exactly.
+queue mode, version 3 the client OS version, version 4 queue priority and
+version 5 the completion-order index) and refuses newer ones. The v5
+migration rebuilds the finished-job index once, so its work grows with
+retained history. Every schema change needs a migration whose result matches
+`schema.sql` exactly.
 
 Configured settings are WAL, FULL synchronous on each connection, macOS
 fullfsync ON, foreign keys ON, 5 s busy timeout, 16 MiB cache and up to 256 MiB

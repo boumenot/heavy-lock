@@ -18,7 +18,8 @@ final class FakeBroker: BrokerClient {
     private let recorded = Mutex(Recorded())
     private let streams = Mutex<[Stream]>([])
     private let healthResult: Mutex<Result<Tuna_Health, BrokerFailure>>
-    private let recentJobs = Mutex<[Tuna_Job]>([])
+    private let recentJobs = Mutex(Tuna_ListJobsResponse())
+    private let recentFailure = Mutex<BrokerFailure?>(nil)
     private let performFailure = Mutex<BrokerFailure?>(nil)
 
     init(health: Tuna_Health = FakeBroker.liveHealth()) {
@@ -47,8 +48,19 @@ final class FakeBroker: BrokerClient {
         self.healthResult.withLock { $0 = result }
     }
 
-    func setRecent(_ jobs: [Tuna_Job]) {
-        self.recentJobs.withLock { $0 = jobs }
+    func setRecent(_ jobs: [Tuna_Job], through eventSeq: Int64 = 0) {
+        self.recentJobs.withLock {
+            $0.jobs = jobs
+            $0.eventSeq = eventSeq
+        }
+    }
+
+    func setRecentSequence(_ eventSeq: Int64) {
+        self.recentJobs.withLock { $0.eventSeq = eventSeq }
+    }
+
+    func failRecent(_ failure: BrokerFailure?) {
+        self.recentFailure.withLock { $0 = failure }
     }
 
     func failControls(_ failure: BrokerFailure?) {
@@ -68,8 +80,9 @@ final class FakeBroker: BrokerClient {
         return Stream { _ in }
     }
 
-    func recentFinishedJobs(limit: UInt32) async throws -> [Tuna_Job] {
+    func recentFinishedJobs(limit: UInt32) async throws -> Tuna_ListJobsResponse {
         self.recorded.withLock { $0.recentRequests += 1 }
+        if let failure = self.recentFailure.withLock({ $0 }) { throw failure }
         return self.recentJobs.withLock { $0 }
     }
 

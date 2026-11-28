@@ -10,8 +10,8 @@ public protocol BrokerClient: Sendable {
     func health() async throws -> Tuna_Health
     /// Broker events after `afterEventSeq`; 0 starts with a fresh snapshot.
     func events(after afterEventSeq: Int64) -> AsyncThrowingStream<Tuna_BrokerEvent, any Error>
-    /// The newest retained finished jobs, newest first.
-    func recentFinishedJobs(limit: UInt32) async throws -> [Tuna_Job]
+    /// Finished jobs ordered by completion time and the sequence they reflect.
+    func recentFinishedJobs(limit: UInt32) async throws -> Tuna_ListJobsResponse
     func perform(_ action: ControlAction) async throws
 }
 
@@ -90,12 +90,13 @@ public final class GRPCBrokerClient: BrokerClient {
         try await self.call { try await self.control.getHealth(Tuna_GetHealthRequest(), options: self.unaryOptions) }
     }
 
-    public func recentFinishedJobs(limit: UInt32) async throws -> [Tuna_Job] {
+    public func recentFinishedJobs(limit: UInt32) async throws -> Tuna_ListJobsResponse {
         var request = Tuna_ListJobsRequest()
         request.states = [.finished]
         request.pageSize = limit
+        request.orderByFinishedAt = true
         let listRequest = request
-        return try await self.call { try await self.control.listJobs(listRequest, options: self.unaryOptions).jobs }
+        return try await self.call { try await self.control.listJobs(listRequest, options: self.unaryOptions) }
     }
 
     public func perform(_ action: ControlAction) async throws {

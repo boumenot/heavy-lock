@@ -220,6 +220,20 @@ public final class MonitorSession {
         }
         let wasSnapshot: Bool
         if case .snapshot = event.event { wasSnapshot = true } else { wasSnapshot = false }
+        let needsRefill: Bool
+        if case .jobDeleted(let id) = event.event {
+            needsRefill = self.state.recentLoad == .available
+                && event.eventSeq > self.state.recentSnapshotSeq
+                && self.state.recent.contains { $0.jobID == id }
+        } else {
+            needsRefill = false
+        }
+        let retryHistory: Bool
+        if case .heartbeat = event.event, case .unavailable = self.state.recentLoad {
+            retryHistory = true
+        } else {
+            retryHistory = false
+        }
         switch self.state.apply(event, at: Date()) {
         case .gap:
             throw Restart.gap
@@ -230,8 +244,9 @@ public final class MonitorSession {
         case .applied, .duplicate:
             break
         }
-        if wasSnapshot {
+        if wasSnapshot || needsRefill || retryHistory {
             await self.refreshRecent()
+            try Task.checkCancellation()
         }
         if !self.state.isLive {
             self.state.connection = .live
@@ -239,8 +254,15 @@ public final class MonitorSession {
     }
 
     private func refreshRecent() async {
-        if let jobs = try? await self.client.recentFinishedJobs(limit: UInt32(MonitorState.recentLimit)) {
-            self.state.setRecent(jobs)
+        self.state.recentLoad = .loading
+        do {
+            let page = try await self.client.recentFinishedJobs(limit: UInt32(MonitorState.recentLimit))
+            guard page.eventSeq >= self.state.lastEventSeq else {
+                throw BrokerFailure(code: "error", message: "history is older than the event stream")
+            }
+            self.state.setRecent(page.jobs, through: page.eventSeq)
+        } catch {
+            self.state.recentLoad = .unavailable(BrokerFailure.from(error).description)
         }
     }
 
