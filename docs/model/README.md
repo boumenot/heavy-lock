@@ -8,6 +8,38 @@ storage layouts.
 The separate [monitor freshness model](MonitorFreshness.md) covers the
 broker-to-monitor stream, observed health, replay and stale presentation.
 
+## Queue priority model
+
+`QueuePriority.tla` models serialized submissions, no-wait decisions,
+admissions, reprioritization, reorder, cancellation, release, disconnects
+and a crash/restart. Its `Submit`, `NoWait`, `Admit`, `SetPriority` and
+`Move` actions correspond respectively to `storage.Tx.Submit`,
+`scheduler.TrySubmitAndWatch`, `scheduler.admitLocked`,
+`scheduler.SetPriority`/`storage.Tx.SetPriority`, and
+`scheduler.move`/`storage.Tx.MoveBefore`. Priorities and queue sequences are
+durable across restart; registrations are volatile. Process launch,
+resource sharing, pause, forced admission and oversized jobs are abstracted
+here and covered separately by `BrokerRunner.tla` and implementation tests.
+
+The safety profiles check capacity, bounded bypass, unique sequences,
+non-preemption, priority/FIFO order, exact no-wait placement, reorder and
+restart persistence. No unconditional starvation-freedom is asserted:
+strict priority permits an infinite stream of higher-priority arrivals.
+Progress requires jobs to finish and higher-priority arrivals to cease, plus
+connected runners and a ready, unpaused broker with passing resource checks.
+
+With three jobs, two priorities, capacity 2, bypass limit 1 and one crash,
+`QueuePrioritySafety` completed at 339,765 distinct states (1,961,801
+generated); every action was enabled. `QueuePriorityStrictSafety` used no
+backfill or crash and completed at 113,147 distinct states. Deliberate
+sequence-only ordering, omitted reorder clamp, and no-wait placement at the
+global back or front of the priority level each violated its expected
+invariant. Reachability witnesses exercised priority overtaking, a
+lower-numbered job waiting behind a held job, clamping, and overtaking after
+restart. `QueuePriorityQuick` and the mutation/witness profiles run in the
+regular Tuna test target. These are bounded design checks, not proof of the
+implementation, real timing or larger workloads.
+
 ## Tooling and reproduction
 
 The pinned Nix shell includes `pkgs.tlaplus18` (TLA+ 1.8.0, TLC 2.18) and

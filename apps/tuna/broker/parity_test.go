@@ -151,6 +151,52 @@ func TestActualDomainGRPCRESTCLIParity(t *testing.T) {
 	}
 }
 
+func TestPriorityGRPCRESTAndCLI(t *testing.T) {
+	_, s, client, port := controlServer(t, 100000)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := s.MarkReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.PauseQueue(ctx, &pb.PauseQueueRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	req := &pb.SubmitJobRequest{
+		IdempotencyKey: "11111111-1111-4111-8111-111111111111", Command: "example", Weight: 1,
+		Priority: proto.Int32(20),
+		Runner: &pb.RunnerIncarnation{IncarnationId: "22222222-2222-4222-8222-222222222222",
+			Process: &pb.ProcessIdentity{Pid: 123, StartTime: contract.Timestamp(1)}},
+	}
+	result, _, err := s.Submit(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := result.Job.JobId
+	job, err := client.SetJobPriority(ctx, &pb.SetJobPriorityRequest{JobId: id, Priority: proto.Int32(-2)})
+	if err != nil || job.GetPriority() != -2 {
+		t.Fatalf("gRPC priority: job=%v err=%v", job, err)
+	}
+	code, data := rest(t, port, http.MethodPost, "/jobs/"+id+"/priority", `{"priority":0}`)
+	var response pb.Job
+	if code != http.StatusOK || protojson.Unmarshal(data, &response) != nil || response.Priority != 0 {
+		t.Fatalf("REST priority = %d %s", code, data)
+	}
+	code, data = rest(t, port, http.MethodPost, "/jobs/"+id+"/priority", `{}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("missing priority = %d %s", code, data)
+	}
+	var out, errs bytes.Buffer
+	exit, handled := cli.Run(ctx, []string{"priority", "--job", id, "--priority", "-3", "--port", fmt.Sprint(port)}, &out, &errs, contract.ServiceVersion)
+	if !handled || exit != 0 || !strings.Contains(out.String(), "priority=-3") {
+		t.Fatalf("CLI priority = %d %q %q", exit, out.String(), errs.String())
+	}
+	code, data = rest(t, port, http.MethodGet, "/queue", "")
+	var queue pb.Queue
+	if code != http.StatusOK || protojson.Unmarshal(data, &queue) != nil || len(queue.Jobs) != 1 || queue.Jobs[0].Priority != -3 {
+		t.Fatalf("REST queue = %d %s", code, data)
+	}
+}
+
 func TestSnapshotReplayPruningRequiresRefresh(t *testing.T) {
 	c, s, client, _ := controlServer(t, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

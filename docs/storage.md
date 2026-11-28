@@ -69,8 +69,9 @@ commit still makes the outcome unavailable and requires reconciliation.
 - An unknown outcome cannot release a claimed reservation with neither a
   known root nor confirmed-no-launch proof. This remains true after verified
   runner death.
-- Pause survives reopen. Queue ordering uses explicit sequences, not wall
-  clocks. Grace checkpoints consume caller-supplied monotonic elapsed time,
+- Pause survives reopen. Queue ordering uses durable priority and explicit
+  sequences, not wall clocks; a schema-v3 job migrates with priority 1337.
+  Grace checkpoints consume caller-supplied monotonic elapsed time,
   excluding broker downtime; stream supersession and deadline policy belong
   to the broker.
 - First retries require retained eligible failed/released history, no force or

@@ -28,6 +28,24 @@ import Testing
         #expect(state.recent.first?.forced == true)
     }
 
+    @Test func queueEventPreservesBrokerPriorityOrder() {
+        var state = MonitorState()
+        var older = job("older", .queued, position: 0)
+        older.priority = 1337
+        _ = state.apply(snapshotEvent(seq: 1, queue: [older]), at: self.now)
+        var urgent = job("urgent", .queued, position: 0)
+        urgent.priority = -5
+        older.queuePosition = 1
+        var queue = Tuna_Queue()
+        queue.jobs = [urgent, older]
+        var event = Tuna_BrokerEvent()
+        event.eventSeq = 2
+        event.queueChanged = queue
+        #expect(state.apply(event, at: self.now) == .applied)
+        #expect(state.queue.map(\.jobID) == ["urgent", "older"])
+        #expect(state.queue.map(\.priority) == [-5, 1337])
+    }
+
     @Test func duplicatesAreIgnoredAndGapsDetected() {
         var state = MonitorState()
         _ = state.apply(snapshotEvent(seq: 5), at: self.now)
@@ -88,6 +106,15 @@ import Testing
         #expect(Presentation.row(job("a", .running, forced: true), capacity: 2, now: self.now).forced)
         #expect(Presentation.row(job("b", .finished, forced: true), capacity: 2, now: self.now).forced)
         #expect(!Presentation.row(job("c", .running), capacity: 2, now: self.now).forced)
+    }
+
+    @Test func queuedRowShowsAdmissionPriority() {
+        var queued = job("q", .queued)
+        queued.priority = -12
+        queued.queuePosition = 1
+        let row = Presentation.row(queued, capacity: 2, now: self.now)
+        #expect(row.summary.contains("Queued #2"))
+        #expect(row.summary.contains("priority -12"))
     }
 
     @Test func oversizedQueuedJobHasPersistentWarning() {

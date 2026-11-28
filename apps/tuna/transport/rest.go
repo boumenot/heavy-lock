@@ -128,6 +128,14 @@ func newRESTHandler(broker Broker) http.Handler {
 		request.JobId = r.PathValue("job_id")
 		return broker.MoveJob(r.Context(), request)
 	}}})
+	register("/jobs/{job_id}/priority", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
+		request := &tunapb.SetJobPriorityRequest{}
+		if err := decodeBody(r, request, "priority"); err != nil {
+			return nil, err
+		}
+		request.JobId = r.PathValue("job_id")
+		return broker.SetJobPriority(r.Context(), request)
+	}}})
 	register("/jobs/{job_id}/force-start", map[string]endpoint{http.MethodPost: {call: func(r *http.Request) (proto.Message, error) {
 		request := &tunapb.ForceStartJobRequest{}
 		if err := decodeBody(r, request); err != nil {

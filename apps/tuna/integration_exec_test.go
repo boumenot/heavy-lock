@@ -200,6 +200,54 @@ func TestExecutableRunnerWithControls(t *testing.T) {
 	}
 }
 
+func TestExecutablePriorityQueueDoesNotPreempt(t *testing.T) {
+	t.Setenv("TUNA_TEST_LOCK_DIR", filepath.Join(t.TempDir(), "singleton"))
+	port := freePort(t)
+	startService(t, port, filepath.Join(t.TempDir(), "state"), "--capacity", "2")
+	ps := fmt.Sprint(port)
+	running := startRunner(t, "--port", ps, "--", "/bin/sleep", "60")
+	runningID := running.jobID(t)
+	waitJobState(t, ps, runningID, "JOB_STATE_RUNNING")
+	older := startRunner(t, "--port", ps, "--", "/bin/sleep", "60")
+	olderID := older.jobID(t)
+	waitJobState(t, ps, olderID, "JOB_STATE_QUEUED")
+	urgent := startRunner(t, "--port", ps, "--priority", "-5", "--", "/bin/sleep", "60")
+	urgentID := urgent.jobID(t)
+	waitJobState(t, ps, urgentID, "JOB_STATE_QUEUED")
+	waitJobState(t, ps, runningID, "JOB_STATE_RUNNING")
+
+	code, out, errOut := tuna(t, "queue", "--port", ps, "--json")
+	var queue pb.Queue
+	if code != 0 || protojson.Unmarshal([]byte(out), &queue) != nil || len(queue.Jobs) != 2 ||
+		queue.Jobs[0].JobId != urgentID || queue.Jobs[0].Priority != -5 ||
+		queue.Jobs[1].JobId != olderID || queue.Jobs[1].Priority != 1337 {
+		t.Fatalf("priority queue = %d %q %q", code, out, errOut)
+	}
+	code, out, errOut = tuna(t, "queue", "--port", ps)
+	if code != 0 || !strings.Contains(out, "priority=-5") ||
+		strings.Index(out, urgentID) >= strings.Index(out, olderID) {
+		t.Fatalf("human queue = %d %q %q", code, out, errOut)
+	}
+	if code, out, errOut = tuna(t, "cancel", "--port", ps, "--job", runningID); code != 0 {
+		t.Fatalf("cancel running = %d %q %q", code, out, errOut)
+	}
+	waitJobState(t, ps, urgentID, "JOB_STATE_RUNNING")
+	waitJobState(t, ps, olderID, "JOB_STATE_QUEUED")
+	for _, id := range []string{olderID, urgentID} {
+		if code, out, errOut = tuna(t, "cancel", "--port", ps, "--job", id); code != 0 {
+			t.Fatalf("cancel %s = %d %q %q", id, code, out, errOut)
+		}
+	}
+	for _, tt := range []struct {
+		process *runnerProcess
+		want    int
+	}{{running, 137}, {older, 130}, {urgent, 137}} {
+		if code := tt.process.exitCode(t); code != tt.want {
+			t.Fatalf("cancelled runner exit = %d, want %d; stderr=%s", code, tt.want, tt.process.stderr.String())
+		}
+	}
+}
+
 func TestBrokerRestartPreservesLiveRunnerAndReservation(t *testing.T) {
 	t.Setenv("TUNA_TEST_LOCK_DIR", filepath.Join(t.TempDir(), "singleton"))
 	port, dir := freePort(t), filepath.Join(t.TempDir(), "state")

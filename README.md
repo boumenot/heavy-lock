@@ -112,7 +112,7 @@ tuna service [--port 49783] [--data-dir DIR] [--capacity N] [--backfill-limit K]
   [--event-max-age 24h] \
   [--event-max-count 100000] [--launch-timeout 30s] \
   [--cancel-ack-timeout 5s] [--cancel-completion-timeout 30s]  # per-user broker; one per user
-tuna --port 49783 [--weight heavy|light|N] [--repository [HOST/]OWNER/NAME] \
+tuna --port 49783 [--weight heavy|light|N] [--priority N] [--repository [HOST/]OWNER/NAME] \
   [--worklog N|[HOST/]OWNER/NAME#N] [--no-wait] [--retries 0-3] \
   -- <command> [arguments...]
 ```
@@ -130,11 +130,14 @@ can start and supervise it at login; see the [supervision and installation
 guide](docs/supervision.md) for manual-check evidence and limitations.
 `--capacity` accepts a positive 32-bit integer; absent it, capacity is
 `min(processors/3, memoryGiB/4)` clamped to 2–8. `--backfill-limit` accepts a non-negative 32-bit
-integer, defaults to 1, and 0 selects strict FIFO. Both are fixed for a broker
+integer, defaults to 1, and 0 disables backfill. Both are fixed for a broker
 run; changing either requires a restart. Existing reservations remain held
 when capacity changes, and newly submitted weights above capacity are rejected.
 The runner:
 
+- accepts `--priority` as a signed 32-bit queue-admission priority; the
+  default is 1337 and lower numbers go first. Equal priorities follow durable
+  queue order. This does not change OS process priority or preempt work.
 - requires an explicit `--port`, a running, ready broker, and a command
   after `--`; an unreachable, incompatible or recovering broker exits 69.
   There is no fallback and no implicit broker start.
@@ -160,6 +163,13 @@ The runner:
   relaunches on recovery. A broker lost while the command runs does not
   stop the command; its exit status still propagates, and the reservation
   stays held until the broker verifies the exit.
+
+The queue uses strict priority without aging, so a stream of lower-numbered
+jobs can starve higher-numbered ones. Use
+`tuna priority --job UUID --priority N` to change a queued job's priority, or `tuna reorder` to place
+it explicitly; reorder clamps the job's priority to its new neighbours when
+needed. Bounded backfill can admit an eligible follower past a capacity-blocked
+head. Force-start remains an explicit exception to normal admission.
 
 The configurable launch-investigation clock starts at reservation commit.
 When it expires, an unresolved launch without a definite outcome, reported
@@ -295,7 +305,7 @@ REST is unary/polling only, not an event or runner-lifecycle endpoint.
 
 Health reports a SemVer service version. Stable clients require the same
 major and the minimum minor they need; prerelease clients and brokers require
-an exact version match. This unreleased contract uses `3.0.0-dev.1`, so
+an exact version match. This unreleased contract uses `3.0.0-dev.2`, so
 update the broker, runner and monitor together.
 
 gRPC `WatchEvents` starts from an atomic snapshot/cursor at sequence 0;
@@ -361,7 +371,7 @@ WAL/FULL and macOS fullfsync settings are not a claim of physically verified
 flush or power-loss durability (#6 remains deferred).
 
 The [scheduler library](docs/scheduler.md) (`apps/tuna/scheduler`)
-adds weighted FIFO admission with bounded backfill, resource sharing checks,
+adds weighted priority admission with bounded backfill, resource sharing checks,
 durable pause/reorder, force-start, queued-runner registration and grace, and
 the atomic `TrySubmitAndWatch` no-wait decision, plus the launch lifecycle:
 one-shot claims bound to a runner incarnation, seals, reports, cancellation

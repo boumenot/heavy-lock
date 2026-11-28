@@ -79,8 +79,9 @@ func ParseWeight(value string) (uint32, bool) {
 }
 
 type Options struct {
-	Port   int
-	Weight uint32
+	Port     int
+	Weight   uint32
+	Priority *int32
 	// Attribution holds the explicit --repository and --worklog options;
 	// the rest of a job's attribution is detected at submission.
 	Attribution attribution.Options
@@ -413,6 +414,7 @@ func (r *runner) submitRequest(retryOf string) *pb.SubmitJobRequest {
 		Client:         r.info,
 		Runner:         r.inc,
 		Attribution:    r.attribution,
+		Priority:       r.o.Priority,
 	}
 	if r.cwd != "" {
 		req.Cwd = ptr(r.cwd)

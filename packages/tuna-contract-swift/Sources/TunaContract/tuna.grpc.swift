@@ -242,7 +242,7 @@ extension Tuna_RunnerService {
         /// > for it, and the attempt limit is not exceeded;
         /// > otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
         /// > retry was submitted and inserting/enqueueing it are one transaction.
-        /// > The retry joins the back of the queue and never reuses the earlier grant
+        /// > The retry joins the back of its priority level and never reuses the earlier grant
         /// > or claim. Only the runner retries; the broker never resubmits or
         /// > relaunches work. Deleting a job's history retains a permanent key-only
         /// > tombstone: a later submission with that key, with any payload, fails with
@@ -279,8 +279,8 @@ extension Tuna_RunnerService {
         /// > Source IDL Documentation:
         /// >
         /// > --no-wait: register this stream and make exactly one immediate normal
-        /// > admission decision, as if appended to the current queue. A successful
-        /// > decision atomically commits the job, reservation and any backfill count,
+        /// > admission decision, as if queued after existing jobs of equal priority.
+        /// > A successful decision atomically commits the job, reservation and any backfill count,
         /// > without a durable queue entry, before the first snapshot and grant.
         /// > A connected earlier eligible job has priority; all normal pause,
         /// > readiness, capacity, resource and bounded-backfill checks apply.
@@ -617,7 +617,7 @@ extension Tuna_RunnerService {
         /// > for it, and the attempt limit is not exceeded;
         /// > otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
         /// > retry was submitted and inserting/enqueueing it are one transaction.
-        /// > The retry joins the back of the queue and never reuses the earlier grant
+        /// > The retry joins the back of its priority level and never reuses the earlier grant
         /// > or claim. Only the runner retries; the broker never resubmits or
         /// > relaunches work. Deleting a job's history retains a permanent key-only
         /// > tombstone: a later submission with that key, with any payload, fails with
@@ -665,8 +665,8 @@ extension Tuna_RunnerService {
         /// > Source IDL Documentation:
         /// >
         /// > --no-wait: register this stream and make exactly one immediate normal
-        /// > admission decision, as if appended to the current queue. A successful
-        /// > decision atomically commits the job, reservation and any backfill count,
+        /// > admission decision, as if queued after existing jobs of equal priority.
+        /// > A successful decision atomically commits the job, reservation and any backfill count,
         /// > without a durable queue entry, before the first snapshot and grant.
         /// > A connected earlier eligible job has priority; all normal pause,
         /// > readiness, capacity, resource and bounded-backfill checks apply.
@@ -1085,7 +1085,7 @@ extension Tuna_RunnerService.ClientProtocol {
     /// > for it, and the attempt limit is not exceeded;
     /// > otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
     /// > retry was submitted and inserting/enqueueing it are one transaction.
-    /// > The retry joins the back of the queue and never reuses the earlier grant
+    /// > The retry joins the back of its priority level and never reuses the earlier grant
     /// > or claim. Only the runner retries; the broker never resubmits or
     /// > relaunches work. Deleting a job's history retains a permanent key-only
     /// > tombstone: a later submission with that key, with any payload, fails with
@@ -1128,8 +1128,8 @@ extension Tuna_RunnerService.ClientProtocol {
     /// > Source IDL Documentation:
     /// >
     /// > --no-wait: register this stream and make exactly one immediate normal
-    /// > admission decision, as if appended to the current queue. A successful
-    /// > decision atomically commits the job, reservation and any backfill count,
+    /// > admission decision, as if queued after existing jobs of equal priority.
+    /// > A successful decision atomically commits the job, reservation and any backfill count,
     /// > without a durable queue entry, before the first snapshot and grant.
     /// > A connected earlier eligible job has priority; all normal pause,
     /// > readiness, capacity, resource and bounded-backfill checks apply.
@@ -1497,7 +1497,7 @@ extension Tuna_RunnerService.ClientProtocol {
     /// > for it, and the attempt limit is not exceeded;
     /// > otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
     /// > retry was submitted and inserting/enqueueing it are one transaction.
-    /// > The retry joins the back of the queue and never reuses the earlier grant
+    /// > The retry joins the back of its priority level and never reuses the earlier grant
     /// > or claim. Only the runner retries; the broker never resubmits or
     /// > relaunches work. Deleting a job's history retains a permanent key-only
     /// > tombstone: a later submission with that key, with any payload, fails with
@@ -1544,8 +1544,8 @@ extension Tuna_RunnerService.ClientProtocol {
     /// > Source IDL Documentation:
     /// >
     /// > --no-wait: register this stream and make exactly one immediate normal
-    /// > admission decision, as if appended to the current queue. A successful
-    /// > decision atomically commits the job, reservation and any backfill count,
+    /// > admission decision, as if queued after existing jobs of equal priority.
+    /// > A successful decision atomically commits the job, reservation and any backfill count,
     /// > without a durable queue entry, before the first snapshot and grant.
     /// > A connected earlier eligible job has priority; all normal pause,
     /// > readiness, capacity, resource and bounded-backfill checks apply.
@@ -2043,6 +2043,19 @@ public enum Tuna_ControlService: Sendable {
                 type: .unary
             )
         }
+        /// Namespace for "SetJobPriority" metadata.
+        public enum SetJobPriority: Sendable {
+            /// Request type for "SetJobPriority".
+            public typealias Input = Tuna_SetJobPriorityRequest
+            /// Response type for "SetJobPriority".
+            public typealias Output = Tuna_Job
+            /// Descriptor for "SetJobPriority".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "tuna.ControlService"),
+                method: "SetJobPriority",
+                type: .unary
+            )
+        }
         /// Namespace for "ForceStartJob" metadata.
         public enum ForceStartJob: Sendable {
             /// Request type for "ForceStartJob".
@@ -2131,6 +2144,7 @@ public enum Tuna_ControlService: Sendable {
             GetSubmission.descriptor,
             CancelJob.descriptor,
             MoveJob.descriptor,
+            SetJobPriority.descriptor,
             ForceStartJob.descriptor,
             PauseQueue.descriptor,
             ResumeQueue.descriptor,
@@ -2361,7 +2375,9 @@ extension Tuna_ControlService {
         ///
         /// > Source IDL Documentation:
         /// >
-        /// > Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+        /// > Reorder a waiting job, clamping its priority to its new neighbours if
+        /// > necessary to preserve the requested position.
+        /// > FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
         /// > The monitor does not require confirmation for reordering.
         ///
         /// - Parameters:
@@ -2379,6 +2395,30 @@ extension Tuna_ControlService {
             deserializer: some GRPCCore.MessageDeserializer<Tuna_Queue>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Tuna_Queue>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "SetJobPriority" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Change a waiting job's queue admission priority without changing its
+        /// > sequence. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Tuna_SetJobPriorityRequest` message.
+        ///   - serializer: A serializer for `Tuna_SetJobPriorityRequest` messages.
+        ///   - deserializer: A deserializer for `Tuna_Job` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response and returns its result to
+        ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+        ///       already finished.
+        /// - Returns: The result of `handleResponse`.
+        func setJobPriority<Result>(
+            request: GRPCCore.ClientRequest<Tuna_SetJobPriorityRequest>,
+            serializer: some GRPCCore.MessageSerializer<Tuna_SetJobPriorityRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Tuna_Job>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Tuna_Job>) async throws -> Result
         ) async throws -> Result where Result: Sendable
 
         /// Call the "ForceStartJob" method.
@@ -2832,7 +2872,9 @@ extension Tuna_ControlService {
         ///
         /// > Source IDL Documentation:
         /// >
-        /// > Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+        /// > Reorder a waiting job, clamping its priority to its new neighbours if
+        /// > necessary to preserve the requested position.
+        /// > FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
         /// > The monitor does not require confirmation for reordering.
         ///
         /// - Parameters:
@@ -2856,6 +2898,41 @@ extension Tuna_ControlService {
             try await self.client.unary(
                 request: request,
                 descriptor: Tuna_ControlService.Method.MoveJob.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "SetJobPriority" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Change a waiting job's queue admission priority without changing its
+        /// > sequence. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Tuna_SetJobPriorityRequest` message.
+        ///   - serializer: A serializer for `Tuna_SetJobPriorityRequest` messages.
+        ///   - deserializer: A deserializer for `Tuna_Job` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response and returns its result to
+        ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+        ///       already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func setJobPriority<Result>(
+            request: GRPCCore.ClientRequest<Tuna_SetJobPriorityRequest>,
+            serializer: some GRPCCore.MessageSerializer<Tuna_SetJobPriorityRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Tuna_Job>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Tuna_Job>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Tuna_ControlService.Method.SetJobPriority.descriptor,
                 serializer: serializer,
                 deserializer: deserializer,
                 options: options,
@@ -3323,7 +3400,9 @@ extension Tuna_ControlService.ClientProtocol {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+    /// > Reorder a waiting job, clamping its priority to its new neighbours if
+    /// > necessary to preserve the requested position.
+    /// > FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
     /// > The monitor does not require confirmation for reordering.
     ///
     /// - Parameters:
@@ -3344,6 +3423,36 @@ extension Tuna_ControlService.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Tuna_MoveJobRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Tuna_Queue>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "SetJobPriority" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Change a waiting job's queue admission priority without changing its
+    /// > sequence. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Tuna_SetJobPriorityRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response and returns its result to
+    ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+    ///       already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func setJobPriority<Result>(
+        request: GRPCCore.ClientRequest<Tuna_SetJobPriorityRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Tuna_Job>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.setJobPriority(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Tuna_SetJobPriorityRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Tuna_Job>(),
             options: options,
             onResponse: handleResponse
         )
@@ -3806,7 +3915,9 @@ extension Tuna_ControlService.ClientProtocol {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+    /// > Reorder a waiting job, clamping its priority to its new neighbours if
+    /// > necessary to preserve the requested position.
+    /// > FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
     /// > The monitor does not require confirmation for reordering.
     ///
     /// - Parameters:
@@ -3830,6 +3941,40 @@ extension Tuna_ControlService.ClientProtocol {
             metadata: metadata
         )
         return try await self.moveJob(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "SetJobPriority" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Change a waiting job's queue admission priority without changing its
+    /// > sequence. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response and returns its result to
+    ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+    ///       already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func setJobPriority<Result>(
+        _ message: Tuna_SetJobPriorityRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Tuna_Job>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Tuna_SetJobPriorityRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.setJobPriority(
             request: request,
             options: options,
             onResponse: handleResponse

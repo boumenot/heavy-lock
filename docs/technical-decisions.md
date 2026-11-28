@@ -18,10 +18,23 @@ package `tunapb`, Swift module `TunaContract`, REST paths without a version
 prefix, state under `~/Library/Application Support/tuna` and launch label
 `com.github.boumenot.tuna`. Historical copies are not kept in the tree.
 
-The identity change is breaking, so the service version restarts at major 3
-(`3.0.0-dev.1`) and clients' minimum minor resets to 0. An earlier broker,
+The identity change is breaking, so the service version restarted at major 3
+(`3.0.0-dev.1`) and clients' minimum minor reset to 0. An earlier broker,
 runner or monitor refuses the new one and vice versa; they must be replaced
 together (see [supervision](supervision.md#migrating-an-earlier-installation)).
+The queue-priority addition advances the prerelease to `3.0.0-dev.2` so an
+older broker cannot silently ignore a new runner's requested priority.
+
+## Queue admission priority
+
+Jobs have a signed 32-bit admission priority, default 1337; lower values
+precede higher values and `queue_seq` breaks ties. This is separate from OS
+process priority and never preempts reservations. Priority is strict, with
+no aging; ongoing lower-numbered submissions can starve higher-numbered
+jobs. Changing a waiting job's priority preserves its sequence. An explicit
+reorder clamps its priority only as necessary to reach the requested place.
+Bounded backfill, force-start and resource safeguards remain in effect. See
+[scheduler](scheduler.md#policy) for the full interaction.
 
 **Exceptions.** Links to existing issues keep the current GitHub repository
 URL until the repository is renamed. Storage migration test data and tests

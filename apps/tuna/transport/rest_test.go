@@ -176,7 +176,7 @@ func TestRESTJSONGoldenShapes(t *testing.T) {
 				"forced":false,"serviceVersion":"","queuedAt":"2025-11-26T01:40:00.123456789Z",
 				"runnerConnected":false,"resources":{"elapsed":"0s","cpuTime":"1.234s","sampleCount":0,
 				"completeness":"MEASUREMENT_COMPLETENESS_UNSPECIFIED"},"admittedByBackfill":false,
-				"backfillBypassCount":0,"attempt":0,"blockedReason":"BLOCKED_REASON_UNSPECIFIED"}`,
+				"backfillBypassCount":0,"attempt":0,"blockedReason":"BLOCKED_REASON_UNSPECIFIED","priority":0}`,
 		},
 	}
 	for _, tt := range tests {

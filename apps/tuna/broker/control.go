@@ -218,6 +218,19 @@ func (c *Control) MoveJob(ctx context.Context, req *pb.MoveJobRequest) (*pb.Queu
 	return c.GetQueue(ctx, &pb.GetQueueRequest{})
 }
 
+func (c *Control) SetJobPriority(ctx context.Context, req *pb.SetJobPriorityRequest) (*pb.Job, error) {
+	if err := validID(req.GetJobId(), "job_id"); err != nil {
+		return nil, err
+	}
+	if req.Priority == nil {
+		return nil, invalid("priority", "priority is required")
+	}
+	if _, err := c.s.SetPriority(ctx, req.JobId, *req.Priority); err != nil {
+		return nil, controlError(err)
+	}
+	return c.GetJob(ctx, &pb.GetJobRequest{JobId: req.JobId})
+}
+
 func (c *Control) ForceStartJob(ctx context.Context, req *pb.ForceStartJobRequest) (*pb.Job, error) {
 	if err := validID(req.GetJobId(), "job_id"); err != nil {
 		return nil, err

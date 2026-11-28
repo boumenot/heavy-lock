@@ -1359,6 +1359,12 @@ public nonisolated struct Tuna_Job: @unchecked Sendable {
     set {_uniqueStorage()._blockedReason = newValue}
   }
 
+  /// Queue admission priority, not OS process priority; lower numbers go first.
+  public var priority: Int32 {
+    get {_storage._priority}
+    set {_uniqueStorage()._priority = newValue}
+  }
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1508,6 +1514,16 @@ public nonisolated struct Tuna_SubmitJobRequest: @unchecked Sendable {
   public var hasRetryOfJobID: Bool {_storage._retryOfJobID != nil}
   /// Clears the value of `retryOfJobID`. Subsequent reads from it will return its default value.
   public mutating func clearRetryOfJobID() {_uniqueStorage()._retryOfJobID = nil}
+
+  /// Queue admission priority. When absent, the broker uses 1337.
+  public var priority: Int32 {
+    get {_storage._priority ?? 0}
+    set {_uniqueStorage()._priority = newValue}
+  }
+  /// Returns true if `priority` has been explicitly set.
+  public var hasPriority: Bool {_storage._priority != nil}
+  /// Clears the value of `priority`. Subsequent reads from it will return its default value.
+  public mutating func clearPriority() {_uniqueStorage()._priority = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -2189,7 +2205,7 @@ public nonisolated struct Tuna_BrokerStatus: @unchecked Sendable {
     set {_uniqueStorage()._unreconciledReservations = newValue}
   }
 
-  /// per-head bypass limit; 0 is strict FIFO
+  /// per-head bypass limit; 0 disables backfill
   public var backfillLimit: UInt32 {
     get {_storage._backfillLimit}
     set {_uniqueStorage()._backfillLimit = newValue}
@@ -2232,7 +2248,7 @@ public nonisolated struct Tuna_Queue: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// queue order; head first
+  /// priority ascending, then queue sequence; head first
   public var jobs: [Tuna_Job] = []
 
   public var headBlockedReason: Tuna_BlockedReason = .unspecified
@@ -2424,6 +2440,29 @@ public nonisolated struct Tuna_MoveJobRequest: Sendable {
   }
 
   public init() {}
+}
+
+public nonisolated struct Tuna_SetJobPriorityRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var jobID: String = String()
+
+  public var priority: Int32 {
+    get {_priority ?? 0}
+    set {_priority = newValue}
+  }
+  /// Returns true if `priority` has been explicitly set.
+  public var hasPriority: Bool {self._priority != nil}
+  /// Clears the value of `priority`. Subsequent reads from it will return its default value.
+  public mutating func clearPriority() {self._priority = nil}
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+
+  fileprivate var _priority: Int32? = nil
 }
 
 public nonisolated struct Tuna_ForceStartJobRequest: Sendable {
@@ -3084,7 +3123,7 @@ nonisolated extension Tuna_ResourceSummary: SwiftProtobuf.Message, SwiftProtobuf
 
 nonisolated extension Tuna_Job: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Job"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}job_id\0\u{3}idempotency_key\0\u{1}state\0\u{1}command\0\u{1}cwd\0\u{1}weight\0\u{1}forced\0\u{1}client\0\u{1}attribution\0\u{3}service_version\0\u{3}queued_at\0\u{3}admitted_at\0\u{3}started_at\0\u{3}finished_at\0\u{3}cancel_requested_at\0\u{3}queue_position\0\u{3}runner_connected\0\u{3}grace_remaining\0\u{1}grant\0\u{1}process\0\u{3}free_memory_at_admission_bytes\0\u{1}outcome\0\u{1}resources\0\u{3}cancel_reason\0\u{3}admitted_by_backfill\0\u{3}backfill_bypass_count\0\u{3}retry_of_job_id\0\u{1}attempt\0\u{3}cancel_acknowledged_at\0\u{3}cancel_failure_detail\0\u{3}broker_termination\0\u{3}blocked_reason\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}job_id\0\u{3}idempotency_key\0\u{1}state\0\u{1}command\0\u{1}cwd\0\u{1}weight\0\u{1}forced\0\u{1}client\0\u{1}attribution\0\u{3}service_version\0\u{3}queued_at\0\u{3}admitted_at\0\u{3}started_at\0\u{3}finished_at\0\u{3}cancel_requested_at\0\u{3}queue_position\0\u{3}runner_connected\0\u{3}grace_remaining\0\u{1}grant\0\u{1}process\0\u{3}free_memory_at_admission_bytes\0\u{1}outcome\0\u{1}resources\0\u{3}cancel_reason\0\u{3}admitted_by_backfill\0\u{3}backfill_bypass_count\0\u{3}retry_of_job_id\0\u{1}attempt\0\u{3}cancel_acknowledged_at\0\u{3}cancel_failure_detail\0\u{3}broker_termination\0\u{3}blocked_reason\0\u{1}priority\0")
 
   fileprivate class _StorageClass {
     var _jobID: String = String()
@@ -3119,6 +3158,7 @@ nonisolated extension Tuna_Job: SwiftProtobuf.Message, SwiftProtobuf._MessageImp
     var _cancelFailureDetail: String? = nil
     var _brokerTermination: Tuna_BrokerTermination? = nil
     var _blockedReason: Tuna_BlockedReason = .unspecified
+    var _priority: Int32 = 0
 
       // This property is used as the initial default value for new instances of the type.
       // The type itself is protecting the reference to its storage via CoW semantics.
@@ -3161,6 +3201,7 @@ nonisolated extension Tuna_Job: SwiftProtobuf.Message, SwiftProtobuf._MessageImp
       _cancelFailureDetail = source._cancelFailureDetail
       _brokerTermination = source._brokerTermination
       _blockedReason = source._blockedReason
+      _priority = source._priority
     }
   }
 
@@ -3211,6 +3252,7 @@ nonisolated extension Tuna_Job: SwiftProtobuf.Message, SwiftProtobuf._MessageImp
         case 30: try { try decoder.decodeSingularStringField(value: &_storage._cancelFailureDetail) }()
         case 31: try { try decoder.decodeSingularMessageField(value: &_storage._brokerTermination) }()
         case 32: try { try decoder.decodeSingularEnumField(value: &_storage._blockedReason) }()
+        case 33: try { try decoder.decodeSingularInt32Field(value: &_storage._priority) }()
         default: break
         }
       }
@@ -3319,6 +3361,9 @@ nonisolated extension Tuna_Job: SwiftProtobuf.Message, SwiftProtobuf._MessageImp
       if _storage._blockedReason != .unspecified {
         try visitor.visitSingularEnumField(value: _storage._blockedReason, fieldNumber: 32)
       }
+      if _storage._priority != 0 {
+        try visitor.visitSingularInt32Field(value: _storage._priority, fieldNumber: 33)
+      }
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -3360,6 +3405,7 @@ nonisolated extension Tuna_Job: SwiftProtobuf.Message, SwiftProtobuf._MessageImp
         if _storage._cancelFailureDetail != rhs_storage._cancelFailureDetail {return false}
         if _storage._brokerTermination != rhs_storage._brokerTermination {return false}
         if _storage._blockedReason != rhs_storage._blockedReason {return false}
+        if _storage._priority != rhs_storage._priority {return false}
         return true
       }
       if !storagesAreEqual {return false}
@@ -3414,7 +3460,7 @@ nonisolated extension Tuna_BrokerTermination.Reason: SwiftProtobuf._ProtoNamePro
 
 nonisolated extension Tuna_SubmitJobRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".SubmitJobRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}idempotency_key\0\u{1}command\0\u{1}cwd\0\u{1}weight\0\u{1}client\0\u{1}attribution\0\u{1}runner\0\u{3}retry_of_job_id\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}idempotency_key\0\u{1}command\0\u{1}cwd\0\u{1}weight\0\u{1}client\0\u{1}attribution\0\u{1}runner\0\u{3}retry_of_job_id\0\u{1}priority\0")
 
   fileprivate class _StorageClass {
     var _idempotencyKey: String = String()
@@ -3425,6 +3471,7 @@ nonisolated extension Tuna_SubmitJobRequest: SwiftProtobuf.Message, SwiftProtobu
     var _attribution: Tuna_Attribution? = nil
     var _runner: Tuna_RunnerIncarnation? = nil
     var _retryOfJobID: String? = nil
+    var _priority: Int32? = nil
 
       // This property is used as the initial default value for new instances of the type.
       // The type itself is protecting the reference to its storage via CoW semantics.
@@ -3443,6 +3490,7 @@ nonisolated extension Tuna_SubmitJobRequest: SwiftProtobuf.Message, SwiftProtobu
       _attribution = source._attribution
       _runner = source._runner
       _retryOfJobID = source._retryOfJobID
+      _priority = source._priority
     }
   }
 
@@ -3469,6 +3517,7 @@ nonisolated extension Tuna_SubmitJobRequest: SwiftProtobuf.Message, SwiftProtobu
         case 6: try { try decoder.decodeSingularMessageField(value: &_storage._attribution) }()
         case 7: try { try decoder.decodeSingularMessageField(value: &_storage._runner) }()
         case 8: try { try decoder.decodeSingularStringField(value: &_storage._retryOfJobID) }()
+        case 9: try { try decoder.decodeSingularInt32Field(value: &_storage._priority) }()
         default: break
         }
       }
@@ -3505,6 +3554,9 @@ nonisolated extension Tuna_SubmitJobRequest: SwiftProtobuf.Message, SwiftProtobu
       try { if let v = _storage._retryOfJobID {
         try visitor.visitSingularStringField(value: v, fieldNumber: 8)
       } }()
+      try { if let v = _storage._priority {
+        try visitor.visitSingularInt32Field(value: v, fieldNumber: 9)
+      } }()
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -3522,6 +3574,7 @@ nonisolated extension Tuna_SubmitJobRequest: SwiftProtobuf.Message, SwiftProtobu
         if _storage._attribution != rhs_storage._attribution {return false}
         if _storage._runner != rhs_storage._runner {return false}
         if _storage._retryOfJobID != rhs_storage._retryOfJobID {return false}
+        if _storage._priority != rhs_storage._priority {return false}
         return true
       }
       if !storagesAreEqual {return false}
@@ -4973,6 +5026,45 @@ nonisolated extension Tuna_MoveJobRequest: SwiftProtobuf.Message, SwiftProtobuf.
   public static func ==(lhs: Tuna_MoveJobRequest, rhs: Tuna_MoveJobRequest) -> Bool {
     if lhs.jobID != rhs.jobID {return false}
     if lhs.target != rhs.target {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Tuna_SetJobPriorityRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".SetJobPriorityRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}job_id\0\u{1}priority\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.jobID) }()
+      case 2: try { try decoder.decodeSingularInt32Field(value: &self._priority) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if !self.jobID.isEmpty {
+      try visitor.visitSingularStringField(value: self.jobID, fieldNumber: 1)
+    }
+    try { if let v = self._priority {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 2)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Tuna_SetJobPriorityRequest, rhs: Tuna_SetJobPriorityRequest) -> Bool {
+    if lhs.jobID != rhs.jobID {return false}
+    if lhs._priority != rhs._priority {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -1363,6 +1363,8 @@ type Job struct {
 	// Oversized takes precedence here even if paused or disconnected; clients
 	// display those independent conditions from status and runner_connected.
 	BlockedReason BlockedReason `protobuf:"varint,32,opt,name=blocked_reason,json=blockedReason,proto3,enum=tuna.BlockedReason" json:"blocked_reason,omitempty"`
+	// Queue admission priority, not OS process priority; lower numbers go first.
+	Priority      int32 `protobuf:"varint,33,opt,name=priority,proto3" json:"priority,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1621,6 +1623,13 @@ func (x *Job) GetBlockedReason() BlockedReason {
 	return BlockedReason_BLOCKED_REASON_UNSPECIFIED
 }
 
+func (x *Job) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
 type BrokerTermination struct {
 	state         protoimpl.MessageState   `protogen:"open.v1"`
 	StartedAt     *timestamppb.Timestamp   `protobuf:"bytes,1,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`              // committed before the first signal
@@ -1684,7 +1693,9 @@ type SubmitJobRequest struct {
 	Runner         *RunnerIncarnation     `protobuf:"bytes,7,opt,name=runner,proto3" json:"runner,omitempty"`
 	// Set only for an opt-in retry of a still-retained, failed, released
 	// earlier attempt. The predecessor may be deleted after this job commits.
-	RetryOfJobId  *string `protobuf:"bytes,8,opt,name=retry_of_job_id,json=retryOfJobId,proto3,oneof" json:"retry_of_job_id,omitempty"`
+	RetryOfJobId *string `protobuf:"bytes,8,opt,name=retry_of_job_id,json=retryOfJobId,proto3,oneof" json:"retry_of_job_id,omitempty"`
+	// Queue admission priority. When absent, the broker uses 1337.
+	Priority      *int32 `protobuf:"varint,9,opt,name=priority,proto3,oneof" json:"priority,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1773,6 +1784,13 @@ func (x *SubmitJobRequest) GetRetryOfJobId() string {
 		return *x.RetryOfJobId
 	}
 	return ""
+}
+
+func (x *SubmitJobRequest) GetPriority() int32 {
+	if x != nil && x.Priority != nil {
+		return *x.Priority
+	}
+	return 0
 }
 
 type SubmitJobResponse struct {
@@ -3000,7 +3018,7 @@ type BrokerStatus struct {
 	// Held reservations not yet reconciled since the last broker restart.
 	// They count toward occupied but do not block unrelated admissions.
 	UnreconciledReservations uint32     `protobuf:"varint,12,opt,name=unreconciled_reservations,json=unreconciledReservations,proto3" json:"unreconciled_reservations,omitempty"`
-	BackfillLimit            uint32     `protobuf:"varint,13,opt,name=backfill_limit,json=backfillLimit,proto3" json:"backfill_limit,omitempty"`             // per-head bypass limit; 0 is strict FIFO
+	BackfillLimit            uint32     `protobuf:"varint,13,opt,name=backfill_limit,json=backfillLimit,proto3" json:"backfill_limit,omitempty"`             // per-head bypass limit; 0 disables backfill
 	QueueMode                QueueMode  `protobuf:"varint,14,opt,name=queue_mode,json=queueMode,proto3,enum=tuna.QueueMode" json:"queue_mode,omitempty"`     // since API 2.1
 	QueueState               QueueState `protobuf:"varint,15,opt,name=queue_state,json=queueState,proto3,enum=tuna.QueueState" json:"queue_state,omitempty"` // since API 2.1
 	unknownFields            protoimpl.UnknownFields
@@ -3198,7 +3216,7 @@ func (*GetQueueRequest) Descriptor() ([]byte, []int) {
 // client keeps the values from whichever of the two it received last.
 type Queue struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	Jobs              []*Job                 `protobuf:"bytes,1,rep,name=jobs,proto3" json:"jobs,omitempty"` // queue order; head first
+	Jobs              []*Job                 `protobuf:"bytes,1,rep,name=jobs,proto3" json:"jobs,omitempty"` // priority ascending, then queue sequence; head first
 	HeadBlockedReason BlockedReason          `protobuf:"varint,2,opt,name=head_blocked_reason,json=headBlockedReason,proto3,enum=tuna.BlockedReason" json:"head_blocked_reason,omitempty"`
 	QueueState        QueueState             `protobuf:"varint,3,opt,name=queue_state,json=queueState,proto3,enum=tuna.QueueState" json:"queue_state,omitempty"` // since API 2.1
 	unknownFields     protoimpl.UnknownFields
@@ -3666,6 +3684,58 @@ func (*MoveJobRequest_BeforeJobId) isMoveJobRequest_Target() {}
 
 func (*MoveJobRequest_AfterJobId) isMoveJobRequest_Target() {}
 
+type SetJobPriorityRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Priority      *int32                 `protobuf:"varint,2,opt,name=priority,proto3,oneof" json:"priority,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetJobPriorityRequest) Reset() {
+	*x = SetJobPriorityRequest{}
+	mi := &file_tuna_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetJobPriorityRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetJobPriorityRequest) ProtoMessage() {}
+
+func (x *SetJobPriorityRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tuna_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetJobPriorityRequest.ProtoReflect.Descriptor instead.
+func (*SetJobPriorityRequest) Descriptor() ([]byte, []int) {
+	return file_tuna_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *SetJobPriorityRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *SetJobPriorityRequest) GetPriority() int32 {
+	if x != nil && x.Priority != nil {
+		return *x.Priority
+	}
+	return 0
+}
+
 type ForceStartJobRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
@@ -3675,7 +3745,7 @@ type ForceStartJobRequest struct {
 
 func (x *ForceStartJobRequest) Reset() {
 	*x = ForceStartJobRequest{}
-	mi := &file_tuna_proto_msgTypes[37]
+	mi := &file_tuna_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3687,7 +3757,7 @@ func (x *ForceStartJobRequest) String() string {
 func (*ForceStartJobRequest) ProtoMessage() {}
 
 func (x *ForceStartJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tuna_proto_msgTypes[37]
+	mi := &file_tuna_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3700,7 +3770,7 @@ func (x *ForceStartJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForceStartJobRequest.ProtoReflect.Descriptor instead.
 func (*ForceStartJobRequest) Descriptor() ([]byte, []int) {
-	return file_tuna_proto_rawDescGZIP(), []int{37}
+	return file_tuna_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ForceStartJobRequest) GetJobId() string {
@@ -3718,7 +3788,7 @@ type PauseQueueRequest struct {
 
 func (x *PauseQueueRequest) Reset() {
 	*x = PauseQueueRequest{}
-	mi := &file_tuna_proto_msgTypes[38]
+	mi := &file_tuna_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3730,7 +3800,7 @@ func (x *PauseQueueRequest) String() string {
 func (*PauseQueueRequest) ProtoMessage() {}
 
 func (x *PauseQueueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tuna_proto_msgTypes[38]
+	mi := &file_tuna_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3743,7 +3813,7 @@ func (x *PauseQueueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseQueueRequest.ProtoReflect.Descriptor instead.
 func (*PauseQueueRequest) Descriptor() ([]byte, []int) {
-	return file_tuna_proto_rawDescGZIP(), []int{38}
+	return file_tuna_proto_rawDescGZIP(), []int{39}
 }
 
 type ResumeQueueRequest struct {
@@ -3754,7 +3824,7 @@ type ResumeQueueRequest struct {
 
 func (x *ResumeQueueRequest) Reset() {
 	*x = ResumeQueueRequest{}
-	mi := &file_tuna_proto_msgTypes[39]
+	mi := &file_tuna_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3766,7 +3836,7 @@ func (x *ResumeQueueRequest) String() string {
 func (*ResumeQueueRequest) ProtoMessage() {}
 
 func (x *ResumeQueueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tuna_proto_msgTypes[39]
+	mi := &file_tuna_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3779,7 +3849,7 @@ func (x *ResumeQueueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeQueueRequest.ProtoReflect.Descriptor instead.
 func (*ResumeQueueRequest) Descriptor() ([]byte, []int) {
-	return file_tuna_proto_rawDescGZIP(), []int{39}
+	return file_tuna_proto_rawDescGZIP(), []int{40}
 }
 
 type DeleteJobRequest struct {
@@ -3791,7 +3861,7 @@ type DeleteJobRequest struct {
 
 func (x *DeleteJobRequest) Reset() {
 	*x = DeleteJobRequest{}
-	mi := &file_tuna_proto_msgTypes[40]
+	mi := &file_tuna_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3803,7 +3873,7 @@ func (x *DeleteJobRequest) String() string {
 func (*DeleteJobRequest) ProtoMessage() {}
 
 func (x *DeleteJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tuna_proto_msgTypes[40]
+	mi := &file_tuna_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3816,7 +3886,7 @@ func (x *DeleteJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteJobRequest.ProtoReflect.Descriptor instead.
 func (*DeleteJobRequest) Descriptor() ([]byte, []int) {
-	return file_tuna_proto_rawDescGZIP(), []int{40}
+	return file_tuna_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *DeleteJobRequest) GetJobId() string {
@@ -3834,7 +3904,7 @@ type DeleteJobResponse struct {
 
 func (x *DeleteJobResponse) Reset() {
 	*x = DeleteJobResponse{}
-	mi := &file_tuna_proto_msgTypes[41]
+	mi := &file_tuna_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3846,7 +3916,7 @@ func (x *DeleteJobResponse) String() string {
 func (*DeleteJobResponse) ProtoMessage() {}
 
 func (x *DeleteJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tuna_proto_msgTypes[41]
+	mi := &file_tuna_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3859,7 +3929,7 @@ func (x *DeleteJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteJobResponse.ProtoReflect.Descriptor instead.
 func (*DeleteJobResponse) Descriptor() ([]byte, []int) {
-	return file_tuna_proto_rawDescGZIP(), []int{41}
+	return file_tuna_proto_rawDescGZIP(), []int{42}
 }
 
 type DeleteHistoryRequest struct {
@@ -3871,7 +3941,7 @@ type DeleteHistoryRequest struct {
 
 func (x *DeleteHistoryRequest) Reset() {
 	*x = DeleteHistoryRequest{}
-	mi := &file_tuna_proto_msgTypes[42]
+	mi := &file_tuna_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3883,7 +3953,7 @@ func (x *DeleteHistoryRequest) String() string {
 func (*DeleteHistoryRequest) ProtoMessage() {}
 
 func (x *DeleteHistoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tuna_proto_msgTypes[42]
+	mi := &file_tuna_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3896,7 +3966,7 @@ func (x *DeleteHistoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteHistoryRequest.ProtoReflect.Descriptor instead.
 func (*DeleteHistoryRequest) Descriptor() ([]byte, []int) {
-	return file_tuna_proto_rawDescGZIP(), []int{42}
+	return file_tuna_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *DeleteHistoryRequest) GetFinishedBefore() *timestamppb.Timestamp {
@@ -3916,7 +3986,7 @@ type DeleteHistoryResponse struct {
 
 func (x *DeleteHistoryResponse) Reset() {
 	*x = DeleteHistoryResponse{}
-	mi := &file_tuna_proto_msgTypes[43]
+	mi := &file_tuna_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3928,7 +3998,7 @@ func (x *DeleteHistoryResponse) String() string {
 func (*DeleteHistoryResponse) ProtoMessage() {}
 
 func (x *DeleteHistoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tuna_proto_msgTypes[43]
+	mi := &file_tuna_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3941,7 +4011,7 @@ func (x *DeleteHistoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteHistoryResponse.ProtoReflect.Descriptor instead.
 func (*DeleteHistoryResponse) Descriptor() ([]byte, []int) {
-	return file_tuna_proto_rawDescGZIP(), []int{43}
+	return file_tuna_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *DeleteHistoryResponse) GetDeleted() uint32 {
@@ -3974,7 +4044,7 @@ type WatchEventsRequest struct {
 
 func (x *WatchEventsRequest) Reset() {
 	*x = WatchEventsRequest{}
-	mi := &file_tuna_proto_msgTypes[44]
+	mi := &file_tuna_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3986,7 +4056,7 @@ func (x *WatchEventsRequest) String() string {
 func (*WatchEventsRequest) ProtoMessage() {}
 
 func (x *WatchEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tuna_proto_msgTypes[44]
+	mi := &file_tuna_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3999,7 +4069,7 @@ func (x *WatchEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchEventsRequest.ProtoReflect.Descriptor instead.
 func (*WatchEventsRequest) Descriptor() ([]byte, []int) {
-	return file_tuna_proto_rawDescGZIP(), []int{44}
+	return file_tuna_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *WatchEventsRequest) GetAfterEventSeq() int64 {
@@ -4030,7 +4100,7 @@ type BrokerEvent struct {
 
 func (x *BrokerEvent) Reset() {
 	*x = BrokerEvent{}
-	mi := &file_tuna_proto_msgTypes[45]
+	mi := &file_tuna_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4042,7 +4112,7 @@ func (x *BrokerEvent) String() string {
 func (*BrokerEvent) ProtoMessage() {}
 
 func (x *BrokerEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_tuna_proto_msgTypes[45]
+	mi := &file_tuna_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4055,7 +4125,7 @@ func (x *BrokerEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BrokerEvent.ProtoReflect.Descriptor instead.
 func (*BrokerEvent) Descriptor() ([]byte, []int) {
-	return file_tuna_proto_rawDescGZIP(), []int{45}
+	return file_tuna_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *BrokerEvent) GetEventSeq() int64 {
@@ -4184,7 +4254,7 @@ type BrokerSnapshot struct {
 
 func (x *BrokerSnapshot) Reset() {
 	*x = BrokerSnapshot{}
-	mi := &file_tuna_proto_msgTypes[46]
+	mi := &file_tuna_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4196,7 +4266,7 @@ func (x *BrokerSnapshot) String() string {
 func (*BrokerSnapshot) ProtoMessage() {}
 
 func (x *BrokerSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_tuna_proto_msgTypes[46]
+	mi := &file_tuna_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4209,7 +4279,7 @@ func (x *BrokerSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BrokerSnapshot.ProtoReflect.Descriptor instead.
 func (*BrokerSnapshot) Descriptor() ([]byte, []int) {
-	return file_tuna_proto_rawDescGZIP(), []int{46}
+	return file_tuna_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *BrokerSnapshot) GetStatus() *BrokerStatus {
@@ -4315,7 +4385,7 @@ const file_tuna_proto_rawDesc = "" +
 	"\x15incompleteness_reason\x18\a \x01(\tH\x02R\x14incompletenessReason\x88\x01\x01B\x13\n" +
 	"\x11_peak_cpu_percentB\x1a\n" +
 	"\x18_peak_combined_rss_bytesB\x18\n" +
-	"\x16_incompleteness_reason\"\xe7\r\n" +
+	"\x16_incompleteness_reason\"\x83\x0e\n" +
 	"\x03Job\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12'\n" +
 	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\x12$\n" +
@@ -4353,7 +4423,8 @@ const file_tuna_proto_rawDesc = "" +
 	"\x15cancel_failure_detail\x18\x1e \x01(\tH\tR\x13cancelFailureDetail\x88\x01\x01\x12K\n" +
 	"\x12broker_termination\x18\x1f \x01(\v2\x17.tuna.BrokerTerminationH\n" +
 	"R\x11brokerTermination\x88\x01\x01\x12:\n" +
-	"\x0eblocked_reason\x18  \x01(\x0e2\x13.tuna.BlockedReasonR\rblockedReasonB\x06\n" +
+	"\x0eblocked_reason\x18  \x01(\x0e2\x13.tuna.BlockedReasonR\rblockedReason\x12\x1a\n" +
+	"\bpriority\x18! \x01(\x05R\bpriorityB\x06\n" +
 	"\x04_cwdB\x11\n" +
 	"\x0f_queue_positionB\b\n" +
 	"\x06_grantB\n" +
@@ -4377,7 +4448,7 @@ const file_tuna_proto_rawDesc = "" +
 	"\x1aREASON_CANCEL_ACK_DEADLINE\x10\x01\x12%\n" +
 	"!REASON_CANCEL_COMPLETION_DEADLINE\x10\x02\x12\x1f\n" +
 	"\x1bREASON_CANCEL_RUNNER_FAILED\x10\x03\x12\x16\n" +
-	"\x12REASON_RUNNER_DEAD\x10\x04\"\xdc\x02\n" +
+	"\x12REASON_RUNNER_DEAD\x10\x04\"\x8a\x03\n" +
 	"\x10SubmitJobRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x18\n" +
 	"\acommand\x18\x02 \x01(\tR\acommand\x12\x15\n" +
@@ -4386,9 +4457,11 @@ const file_tuna_proto_rawDesc = "" +
 	"\x06client\x18\x05 \x01(\v2\x10.tuna.ClientInfoR\x06client\x123\n" +
 	"\vattribution\x18\x06 \x01(\v2\x11.tuna.AttributionR\vattribution\x12/\n" +
 	"\x06runner\x18\a \x01(\v2\x17.tuna.RunnerIncarnationR\x06runner\x12*\n" +
-	"\x0fretry_of_job_id\x18\b \x01(\tH\x01R\fretryOfJobId\x88\x01\x01B\x06\n" +
+	"\x0fretry_of_job_id\x18\b \x01(\tH\x01R\fretryOfJobId\x88\x01\x01\x12\x1f\n" +
+	"\bpriority\x18\t \x01(\x05H\x02R\bpriority\x88\x01\x01B\x06\n" +
 	"\x04_cwdB\x12\n" +
-	"\x10_retry_of_job_id\"J\n" +
+	"\x10_retry_of_job_idB\v\n" +
+	"\t_priority\"J\n" +
 	"\x11SubmitJobResponse\x12\x1b\n" +
 	"\x03job\x18\x01 \x01(\v2\t.tuna.JobR\x03job\x12\x18\n" +
 	"\acreated\x18\x02 \x01(\bR\acreated\"Y\n" +
@@ -4541,7 +4614,11 @@ const file_tuna_proto_rawDesc = "" +
 	"\rbefore_job_id\x18\x04 \x01(\tH\x00R\vbeforeJobId\x12\"\n" +
 	"\fafter_job_id\x18\x05 \x01(\tH\x00R\n" +
 	"afterJobIdB\b\n" +
-	"\x06target\"-\n" +
+	"\x06target\"\\\n" +
+	"\x15SetJobPriorityRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1f\n" +
+	"\bpriority\x18\x02 \x01(\x05H\x00R\bpriority\x88\x01\x01B\v\n" +
+	"\t_priority\"-\n" +
 	"\x14ForceStartJobRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"\x13\n" +
 	"\x11PauseQueueRequest\"\x14\n" +
@@ -4678,7 +4755,7 @@ const file_tuna_proto_rawDesc = "" +
 	"\x12ReportLaunchFailed\x12\x1f.tuna.ReportLaunchFailedRequest\x1a\t.tuna.Job\x12>\n" +
 	"\x11AcknowledgeCancel\x12\x1e.tuna.AcknowledgeCancelRequest\x1a\t.tuna.Job\x12@\n" +
 	"\x12ReportCancelFailed\x12\x1f.tuna.ReportCancelFailedRequest\x1a\t.tuna.Job\x128\n" +
-	"\x0eReportFinished\x12\x1b.tuna.ReportFinishedRequest\x1a\t.tuna.Job2\x9d\x06\n" +
+	"\x0eReportFinished\x12\x1b.tuna.ReportFinishedRequest\x1a\t.tuna.Job2\xd7\x06\n" +
 	"\x0eControlService\x121\n" +
 	"\tGetHealth\x12\x16.tuna.GetHealthRequest\x1a\f.tuna.Health\x127\n" +
 	"\tGetStatus\x12\x16.tuna.GetStatusRequest\x1a\x12.tuna.BrokerStatus\x12.\n" +
@@ -4687,7 +4764,8 @@ const file_tuna_proto_rawDesc = "" +
 	"\x06GetJob\x12\x13.tuna.GetJobRequest\x1a\t.tuna.Job\x126\n" +
 	"\rGetSubmission\x12\x1a.tuna.GetSubmissionRequest\x1a\t.tuna.Job\x12.\n" +
 	"\tCancelJob\x12\x16.tuna.CancelJobRequest\x1a\t.tuna.Job\x12,\n" +
-	"\aMoveJob\x12\x14.tuna.MoveJobRequest\x1a\v.tuna.Queue\x126\n" +
+	"\aMoveJob\x12\x14.tuna.MoveJobRequest\x1a\v.tuna.Queue\x128\n" +
+	"\x0eSetJobPriority\x12\x1b.tuna.SetJobPriorityRequest\x1a\t.tuna.Job\x126\n" +
 	"\rForceStartJob\x12\x1a.tuna.ForceStartJobRequest\x1a\t.tuna.Job\x129\n" +
 	"\n" +
 	"PauseQueue\x12\x17.tuna.PauseQueueRequest\x1a\x12.tuna.BrokerStatus\x12;\n" +
@@ -4709,7 +4787,7 @@ func file_tuna_proto_rawDescGZIP() []byte {
 }
 
 var file_tuna_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
-var file_tuna_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
+var file_tuna_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_tuna_proto_goTypes = []any{
 	(JobState)(0),                     // 0: tuna.JobState
 	(OutcomeKind)(0),                  // 1: tuna.OutcomeKind
@@ -4759,50 +4837,51 @@ var file_tuna_proto_goTypes = []any{
 	(*GetSubmissionRequest)(nil),      // 45: tuna.GetSubmissionRequest
 	(*CancelJobRequest)(nil),          // 46: tuna.CancelJobRequest
 	(*MoveJobRequest)(nil),            // 47: tuna.MoveJobRequest
-	(*ForceStartJobRequest)(nil),      // 48: tuna.ForceStartJobRequest
-	(*PauseQueueRequest)(nil),         // 49: tuna.PauseQueueRequest
-	(*ResumeQueueRequest)(nil),        // 50: tuna.ResumeQueueRequest
-	(*DeleteJobRequest)(nil),          // 51: tuna.DeleteJobRequest
-	(*DeleteJobResponse)(nil),         // 52: tuna.DeleteJobResponse
-	(*DeleteHistoryRequest)(nil),      // 53: tuna.DeleteHistoryRequest
-	(*DeleteHistoryResponse)(nil),     // 54: tuna.DeleteHistoryResponse
-	(*WatchEventsRequest)(nil),        // 55: tuna.WatchEventsRequest
-	(*BrokerEvent)(nil),               // 56: tuna.BrokerEvent
-	(*BrokerSnapshot)(nil),            // 57: tuna.BrokerSnapshot
-	nil,                               // 58: tuna.Attribution.ExtraEntry
-	(*timestamppb.Timestamp)(nil),     // 59: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),       // 60: google.protobuf.Duration
+	(*SetJobPriorityRequest)(nil),     // 48: tuna.SetJobPriorityRequest
+	(*ForceStartJobRequest)(nil),      // 49: tuna.ForceStartJobRequest
+	(*PauseQueueRequest)(nil),         // 50: tuna.PauseQueueRequest
+	(*ResumeQueueRequest)(nil),        // 51: tuna.ResumeQueueRequest
+	(*DeleteJobRequest)(nil),          // 52: tuna.DeleteJobRequest
+	(*DeleteJobResponse)(nil),         // 53: tuna.DeleteJobResponse
+	(*DeleteHistoryRequest)(nil),      // 54: tuna.DeleteHistoryRequest
+	(*DeleteHistoryResponse)(nil),     // 55: tuna.DeleteHistoryResponse
+	(*WatchEventsRequest)(nil),        // 56: tuna.WatchEventsRequest
+	(*BrokerEvent)(nil),               // 57: tuna.BrokerEvent
+	(*BrokerSnapshot)(nil),            // 58: tuna.BrokerSnapshot
+	nil,                               // 59: tuna.Attribution.ExtraEntry
+	(*timestamppb.Timestamp)(nil),     // 60: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),       // 61: google.protobuf.Duration
 }
 var file_tuna_proto_depIdxs = []int32{
 	2,   // 0: tuna.ClientInfo.os:type_name -> tuna.ClientOS
 	3,   // 1: tuna.ClientInfo.architecture:type_name -> tuna.ClientArchitecture
-	58,  // 2: tuna.Attribution.extra:type_name -> tuna.Attribution.ExtraEntry
-	59,  // 3: tuna.ProcessIdentity.start_time:type_name -> google.protobuf.Timestamp
+	59,  // 2: tuna.Attribution.extra:type_name -> tuna.Attribution.ExtraEntry
+	60,  // 3: tuna.ProcessIdentity.start_time:type_name -> google.protobuf.Timestamp
 	13,  // 4: tuna.RunnerIncarnation.process:type_name -> tuna.ProcessIdentity
-	59,  // 5: tuna.Grant.granted_at:type_name -> google.protobuf.Timestamp
-	60,  // 6: tuna.Grant.launch_timeout:type_name -> google.protobuf.Duration
+	60,  // 5: tuna.Grant.granted_at:type_name -> google.protobuf.Timestamp
+	61,  // 6: tuna.Grant.launch_timeout:type_name -> google.protobuf.Duration
 	14,  // 7: tuna.Grant.runner:type_name -> tuna.RunnerIncarnation
 	1,   // 8: tuna.Outcome.kind:type_name -> tuna.OutcomeKind
-	60,  // 9: tuna.ResourceSummary.elapsed:type_name -> google.protobuf.Duration
-	60,  // 10: tuna.ResourceSummary.cpu_time:type_name -> google.protobuf.Duration
+	61,  // 9: tuna.ResourceSummary.elapsed:type_name -> google.protobuf.Duration
+	61,  // 10: tuna.ResourceSummary.cpu_time:type_name -> google.protobuf.Duration
 	4,   // 11: tuna.ResourceSummary.completeness:type_name -> tuna.MeasurementCompleteness
 	0,   // 12: tuna.Job.state:type_name -> tuna.JobState
 	11,  // 13: tuna.Job.client:type_name -> tuna.ClientInfo
 	12,  // 14: tuna.Job.attribution:type_name -> tuna.Attribution
-	59,  // 15: tuna.Job.queued_at:type_name -> google.protobuf.Timestamp
-	59,  // 16: tuna.Job.admitted_at:type_name -> google.protobuf.Timestamp
-	59,  // 17: tuna.Job.started_at:type_name -> google.protobuf.Timestamp
-	59,  // 18: tuna.Job.finished_at:type_name -> google.protobuf.Timestamp
-	59,  // 19: tuna.Job.cancel_requested_at:type_name -> google.protobuf.Timestamp
-	60,  // 20: tuna.Job.grace_remaining:type_name -> google.protobuf.Duration
+	60,  // 15: tuna.Job.queued_at:type_name -> google.protobuf.Timestamp
+	60,  // 16: tuna.Job.admitted_at:type_name -> google.protobuf.Timestamp
+	60,  // 17: tuna.Job.started_at:type_name -> google.protobuf.Timestamp
+	60,  // 18: tuna.Job.finished_at:type_name -> google.protobuf.Timestamp
+	60,  // 19: tuna.Job.cancel_requested_at:type_name -> google.protobuf.Timestamp
+	61,  // 20: tuna.Job.grace_remaining:type_name -> google.protobuf.Duration
 	15,  // 21: tuna.Job.grant:type_name -> tuna.Grant
 	13,  // 22: tuna.Job.process:type_name -> tuna.ProcessIdentity
 	16,  // 23: tuna.Job.outcome:type_name -> tuna.Outcome
 	17,  // 24: tuna.Job.resources:type_name -> tuna.ResourceSummary
-	59,  // 25: tuna.Job.cancel_acknowledged_at:type_name -> google.protobuf.Timestamp
+	60,  // 25: tuna.Job.cancel_acknowledged_at:type_name -> google.protobuf.Timestamp
 	19,  // 26: tuna.Job.broker_termination:type_name -> tuna.BrokerTermination
 	6,   // 27: tuna.Job.blocked_reason:type_name -> tuna.BlockedReason
-	59,  // 28: tuna.BrokerTermination.started_at:type_name -> google.protobuf.Timestamp
+	60,  // 28: tuna.BrokerTermination.started_at:type_name -> google.protobuf.Timestamp
 	10,  // 29: tuna.BrokerTermination.reason:type_name -> tuna.BrokerTermination.Reason
 	11,  // 30: tuna.SubmitJobRequest.client:type_name -> tuna.ClientInfo
 	12,  // 31: tuna.SubmitJobRequest.attribution:type_name -> tuna.Attribution
@@ -4813,7 +4892,7 @@ var file_tuna_proto_depIdxs = []int32{
 	14,  // 36: tuna.ClaimLaunchRequest.runner:type_name -> tuna.RunnerIncarnation
 	15,  // 37: tuna.ClaimLaunchResponse.grant:type_name -> tuna.Grant
 	14,  // 38: tuna.SealLaunchRequest.runner:type_name -> tuna.RunnerIncarnation
-	59,  // 39: tuna.JobEvent.at:type_name -> google.protobuf.Timestamp
+	60,  // 39: tuna.JobEvent.at:type_name -> google.protobuf.Timestamp
 	18,  // 40: tuna.JobEvent.snapshot:type_name -> tuna.Job
 	28,  // 41: tuna.JobEvent.queue_position_changed:type_name -> tuna.QueuePositionChanged
 	15,  // 42: tuna.JobEvent.granted:type_name -> tuna.Grant
@@ -4821,7 +4900,7 @@ var file_tuna_proto_depIdxs = []int32{
 	18,  // 44: tuna.JobEvent.finished:type_name -> tuna.Job
 	30,  // 45: tuna.JobEvent.heartbeat:type_name -> tuna.Heartbeat
 	6,   // 46: tuna.QueuePositionChanged.head_blocked_reason:type_name -> tuna.BlockedReason
-	60,  // 47: tuna.Heartbeat.heartbeat_interval:type_name -> google.protobuf.Duration
+	61,  // 47: tuna.Heartbeat.heartbeat_interval:type_name -> google.protobuf.Duration
 	14,  // 48: tuna.AcknowledgeCancelRequest.runner:type_name -> tuna.RunnerIncarnation
 	14,  // 49: tuna.ReportCancelFailedRequest.runner:type_name -> tuna.RunnerIncarnation
 	13,  // 50: tuna.ReportStartedRequest.process:type_name -> tuna.ProcessIdentity
@@ -4830,10 +4909,10 @@ var file_tuna_proto_depIdxs = []int32{
 	16,  // 53: tuna.ReportFinishedRequest.outcome:type_name -> tuna.Outcome
 	14,  // 54: tuna.ReportFinishedRequest.runner:type_name -> tuna.RunnerIncarnation
 	13,  // 55: tuna.ReportFinishedRequest.process:type_name -> tuna.ProcessIdentity
-	60,  // 56: tuna.ReportFinishedRequest.elapsed:type_name -> google.protobuf.Duration
-	60,  // 57: tuna.ReportFinishedRequest.root_cpu_time:type_name -> google.protobuf.Duration
-	59,  // 58: tuna.Health.started_at:type_name -> google.protobuf.Timestamp
-	59,  // 59: tuna.BrokerStatus.paused_at:type_name -> google.protobuf.Timestamp
+	61,  // 56: tuna.ReportFinishedRequest.elapsed:type_name -> google.protobuf.Duration
+	61,  // 57: tuna.ReportFinishedRequest.root_cpu_time:type_name -> google.protobuf.Duration
+	60,  // 58: tuna.Health.started_at:type_name -> google.protobuf.Timestamp
+	60,  // 59: tuna.BrokerStatus.paused_at:type_name -> google.protobuf.Timestamp
 	6,   // 60: tuna.BrokerStatus.head_blocked_reason:type_name -> tuna.BlockedReason
 	7,   // 61: tuna.BrokerStatus.queue_mode:type_name -> tuna.QueueMode
 	8,   // 62: tuna.BrokerStatus.queue_state:type_name -> tuna.QueueState
@@ -4841,12 +4920,12 @@ var file_tuna_proto_depIdxs = []int32{
 	6,   // 64: tuna.Queue.head_blocked_reason:type_name -> tuna.BlockedReason
 	8,   // 65: tuna.Queue.queue_state:type_name -> tuna.QueueState
 	0,   // 66: tuna.ListJobsRequest.states:type_name -> tuna.JobState
-	59,  // 67: tuna.ListJobsRequest.queued_after:type_name -> google.protobuf.Timestamp
-	59,  // 68: tuna.ListJobsRequest.queued_before:type_name -> google.protobuf.Timestamp
+	60,  // 67: tuna.ListJobsRequest.queued_after:type_name -> google.protobuf.Timestamp
+	60,  // 68: tuna.ListJobsRequest.queued_before:type_name -> google.protobuf.Timestamp
 	18,  // 69: tuna.ListJobsResponse.jobs:type_name -> tuna.Job
-	59,  // 70: tuna.DeleteHistoryRequest.finished_before:type_name -> google.protobuf.Timestamp
-	59,  // 71: tuna.BrokerEvent.at:type_name -> google.protobuf.Timestamp
-	57,  // 72: tuna.BrokerEvent.snapshot:type_name -> tuna.BrokerSnapshot
+	60,  // 70: tuna.DeleteHistoryRequest.finished_before:type_name -> google.protobuf.Timestamp
+	60,  // 71: tuna.BrokerEvent.at:type_name -> google.protobuf.Timestamp
+	58,  // 72: tuna.BrokerEvent.snapshot:type_name -> tuna.BrokerSnapshot
 	18,  // 73: tuna.BrokerEvent.job_changed:type_name -> tuna.Job
 	41,  // 74: tuna.BrokerEvent.queue_changed:type_name -> tuna.Queue
 	39,  // 75: tuna.BrokerEvent.status_changed:type_name -> tuna.BrokerStatus
@@ -4873,39 +4952,41 @@ var file_tuna_proto_depIdxs = []int32{
 	45,  // 96: tuna.ControlService.GetSubmission:input_type -> tuna.GetSubmissionRequest
 	46,  // 97: tuna.ControlService.CancelJob:input_type -> tuna.CancelJobRequest
 	47,  // 98: tuna.ControlService.MoveJob:input_type -> tuna.MoveJobRequest
-	48,  // 99: tuna.ControlService.ForceStartJob:input_type -> tuna.ForceStartJobRequest
-	49,  // 100: tuna.ControlService.PauseQueue:input_type -> tuna.PauseQueueRequest
-	50,  // 101: tuna.ControlService.ResumeQueue:input_type -> tuna.ResumeQueueRequest
-	51,  // 102: tuna.ControlService.DeleteJob:input_type -> tuna.DeleteJobRequest
-	53,  // 103: tuna.ControlService.DeleteHistory:input_type -> tuna.DeleteHistoryRequest
-	55,  // 104: tuna.ControlService.WatchEvents:input_type -> tuna.WatchEventsRequest
-	21,  // 105: tuna.RunnerService.SubmitJob:output_type -> tuna.SubmitJobResponse
-	27,  // 106: tuna.RunnerService.TrySubmitAndWatch:output_type -> tuna.JobEvent
-	27,  // 107: tuna.RunnerService.WatchJob:output_type -> tuna.JobEvent
-	18,  // 108: tuna.RunnerService.RejoinJob:output_type -> tuna.Job
-	25,  // 109: tuna.RunnerService.ClaimLaunch:output_type -> tuna.ClaimLaunchResponse
-	18,  // 110: tuna.RunnerService.SealLaunch:output_type -> tuna.Job
-	18,  // 111: tuna.RunnerService.ReportStarted:output_type -> tuna.Job
-	18,  // 112: tuna.RunnerService.ReportLaunchFailed:output_type -> tuna.Job
-	18,  // 113: tuna.RunnerService.AcknowledgeCancel:output_type -> tuna.Job
-	18,  // 114: tuna.RunnerService.ReportCancelFailed:output_type -> tuna.Job
-	18,  // 115: tuna.RunnerService.ReportFinished:output_type -> tuna.Job
-	37,  // 116: tuna.ControlService.GetHealth:output_type -> tuna.Health
-	39,  // 117: tuna.ControlService.GetStatus:output_type -> tuna.BrokerStatus
-	41,  // 118: tuna.ControlService.GetQueue:output_type -> tuna.Queue
-	43,  // 119: tuna.ControlService.ListJobs:output_type -> tuna.ListJobsResponse
-	18,  // 120: tuna.ControlService.GetJob:output_type -> tuna.Job
-	18,  // 121: tuna.ControlService.GetSubmission:output_type -> tuna.Job
-	18,  // 122: tuna.ControlService.CancelJob:output_type -> tuna.Job
-	41,  // 123: tuna.ControlService.MoveJob:output_type -> tuna.Queue
-	18,  // 124: tuna.ControlService.ForceStartJob:output_type -> tuna.Job
-	39,  // 125: tuna.ControlService.PauseQueue:output_type -> tuna.BrokerStatus
-	39,  // 126: tuna.ControlService.ResumeQueue:output_type -> tuna.BrokerStatus
-	52,  // 127: tuna.ControlService.DeleteJob:output_type -> tuna.DeleteJobResponse
-	54,  // 128: tuna.ControlService.DeleteHistory:output_type -> tuna.DeleteHistoryResponse
-	56,  // 129: tuna.ControlService.WatchEvents:output_type -> tuna.BrokerEvent
-	105, // [105:130] is the sub-list for method output_type
-	80,  // [80:105] is the sub-list for method input_type
+	48,  // 99: tuna.ControlService.SetJobPriority:input_type -> tuna.SetJobPriorityRequest
+	49,  // 100: tuna.ControlService.ForceStartJob:input_type -> tuna.ForceStartJobRequest
+	50,  // 101: tuna.ControlService.PauseQueue:input_type -> tuna.PauseQueueRequest
+	51,  // 102: tuna.ControlService.ResumeQueue:input_type -> tuna.ResumeQueueRequest
+	52,  // 103: tuna.ControlService.DeleteJob:input_type -> tuna.DeleteJobRequest
+	54,  // 104: tuna.ControlService.DeleteHistory:input_type -> tuna.DeleteHistoryRequest
+	56,  // 105: tuna.ControlService.WatchEvents:input_type -> tuna.WatchEventsRequest
+	21,  // 106: tuna.RunnerService.SubmitJob:output_type -> tuna.SubmitJobResponse
+	27,  // 107: tuna.RunnerService.TrySubmitAndWatch:output_type -> tuna.JobEvent
+	27,  // 108: tuna.RunnerService.WatchJob:output_type -> tuna.JobEvent
+	18,  // 109: tuna.RunnerService.RejoinJob:output_type -> tuna.Job
+	25,  // 110: tuna.RunnerService.ClaimLaunch:output_type -> tuna.ClaimLaunchResponse
+	18,  // 111: tuna.RunnerService.SealLaunch:output_type -> tuna.Job
+	18,  // 112: tuna.RunnerService.ReportStarted:output_type -> tuna.Job
+	18,  // 113: tuna.RunnerService.ReportLaunchFailed:output_type -> tuna.Job
+	18,  // 114: tuna.RunnerService.AcknowledgeCancel:output_type -> tuna.Job
+	18,  // 115: tuna.RunnerService.ReportCancelFailed:output_type -> tuna.Job
+	18,  // 116: tuna.RunnerService.ReportFinished:output_type -> tuna.Job
+	37,  // 117: tuna.ControlService.GetHealth:output_type -> tuna.Health
+	39,  // 118: tuna.ControlService.GetStatus:output_type -> tuna.BrokerStatus
+	41,  // 119: tuna.ControlService.GetQueue:output_type -> tuna.Queue
+	43,  // 120: tuna.ControlService.ListJobs:output_type -> tuna.ListJobsResponse
+	18,  // 121: tuna.ControlService.GetJob:output_type -> tuna.Job
+	18,  // 122: tuna.ControlService.GetSubmission:output_type -> tuna.Job
+	18,  // 123: tuna.ControlService.CancelJob:output_type -> tuna.Job
+	41,  // 124: tuna.ControlService.MoveJob:output_type -> tuna.Queue
+	18,  // 125: tuna.ControlService.SetJobPriority:output_type -> tuna.Job
+	18,  // 126: tuna.ControlService.ForceStartJob:output_type -> tuna.Job
+	39,  // 127: tuna.ControlService.PauseQueue:output_type -> tuna.BrokerStatus
+	39,  // 128: tuna.ControlService.ResumeQueue:output_type -> tuna.BrokerStatus
+	53,  // 129: tuna.ControlService.DeleteJob:output_type -> tuna.DeleteJobResponse
+	55,  // 130: tuna.ControlService.DeleteHistory:output_type -> tuna.DeleteHistoryResponse
+	57,  // 131: tuna.ControlService.WatchEvents:output_type -> tuna.BrokerEvent
+	106, // [106:132] is the sub-list for method output_type
+	80,  // [80:106] is the sub-list for method input_type
 	80,  // [80:80] is the sub-list for extension type_name
 	80,  // [80:80] is the sub-list for extension extendee
 	0,   // [0:80] is the sub-list for field type_name
@@ -4941,7 +5022,8 @@ func file_tuna_proto_init() {
 		(*MoveJobRequest_BeforeJobId)(nil),
 		(*MoveJobRequest_AfterJobId)(nil),
 	}
-	file_tuna_proto_msgTypes[45].OneofWrappers = []any{
+	file_tuna_proto_msgTypes[37].OneofWrappers = []any{}
+	file_tuna_proto_msgTypes[46].OneofWrappers = []any{
 		(*BrokerEvent_Snapshot)(nil),
 		(*BrokerEvent_JobChanged)(nil),
 		(*BrokerEvent_QueueChanged)(nil),
@@ -4955,7 +5037,7 @@ func file_tuna_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tuna_proto_rawDesc), len(file_tuna_proto_rawDesc)),
 			NumEnums:      11,
-			NumMessages:   48,
+			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

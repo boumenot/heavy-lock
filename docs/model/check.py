@@ -97,6 +97,17 @@ CASES = {
     "MonitorRecoveryReached": "NeverRecoveringLive",
     "MonitorEpochWitness": "LiveHealthSameEpoch",
     "MonitorLagWitness": "LiveAtBrokerHead",
+    "QueuePriorityQuick": None,
+    "QueuePrioritySafety": None,
+    "QueuePriorityStrictSafety": None,
+    "QueuePrioritySeqOnly": "OrderedAdmission",
+    "QueuePriorityNoClamp": "MoveExact",
+    "QueuePriorityNoWaitAppend": "NoWaitExact",
+    "QueuePriorityNoWaitFront": "OrderedAdmission",
+    "QueuePriorityOvertake": "NeverPriorityOvertake",
+    "QueuePriorityHeld": "NeverLowerWaitsBehindHeld",
+    "QueuePriorityClamp": "NeverClamp",
+    "QueuePriorityRestart": "NeverOvertakeAfterRestart",
 }
 
 
@@ -118,7 +129,7 @@ def main():
                     "tlc", "-workers", "1", "-fpmem", "0.05",
                     "-noGenerateSpecTE", "-metadir", tmp,
                 ]
-                if case.startswith(("Monitor", "RunnerExit")):
+                if case.startswith(("Monitor", "RunnerExit", "QueuePriority")):
                     command.extend(["-coverage", "1"])
                 command.extend([
                     "-config", f"{case}.cfg",
@@ -127,6 +138,7 @@ def main():
                         else "RunnerFinish.tla" if case.startswith("RunnerFinish")
                         else "RunnerExit.tla" if case.startswith("RunnerExit")
                         else "MonitorFreshness.tla" if case.startswith("Monitor")
+                        else "QueuePriority.tla" if case.startswith("QueuePriority")
                         else "BrokerRunner.tla"
                     ),
                 ])

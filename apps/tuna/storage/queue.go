@@ -163,10 +163,11 @@ func (tx *Tx) RemoveDisconnected(id string) error {
 	return tx.queueChanged()
 }
 
-// MoveBefore uses an empty before ID for the back. Negative temporary
-// sequences avoid SQLite's per-row UNIQUE collisions during renumbering.
+// MoveBefore uses an empty before ID for the back. The moved job's priority
+// is clamped to its new neighbours so that the requested order is preserved.
+// Negative temporary sequences avoid SQLite's per-row UNIQUE collisions.
 func (tx *Tx) MoveBefore(id, before string) error {
-	ids, err := tx.ids("SELECT job_id FROM queue_entries ORDER BY queue_seq")
+	ids, err := tx.ids("SELECT q.job_id FROM queue_entries q JOIN jobs j ON j.id=q.job_id ORDER BY j.priority, q.queue_seq")
 	if err != nil {
 		return err
 	}
@@ -186,6 +187,30 @@ func (tx *Tx) MoveBefore(id, before string) error {
 		}
 	}
 	ids = slices.Insert(ids, to, id)
+	job, err := tx.Job(id)
+	if err != nil {
+		return err
+	}
+	priority := job.Priority
+	if to > 0 {
+		previous, err := tx.Job(ids[to-1])
+		if err != nil {
+			return err
+		}
+		priority = max(priority, previous.Priority)
+	}
+	if to+1 < len(ids) {
+		next, err := tx.Job(ids[to+1])
+		if err != nil {
+			return err
+		}
+		priority = min(priority, next.Priority)
+	}
+	if priority != job.Priority {
+		if err := tx.exec("UPDATE jobs SET priority=? WHERE id=?", priority, id); err != nil {
+			return err
+		}
+	}
 	var minimum int64
 	if err := tx.scan("SELECT min(queue_seq) FROM queue_entries", nil, &minimum); err != nil {
 		return err
@@ -205,6 +230,32 @@ func (tx *Tx) MoveBefore(id, before string) error {
 		}
 	}
 	if err := tx.exec("UPDATE broker_state SET next_queue_seq=? WHERE id=1", len(ids)+1); err != nil {
+		return err
+	}
+	if priority != job.Priority {
+		if err := tx.jobChanged(id); err != nil {
+			return err
+		}
+	}
+	return tx.queueChanged()
+}
+
+// SetPriority changes queue admission priority without changing queue_seq.
+func (tx *Tx) SetPriority(id string, priority int32) error {
+	job, err := tx.Job(id)
+	if err != nil {
+		return err
+	}
+	if job.State != pb.JobState_JOB_STATE_QUEUED {
+		return ErrTransition
+	}
+	if job.Priority == priority {
+		return nil
+	}
+	if err := tx.exec("UPDATE jobs SET priority=? WHERE id=?", priority, id); err != nil {
+		return err
+	}
+	if err := tx.jobChanged(id); err != nil {
 		return err
 	}
 	return tx.queueChanged()
