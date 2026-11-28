@@ -113,6 +113,34 @@ func TestDispatchRunnerOptions(t *testing.T) {
 	}
 }
 
+func TestDispatchRunnerPriority(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		valid bool
+		want  int32
+	}{
+		{"-2147483648", true, -2147483648},
+		{"0", true, 0},
+		{"2147483647", true, 2147483647},
+		{"2147483648", false, 0},
+		{"nope", false, 0},
+	} {
+		t.Run(tt.value, func(t *testing.T) {
+			var r recorded
+			var stderr bytes.Buffer
+			code := dispatch([]string{"--port", "1", "--priority", tt.value, "--", "echo"}, &bytes.Buffer{}, &stderr, r.launcher())
+			if (code == 0) != tt.valid {
+				t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+			}
+			if tt.valid {
+				if r.runner == nil || r.runner.Priority == nil || *r.runner.Priority != tt.want {
+					t.Fatalf("priority option missing or wrong: %+v", r.runner)
+				}
+			}
+		})
+	}
+}
+
 func TestDispatchService(t *testing.T) {
 	var r recorded
 	if got := dispatch([]string{"service"}, &bytes.Buffer{}, &bytes.Buffer{}, r.launcher()); got != 0 || r.service.Port != 49783 {

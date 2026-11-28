@@ -18,7 +18,7 @@ public enum Presentation {
     public struct JobRow: Equatable, Sendable {
         public var id: String
         public var command: String
-        /// State, weight and other facts, e.g. `Queued #1 · weight 2`.
+        /// State, weight and other facts, e.g. `Queued #1 · weight 2 · priority 1337`.
         public var summary: String
         /// Shown when the job was force-started, including in history.
         public var forced: Bool
@@ -191,6 +191,7 @@ public enum Presentation {
         var summary = [Self.stateName(job.state)]
         if job.state == .queued, job.hasQueuePosition { summary[0] += " #\(job.queuePosition + 1)" }
         summary.append("weight \(job.weight)")
+        if job.state == .queued { summary.append("priority \(job.priority)") }
         if job.attempt > 1 { summary.append("attempt \(job.attempt)") }
         if let since = Self.since(job), job.state != .finished {
             summary.append(Self.age(of: since, now: now))

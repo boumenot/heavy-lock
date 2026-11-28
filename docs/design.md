@@ -66,7 +66,7 @@ choices are explicit user decisions.
 | Access | No API authentication; no remote access |
 | Browser access | REST permits any browser origin; the API remains unauthenticated and loopback-only |
 | Service | One independently supervised broker per OS user, protected by a port-independent OS singleton lock; the macOS launchd agent starts at login *(startup delegated)* |
-| Admission | FIFO with bounded backfill *(delegated; supersedes strict FIFO)*: a later eligible connected job may pass a head blocked only by slot capacity, at most K times per head (configurable, default 1; K = 0 is strict FIFO); manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
+| Admission | Priority order with bounded backfill: a later eligible connected job may pass a head blocked only by slot capacity, at most K times per head (default 1; K = 0 disables backfill); manual reorder and force-start exceptions; weighted slots and existing live sharing checks |
 | No-wait | One registered-stream normal-admission decision; a definite refusal exits 75 without queueing, while an ambiguous result is an error, not 75 *(delegated)* |
 | Pause | Pause normal admissions until explicitly resumed, including across broker restarts; running jobs continue and confirmed force-start remains allowed |
 | Force-start | Bypass resource checks, including while paused; count toward occupied capacity, with monitor confirmation |
@@ -208,6 +208,19 @@ dependency set is selected here.
 
 ## 2. Queue and admission policy
 
+**User decision: queue priority.** Queue admission priority is a signed
+32-bit integer, default 1337; lower numbers go first, without preempting
+reserved or running jobs or changing OS process priority. The effective
+durable order is `(priority, queue_seq)` ascending. Equal priorities use
+the existing FIFO/reorder sequence. Strict priority has no aging: sustained
+lower-number submissions can starve higher numbers. A queued job's priority
+may be changed without changing its sequence. Explicit reorder places it at
+the requested position, clamping its priority to the nearest neighbour if
+necessary and renumbering sequences. Force-start and bounded backfill
+remain exceptions to ordinary order; a head retains its bypass count when
+another job becomes head. A no-wait request competes after existing jobs of
+equal priority, not after every queued job.
+
 **User decision (admission order now superseded).** Maintain a durable
 queue in arrival order and admit in **strict FIFO** order. If the head
 cannot fit, later jobs wait even if they could fit. Admit multiple jobs
@@ -221,9 +234,9 @@ by the delegated decision below.
 runner is alive and connected, whose weight fits the free slots, and that
 passes the same live sharing checks as any normal admission. Each such
 admission increments the head's durable bypass count. Once the count reaches
-the configurable limit K, that head blocks later jobs as under strict FIFO
+the configurable limit K, that head blocks later jobs in priority order
 until it is admitted. The delegated starting default is **K = 1**; K = 0
-restores strict FIFO exactly.
+disables backfill.
 
 - Backfill applies only to a capacity-blocked head. It never applies while
   normal admissions are paused, while the broker is not ready, while the head
@@ -369,7 +382,7 @@ waiting for `WatchJob`:
 
 1. The broker validates a fresh request and observes its stream as current
    for that runner. Under the scheduler's serialization, it considers the
-   candidate as if appended after all existing queued jobs. It may reserve
+   candidate as if inserted after existing jobs of equal priority. It may reserve
    the candidate only if it is the **next** normal choice at that point:
    older eligible work wins; the effective head and bounded-backfill rules,
    pause, readiness, capacity and live sharing checks are unchanged.
@@ -1228,7 +1241,7 @@ for cancellation, queued-disconnect removal, launch failure, signal
 termination, unknown or forced outcomes, or after runner death (no runner
 remains to retry). Each retry is a fresh submission with a new idempotency
 key, a new grant and a new one-shot claim, linked to the previous attempt
-and appended to the **back** of the queue. It never replays a claim. The
+and appended to the **back of its priority level**. It never replays a claim. The
 broker validates eligibility and the attempt limit but never resubmits or
 relaunches work itself. The runner exits with the final attempt's result.
 An initially unavailable broker still fails immediately; retry does not
@@ -1956,7 +1969,7 @@ delegated starting defaults, not user-selected values.
 |---|---|
 | Timestamps | SQLite `INTEGER` stores UTC Unix nanoseconds (`*_at_ns`, `start_time_ns`, `at_ns`); protobuf uses nanosecond-precision `Timestamp`, rendered as RFC 3339 JSON |
 | Durations | Protobuf `Duration`; measured with monotonic clocks, never by subtracting wall-clock timestamps. Existing SQLite duration columns retain millisecond precision |
-| Queue order | Explicit `queue_entries.queue_seq`, never timestamp order |
+| Queue order | `jobs.priority`, then explicit `queue_entries.queue_seq`, never timestamp order |
 | Metadata | Dedicated columns for known fields plus a validated `metadata_json` object for extras; replaces the earlier `job_tags` table |
 | `ClientInfo` | Name, version, OS and architecture; explicitly reported only |
 | Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected while the job is retained. After history deletion a key-only tombstone rejects every reuse *(delegated)*; see [section 11.3](#113-sqlite-schema). |
@@ -2210,7 +2223,7 @@ service RunnerService {
   // for it, and the attempt limit is not exceeded;
   // otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
   // retry was submitted and inserting/enqueueing it are one transaction.
-  // The retry joins the back of the queue and never reuses the earlier grant
+  // The retry joins the back of its priority level and never reuses the earlier grant
   // or claim. Only the runner retries; the broker never resubmits or
   // relaunches work. Deleting a job's history retains a permanent key-only
   // tombstone: a later submission with that key, with any payload, fails with
@@ -2227,8 +2240,8 @@ service RunnerService {
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
 
   // --no-wait: register this stream and make exactly one immediate normal
-  // admission decision, as if appended to the current queue. A successful
-  // decision atomically commits the job, reservation and any backfill count,
+  // admission decision, as if queued after existing jobs of equal priority.
+  // A successful decision atomically commits the job, reservation and any backfill count,
   // without a durable queue entry, before the first snapshot and grant.
   // A connected earlier eligible job has priority; all normal pause,
   // readiness, capacity, resource and bounded-backfill checks apply.
@@ -2388,9 +2401,15 @@ service ControlService {
   // of the same job is a no-op success.
   rpc CancelJob(CancelJobRequest) returns (Job);
 
-  // Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+  // Reorder a waiting job, clamping its priority to its new neighbours if
+  // necessary to preserve the requested position.
+  // FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
   // The monitor does not require confirmation for reordering.
   rpc MoveJob(MoveJobRequest) returns (Queue);
+
+  // Change a waiting job's queue admission priority without changing its
+  // sequence. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+  rpc SetJobPriority(SetJobPriorityRequest) returns (Job);
 
   // Admit a waiting job immediately, bypassing queue order, backfill limits
   // and resource checks, including a weight above current capacity. Its
@@ -2662,6 +2681,8 @@ message Job {
 
   // Present only while QUEUED; 0 is the head.
   optional uint32 queue_position = 16;
+  // Whether the submitting runner's watch is registered. Projected only while
+  // QUEUED; false in every other state, where it carries no meaning.
   bool runner_connected = 17;
   google.protobuf.Duration grace_remaining = 18;
 
@@ -2690,6 +2711,8 @@ message Job {
   // Oversized takes precedence here even if paused or disconnected; clients
   // display those independent conditions from status and runner_connected.
   BlockedReason blocked_reason = 32;
+  // Queue admission priority, not OS process priority; lower numbers go first.
+  int32 priority = 33;
 }
 
 message BrokerTermination {
@@ -2717,6 +2740,8 @@ message SubmitJobRequest {
   // Set only for an opt-in retry of a still-retained, failed, released
   // earlier attempt. The predecessor may be deleted after this job commits.
   optional string retry_of_job_id = 8;
+  // Queue admission priority. When absent, the broker uses 1337.
+  optional int32 priority = 9;
 }
 
 message SubmitJobResponse {
@@ -2869,7 +2894,7 @@ message BrokerStatus {
   // Held reservations not yet reconciled since the last broker restart.
   // They count toward occupied but do not block unrelated admissions.
   uint32 unreconciled_reservations = 12;
-  uint32 backfill_limit = 13;      // per-head bypass limit; 0 is strict FIFO
+  uint32 backfill_limit = 13;      // per-head bypass limit; 0 disables backfill
   QueueMode queue_mode = 14;       // since API 2.1
   QueueState queue_state = 15;     // since API 2.1
 }
@@ -2880,7 +2905,7 @@ message GetQueueRequest {}
 // queue_changed and status_changed event is projected when it commits, so a
 // client keeps the values from whichever of the two it received last.
 message Queue {
-  repeated Job jobs = 1;           // queue order; head first
+  repeated Job jobs = 1;           // priority ascending, then queue sequence; head first
   BlockedReason head_blocked_reason = 2;
   QueueState queue_state = 3;      // since API 2.1
 }
@@ -2925,6 +2950,11 @@ message MoveJobRequest {
     string before_job_id = 4;
     string after_job_id = 5;
   }
+}
+
+message SetJobPriorityRequest {
+  string job_id = 1;
+  optional int32 priority = 2;
 }
 
 message ForceStartJobRequest {
@@ -3023,6 +3053,7 @@ lexically first such key is reported.
 | `GET` | `/submissions/{idempotency_key}` | `GetSubmission` | Diagnose a job or durable no-wait/deleted key; absent is only point-in-time |
 | `POST` | `/jobs/{job_id}/cancel` | `CancelJob` | Body: optional `reason`. Monitor confirmation is a UI step, not enforced by the API |
 | `POST` | `/jobs/{job_id}/move` | `MoveJob` | Body: one of `toFront`, `toBack`, `beforeJobId`, `afterJobId` |
+| `POST` | `/jobs/{job_id}/priority` | `SetJobPriority` | Body: required signed 32-bit `priority`; queued jobs only |
 | `POST` | `/jobs/{job_id}/force-start` | `ForceStartJob` | Confirmation is a monitor UI step, not enforced by the API |
 | `POST` | `/queue/pause` | `PauseQueue` | Stops new normal admissions only |
 | `POST` | `/queue/resume` | `ResumeQueue` | Resumes normal admissions |
@@ -3077,9 +3108,10 @@ optionals and OS/architecture enums; attribution's eight optional strings
 in proto field order; an unsigned 64-bit extra-map count and each key/value
 string sorted by key's UTF-8 bytes; a runner-presence byte, its incarnation
 ID and a process-presence byte followed by PID/start time when present;
-then optional `retry_of_job_id`. Fields added after this canonical encoding follow only
-when present, each as its name string then its value string, so earlier
-submissions keep their hash: `client.os_version` (API minor 2). Missing client/attribution messages are
+then optional `retry_of_job_id`. Fields added after this canonical encoding follow as
+named extensions, so earlier submissions keep their hash: `client.os_version`
+when present as a string, and `priority` as a 32-bit two's-complement integer
+only when its effective value differs from 1337. Missing client/attribution messages are
 equivalent to empty ones; missing runner/process messages are distinct from
 present empty messages. Reject unknown protobuf fields and populated newer
 fields not explicitly covered by this encoding. Evolve the encoding and
@@ -3108,7 +3140,7 @@ replace `NOT NULL`, `CHECK`, enabled foreign keys or broker-side
 validation; the schema uses all of them.
 
 ```sql
--- Tuna SQLite schema (schema version 3).
+-- Tuna SQLite schema (schema version 4).
 --
 -- A new database is created at the current version and records every
 -- migration version it includes. Older databases are migrated in place by
@@ -3125,7 +3157,7 @@ validation; the schema uses all of them.
 --   * IDs are lowercase canonical UUIDv4 TEXT.
 --   * Booleans are INTEGER 0/1 with CHECK constraints.
 --   * NULL means unknown or not applicable; it is never a synonym for 0.
---   * Queue order comes from queue_entries.queue_seq, never from timestamps.
+--   * Queue order is jobs.priority then queue_entries.queue_seq, never timestamps.
 --
 -- Database-level settings applied once, before any table is created:
 PRAGMA page_size = 4096;
@@ -3173,8 +3205,8 @@ CREATE TABLE service_runs (
   clean_shutdown   INTEGER NOT NULL DEFAULT 0 CHECK (clean_shutdown IN (0, 1))
 ) STRICT;
 
--- client_os_version (schema v3, e.g. '26.1', explicitly reported only)
--- follows outcome_detail exactly as ALTER TABLE ... ADD COLUMN writes it,
+-- client_os_version (schema v3) and priority (schema v4) follow outcome_detail
+-- exactly as ALTER TABLE ... ADD COLUMN writes them,
 -- because migrated databases must match this text.
 CREATE TABLE jobs (
   -- Identity -------------------------------------------------------------
@@ -3289,7 +3321,7 @@ CREATE TABLE jobs (
                       -- native code; POSIX e.g. 1, Windows e.g. 3221225477 (0xC0000005)
   signal_number       INTEGER CHECK (signal_number >= 1),  -- POSIX only, e.g. 9
   signal_name         TEXT,     -- POSIX only, e.g. 'SIGKILL'
-  outcome_detail      TEXT, client_os_version TEXT,     -- e.g. 'process tree not found during recovery'
+  outcome_detail      TEXT, client_os_version TEXT, priority INTEGER NOT NULL DEFAULT 1337 CHECK (priority BETWEEN -2147483648 AND 2147483647),     -- e.g. 'process tree not found during recovery'
 
   -- State consistency (presence only; wall-clock values are not compared) --
   CHECK (started_at_ns IS NULL OR admitted_at_ns IS NOT NULL),
@@ -3445,7 +3477,7 @@ CREATE INDEX jobs_client_name ON jobs (client_name, queued_at_ns DESC, id)
 CREATE INDEX jobs_finished ON jobs (finished_at_ns)
   WHERE state = 'finished';
 
--- Waiting jobs only. Explicit order; reorder rewrites queue_seq. Because
+-- Waiting jobs only. Equal priorities use queue_seq; reorder rewrites it. Because
 -- UNIQUE is checked per row, a renumbering UPDATE must avoid transient
 -- collisions (for example, move rows to negative values first).
 CREATE TABLE queue_entries (
@@ -3569,8 +3601,9 @@ INSERT INTO schema_migrations (version, applied_at_ns, description)
          description
   FROM (SELECT 1 AS version, 'initial schema' AS description
         UNION ALL SELECT 2, 'explicit queue mode'
-        UNION ALL SELECT 3, 'client OS version');
-PRAGMA user_version = 3;
+        UNION ALL SELECT 3, 'client OS version'
+        UNION ALL SELECT 4, 'queue priority');
+PRAGMA user_version = 4;
 
 COMMIT;
 ```

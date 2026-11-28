@@ -402,6 +402,118 @@ func TestReorderAdmitsAndNeverTransfersBypass(t *testing.T) {
 	}
 }
 
+func TestPriorityControlsAndAdmission(t *testing.T) {
+	h := newHarness(t, 1, nil)
+	if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_PAUSED); err != nil {
+		t.Fatal(err)
+	}
+	submit := func(priority int32) string {
+		t.Helper()
+		req := request(t, 1)
+		req.Priority = proto.Int32(priority)
+		result, _, err := h.s.Submit(h.ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.watch(req, result.Job.JobId)
+		return result.Job.JobId
+	}
+	a, b, c := submit(10), submit(20), submit(30)
+	queue := func(ids ...string) {
+		t.Helper()
+		got := h.snapshot().Queue.Jobs
+		if len(got) != len(ids) {
+			t.Fatalf("queue length = %d, want %d", len(got), len(ids))
+		}
+		for i, id := range ids {
+			if got[i].JobId != id || got[i].GetQueuePosition() != uint32(i) {
+				t.Fatalf("queue order = %v, want %v", got, ids)
+			}
+		}
+	}
+	queue(a, b, c)
+	if _, err := h.s.MoveToFront(h.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	queue(c, a, b)
+	if got := h.job(c).Priority; got != 10 {
+		t.Fatalf("move to front priority = %d, want 10", got)
+	}
+	if _, err := h.s.MoveBefore(h.ctx, c, ""); err != nil {
+		t.Fatal(err)
+	}
+	queue(a, b, c)
+	if got := h.job(c).Priority; got != 20 {
+		t.Fatalf("move to back priority = %d, want 20", got)
+	}
+	if _, err := h.s.SetPriority(h.ctx, c, 10); err != nil {
+		t.Fatal(err)
+	}
+	queue(a, c, b)
+	if _, err := h.s.MoveToFront(h.ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	queue(b, a, c)
+	if got := h.job(b).Priority; got != 10 {
+		t.Fatalf("move to front priority = %d, want 10", got)
+	}
+	if _, err := h.s.MoveBefore(h.ctx, a, ""); err != nil {
+		t.Fatal(err)
+	}
+	queue(b, c, a)
+	if _, err := h.s.SetPriority(h.ctx, a, -10); err != nil {
+		t.Fatal(err)
+	}
+	queue(a, b, c)
+	if _, err := h.s.SetQueueMode(h.ctx, pb.QueueMode_QUEUE_MODE_ENABLED); err != nil {
+		t.Fatal(err)
+	}
+	h.expectState(a, pb.JobState_JOB_STATE_RESERVED)
+	queue(b, c)
+	if _, err := h.s.SetPriority(h.ctx, a, 0); !errors.Is(err, ErrNotWaiting) {
+		t.Fatalf("reprioritizing reserved job: %v", err)
+	}
+	if _, err := h.s.SetPriority(h.ctx, c, -20); err != nil {
+		t.Fatal(err)
+	}
+	h.expectState(a, pb.JobState_JOB_STATE_RESERVED)
+	queue(c, b)
+	h.cancel(a)
+	h.expectState(c, pb.JobState_JOB_STATE_RESERVED)
+	h.cancel(b)
+}
+
+func TestPriorityHeadRetainsBackfillCounts(t *testing.T) {
+	h := newHarness(t, 4, nil)
+	_, running, _ := h.queued(3)
+	_, oldHead, _ := h.queued(3)
+	_, backfill, _ := h.queued(1)
+	if j := h.expectState(backfill, pb.JobState_JOB_STATE_RESERVED); !j.AdmittedByBackfill {
+		t.Fatal("expected a backfilled reservation")
+	}
+	if j := h.job(oldHead); j.BackfillBypassCount != 1 {
+		t.Fatalf("old head bypass count = %d", j.BackfillBypassCount)
+	}
+	req := request(t, 2)
+	req.Priority = proto.Int32(-1)
+	result, _, err := h.s.Submit(h.ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newHead := result.Job.JobId
+	h.watch(req, newHead)
+	if j := h.job(newHead); j.GetQueuePosition() != 0 || j.BackfillBypassCount != 0 {
+		t.Fatalf("new head = %v", j)
+	}
+	if j := h.job(oldHead); j.GetQueuePosition() != 1 || j.BackfillBypassCount != 1 {
+		t.Fatalf("old head lost its count = %v", j)
+	}
+	h.cancel(backfill)
+	h.expectState(newHead, pb.JobState_JOB_STATE_QUEUED)
+	h.cancel(running)
+	h.expectState(newHead, pb.JobState_JOB_STATE_RESERVED)
+}
+
 func TestOversizedQueuedJobAfterCapacityDecrease(t *testing.T) {
 	h := newHarness(t, 4, nil)
 	_, occupier, _ := h.queued(4)
@@ -572,6 +684,34 @@ func TestNoWaitAdmissionBusyAndBackfill(t *testing.T) {
 	}
 	if code := status.Convert(ContractError(storage.ErrAdmissionBusy)); code.Code().String() != "FailedPrecondition" {
 		t.Fatalf("busy maps to %v", code.Code())
+	}
+}
+
+func TestNoWaitRespectsPriorityAndEqualPriorityFIFO(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		priority int32
+		admitted bool
+	}{
+		{"higher priority", 1, true},
+		{"equal priority", 1337, false},
+		{"lower priority", 2000, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t, 2, nil)
+			_, older := h.submit(1) // disconnected head blocks later jobs
+			candidate := request(t, 1)
+			candidate.Priority = proto.Int32(tt.priority)
+			_, job, _, err := h.s.TrySubmitAndWatch(h.ctx, candidate)
+			if tt.admitted {
+				if err != nil || job == nil || !reserved(job) {
+					t.Fatalf("higher-priority candidate: job=%v err=%v", job, err)
+				}
+			} else if !errors.Is(err, storage.ErrAdmissionBusy) {
+				t.Fatalf("later candidate must be busy: job=%v err=%v", job, err)
+			}
+			h.expectState(older, pb.JobState_JOB_STATE_QUEUED)
+		})
 	}
 }
 

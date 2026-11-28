@@ -11,6 +11,7 @@ import (
 type Entry struct {
 	JobID       string
 	Weight      uint32
+	Priority    int32
 	Connected   bool // registered by the current stream of its runner
 	BypassCount uint32
 }
@@ -47,7 +48,7 @@ type Decision struct {
 	Sharing      *Sharing // evaluated sharing result, when consulted
 }
 
-// Decide applies weighted FIFO with bounded capacity-only backfill. Oversized
+// Decide applies weighted priority order with bounded capacity-only backfill. Oversized
 // jobs are skipped and never become the head; a disconnected head blocks;
 // a disconnected or oversized follower is skipped and keeps its place.
 func Decide(s State) Decision {

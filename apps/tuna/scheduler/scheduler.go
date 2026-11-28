@@ -374,8 +374,8 @@ func (s *Scheduler) fresh(tx *storage.Tx, req *pb.SubmitJobRequest) (bool, error
 }
 
 // TrySubmitAndWatch registers the calling stream and makes exactly one
-// normal-admission decision, as if the candidate were appended to the
-// queue. It reserves the candidate only when it is the next normal choice;
+// normal-admission decision, as if the candidate were queued after its
+// priority peers. It reserves the candidate only when it is the next normal choice;
 // otherwise it commits a key-only refusal and returns ErrAdmissionBusy.
 // Any other error, including a failed commit, is not a busy result.
 // ctx must be the stream's context: a stream known closed before the
@@ -403,7 +403,12 @@ func (s *Scheduler) TrySubmitAndWatch(ctx context.Context, req *pb.SubmitJobRequ
 			if err != nil {
 				return err
 			}
-			state.Queue = append(state.Queue, Entry{JobID: candidateID, Weight: req.GetWeight(), Connected: true})
+			priority := contract.SubmitPriority(req)
+			position := len(state.Queue)
+			if i := slices.IndexFunc(state.Queue, func(entry Entry) bool { return entry.Priority > priority }); i >= 0 {
+				position = i
+			}
+			state.Queue = slices.Insert(state.Queue, position, Entry{JobID: candidateID, Weight: req.GetWeight(), Priority: priority, Connected: true})
 			d := Decide(state)
 			if ctx.Err() != nil {
 				// Nothing has been written; the rollback leaves no record.
@@ -772,6 +777,28 @@ func (s *Scheduler) MoveToFront(ctx context.Context, id string) ([]*pb.BrokerEve
 	})
 }
 
+// SetPriority changes a waiting job's admission order and schedules again.
+func (s *Scheduler) SetPriority(ctx context.Context, id string, priority int32) ([]*pb.BrokerEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.usable(false); err != nil {
+		return nil, err
+	}
+	events, err := s.write(ctx, func(tx *storage.Tx) error {
+		tx.ProjectEvent = s.project(s.ready)
+		if err := tx.SetPriority(id, priority); errors.Is(err, storage.ErrTransition) {
+			return fmt.Errorf("%w: %w", ErrNotWaiting, err)
+		} else {
+			return err
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	more, err := s.admitLocked(ctx)
+	return append(events, more...), err
+}
+
 func (s *Scheduler) move(ctx context.Context, id string, target func(*storage.Tx) (string, error)) ([]*pb.BrokerEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -856,7 +883,7 @@ func (s *Scheduler) stateOf(status *pb.BrokerStatus, queue *pb.Queue, ready bool
 	state := State{Capacity: s.cfg.Capacity, BackfillLimit: s.cfg.BackfillLimit, Ready: ready,
 		Paused: status.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED, Occupied: status.Occupied, Sharing: sharing}
 	for _, j := range queue.Jobs {
-		state.Queue = append(state.Queue, Entry{JobID: j.JobId, Weight: j.Weight,
+		state.Queue = append(state.Queue, Entry{JobID: j.JobId, Weight: j.Weight, Priority: j.Priority,
 			Connected: j.RunnerConnected && s.streams[j.JobId] != nil, BypassCount: j.BackfillBypassCount})
 	}
 	return state

@@ -43,7 +43,7 @@ type Options struct {
 	LockDir string
 	// Capacity 0 selects the default for this machine.
 	Capacity uint32
-	// BackfillLimit nil selects the default; a pointer to zero is strict FIFO.
+	// BackfillLimit nil selects the default; a pointer to zero disables backfill.
 	BackfillLimit  *uint32
 	ServiceVersion string
 	Log            io.Writer

@@ -16,6 +16,9 @@ var schemaV1 string
 //go:embed testdata/schema_v2.sql
 var schemaV2 string
 
+//go:embed testdata/schema_v3.sql
+var schemaV3 string
+
 // v1Database creates a database exactly as the version-1 broker did and
 // applies setup to it.
 func v1Database(t *testing.T, setup string) string {
@@ -129,6 +132,7 @@ func TestMigrateV2AddsClientOSVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer store.Close()
 	err = store.View(context.Background(), func(r *Reader) error {
 		var version, migrations, next, columns int64
@@ -146,6 +150,37 @@ func TestMigrateV2AddsClientOSVersion(t *testing.T) {
 		}
 		if version != SchemaVersion || migrations != SchemaVersion || next != 7 || columns != 1 {
 			t.Fatalf("migrated version=%d migrations=%d next=%d columns=%d", version, migrations, next, columns)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMigrateV3PreservesQueuedJobs(t *testing.T) {
+	const first = "11111111-1111-4111-8111-111111111111"
+	const second = "22222222-2222-4222-8222-222222222222"
+	path := oldDatabase(t, schemaV3, `
+		INSERT INTO service_runs(id,service_version,pid,started_at_ns) VALUES(1,'old',1,1);
+		INSERT INTO jobs(id,idempotency_key,request_sha256,command,weight,state,queued_at_ns,service_version)
+		VALUES('`+first+`','`+first+`',zeroblob(32),'first',1,'queued',1,'old'),
+		      ('`+second+`','`+second+`',zeroblob(32),'second',1,'queued',2,'old');
+		INSERT INTO queue_entries(job_id,queue_seq,runner_incarnation_id,runner_pid,runner_start_time_ns,grace_started_at_ns,grace_service_run_id)
+		VALUES('`+first+`',1,'`+first+`',1,1,1,1),('`+second+`',2,'`+second+`',1,1,1,1);`)
+	store, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	err = store.View(context.Background(), func(r *Reader) error {
+		queue, err := r.Queue()
+		if err != nil {
+			return err
+		}
+		if len(queue.Jobs) != 2 || queue.Jobs[0].JobId != first || queue.Jobs[1].JobId != second ||
+			queue.Jobs[0].Priority != 1337 || queue.Jobs[1].Priority != 1337 {
+			t.Fatalf("migrated queue: %v", queue)
 		}
 		return nil
 	})

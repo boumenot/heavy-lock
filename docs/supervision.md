@@ -85,7 +85,7 @@ fi
 mkdir -p -m 700 "$state" "$(dirname "$plist")"
 : >> "$log"
 sh tool/render-tuna-launch-agent.sh "$bin" "$log" "$port" > "$plist"
-# Optional example: uncomment these four lines to set capacity 4 and strict FIFO.
+# Optional example: uncomment these four lines to set capacity 4 and disable backfill.
 # plutil -insert ProgramArguments.4 -string --capacity "$plist"
 # plutil -insert ProgramArguments.5 -string 4 "$plist"
 # plutil -insert ProgramArguments.6 -string --backfill-limit "$plist"
@@ -108,7 +108,7 @@ Do not treat a GUI login agent as proof of availability in an SSH-only session.
 Capacity defaults to an automatic value from the machine's processors and
 memory (clamped to 2-8); `--capacity` accepts a
 positive 32-bit integer. Backfill defaults to 1; `--backfill-limit` accepts a
-non-negative 32-bit integer and 0 selects strict FIFO. These settings are fixed
+non-negative 32-bit integer and 0 disables backfill. These settings are fixed
 for one broker run. Change an existing agent only with separate authorization
 and after draining jobs; retain reservations and state across restart. A lower
 capacity does not release existing reservations, and oversized queued jobs
@@ -163,7 +163,7 @@ The optional `$bin.previous` backup is also retained.
 Earlier builds installed the agent `com.github.boumenot.heavy-lock.tuna`
 running `~/Library/Application Support/heavy-lock/bin/tuna`, with state in
 `~/Library/Application Support/heavy-lock/v2`. The current build changes the
-contract identity (`tuna`, service version `3.0.0-dev.1`), the REST paths
+contract identity (`tuna`, service version `3.0.0-dev.2`), the REST paths
 (no `/v1` prefix), the default state and lock directory and the agent label,
 so old and new runners, brokers and monitors refuse each other and must be
 replaced together. History is not migrated; the new broker starts with an

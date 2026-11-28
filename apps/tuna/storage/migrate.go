@@ -10,7 +10,7 @@ import (
 
 // SchemaVersion is the version schema.sql creates and every opened database
 // is migrated to.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // A migration upgrades a database from version-1 to version inside the
 // caller's transaction. expected holds the current schema's object
@@ -26,6 +26,7 @@ type migration struct {
 var migrations = []migration{
 	{version: 2, description: "explicit queue mode", apply: migrateQueueMode},
 	{version: 3, description: "client OS version", apply: migrateClientOSVersion},
+	{version: 4, description: "queue priority", apply: migrateQueuePriority},
 }
 
 // migrate upgrades an older database in one immediate transaction and
@@ -115,5 +116,10 @@ func migrateQueueMode(ctx context.Context, conn *sql.Conn, expected map[string]s
 // reference jobs, and schema.sql spells the column as SQLite rewrites it.
 func migrateClientOSVersion(ctx context.Context, conn *sql.Conn, _ map[string]string) error {
 	_, err := conn.ExecContext(ctx, "ALTER TABLE jobs ADD COLUMN client_os_version TEXT")
+	return err
+}
+
+func migrateQueuePriority(ctx context.Context, conn *sql.Conn, _ map[string]string) error {
+	_, err := conn.ExecContext(ctx, "ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 1337 CHECK (priority BETWEEN -2147483648 AND 2147483647)")
 	return err
 }

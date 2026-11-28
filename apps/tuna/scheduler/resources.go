@@ -15,7 +15,7 @@ import (
 // Config is fixed for one broker run; there is no live capacity change.
 type Config struct {
 	Capacity uint32
-	// BackfillLimit (K) is broker-wide; 0 is strict FIFO.
+	// BackfillLimit (K) is broker-wide; 0 disables backfill.
 	BackfillLimit        uint32
 	MinFreeMemoryPercent float64
 	MaxCPULoadPercent    float64

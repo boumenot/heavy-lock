@@ -5,7 +5,7 @@ import Foundation
 public enum TunaContract {
     /// The `google.rpc.ErrorInfo` domain attached to every non-OK status.
     public static let errorDomain = "tuna"
-    public static let serviceVersion = "3.0.0-dev.1"
+    public static let serviceVersion = "3.0.0-dev.2"
 
     public enum ServiceCompatibilityError: Error, Equatable {
         case identityMismatch

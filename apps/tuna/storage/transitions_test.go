@@ -10,6 +10,7 @@ import (
 	"github.com/boumenot/tuna/apps/tuna/contract"
 	pb "github.com/boumenot/tuna/apps/tuna/gen/tunapb"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 type fixture struct {
@@ -106,6 +107,90 @@ func (f *fixture) finish(j *pb.Job, req *pb.SubmitJobRequest, code int64) {
 			return err
 		}
 		return tx.Release(j.JobId, "processes_exited")
+	})
+}
+
+func TestQueuePriorityOrderAndPersistence(t *testing.T) {
+	f := setup(t)
+	makeJob := func(priority *int32) *pb.Job {
+		t.Helper()
+		req := f.request()
+		field := req.ProtoReflect().Descriptor().Fields().ByName("priority")
+		if field == nil {
+			t.Fatal("submission has no queue priority field")
+		}
+		if priority != nil {
+			req.ProtoReflect().Set(field, protoreflect.ValueOfInt32(*priority))
+		}
+		return f.submit(req, contract.AdmissionQueued, nil).Job
+	}
+	priority := func(value int32) *int32 { return &value }
+	defaultJob := makeJob(nil)
+	high := makeJob(priority(-5))
+	tie := makeJob(priority(-5))
+	low := makeJob(priority(2000))
+	assertQueue := func() {
+		t.Helper()
+		err := f.store.View(f.ctx, func(r *Reader) error {
+			queue, err := r.Queue()
+			if err != nil {
+				return err
+			}
+			want := []struct {
+				id       string
+				priority int32
+			}{{high.JobId, -5}, {tie.JobId, -5}, {defaultJob.JobId, 1337}, {low.JobId, 2000}}
+			if len(queue.Jobs) != len(want) {
+				t.Fatalf("queue length = %d, want %d", len(queue.Jobs), len(want))
+			}
+			for i, expected := range want {
+				job := queue.Jobs[i]
+				field := job.ProtoReflect().Descriptor().Fields().ByName("priority")
+				if field == nil {
+					t.Fatal("job has no queue priority field")
+				}
+				if job.JobId != expected.id || int32(job.ProtoReflect().Get(field).Int()) != expected.priority ||
+					job.QueuePosition == nil || *job.QueuePosition != uint32(i) {
+					t.Fatalf("queue[%d] = %v; want id=%s priority=%d position=%d", i, job, expected.id, expected.priority, i)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertQueue()
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	f.store, err = Open(f.ctx, f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertQueue()
+}
+
+func TestPriorityChangeKeepsOriginalIdempotency(t *testing.T) {
+	f := setup(t)
+	req := f.request()
+	job := f.submit(req, contract.AdmissionQueued, nil).Job
+	events := f.write(func(tx *Tx) error { return tx.SetPriority(job.JobId, -5) })
+	if len(events) == 0 || f.job(job.JobId).Priority != -5 {
+		t.Fatalf("priority change was not published: %v", events)
+	}
+	if events := f.write(func(tx *Tx) error { return tx.SetPriority(job.JobId, -5) }); len(events) != 0 {
+		t.Fatalf("same priority produced events: %v", events)
+	}
+	req.Priority = proto.Int32(1337)
+	if again := f.submit(req, contract.AdmissionQueued, nil); again.Created || again.Job.JobId != job.JobId || again.Job.Priority != -5 {
+		t.Fatalf("default-priority retry: %+v", again)
+	}
+	req.Priority = proto.Int32(-5)
+	f.expect(ErrKeyReused, func(tx *Tx) error {
+		_, err := tx.Submit(req, Submission{Mode: contract.AdmissionQueued, ServiceVersion: "test", ServiceRunID: f.run})
+		return err
 	})
 }
 

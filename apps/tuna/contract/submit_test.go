@@ -91,6 +91,7 @@ func TestCanonicalSubmitDetectsConflicts(t *testing.T) {
 		{name: "os version", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.Client.OsVersion = proto.String("26.1") }},
 		{name: "empty os version", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.Client.OsVersion = proto.String("") }},
 		{name: "retry lineage", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.RetryOfJobId = proto.String("predecessor") }},
+		{name: "priority", mode: AdmissionQueued, change: func(r *tunapb.SubmitJobRequest) { r.Priority = proto.Int32(-1) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,6 +107,22 @@ func TestCanonicalSubmitDetectsConflicts(t *testing.T) {
 				t.Fatal("a different submission payload must not be equivalent")
 			}
 		})
+	}
+}
+
+func TestCanonicalSubmitDefaultPriorityMatchesAbsent(t *testing.T) {
+	request := sampleSubmission()
+	absent, err := CanonicalSubmitHash(request, AdmissionQueued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Priority = proto.Int32(1337)
+	explicit, err := CanonicalSubmitHash(request, AdmissionQueued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absent != explicit {
+		t.Fatal("explicit default must match absent priority")
 	}
 }
 
@@ -136,7 +153,7 @@ func TestCanonicalSubmitRejectsNewPopulatedFields(t *testing.T) {
 		MessageType: []*descriptorpb.DescriptorProto{{
 			Name: proto.String("SubmitJobRequest"),
 			Field: []*descriptorpb.FieldDescriptorProto{{
-				Name: proto.String("new_field"), Number: proto.Int32(9),
+				Name: proto.String("new_field"), Number: proto.Int32(10),
 				Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
 			}},
 		}},

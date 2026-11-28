@@ -23,10 +23,11 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const Usage = "Controls: tuna <status|queue|jobs|job|pause|resume|reorder|cancel|force-start> [options]\n" +
+const Usage = "Controls: tuna <status|queue|jobs|job|pause|resume|reorder|priority|cancel|force-start> [options]\n" +
 	"  --port PORT (default 49783), --json, --timeout DURATION (default 5s)\n" +
 	"  job/cancel/force-start: --job UUID; cancel: --reason TEXT\n" +
 	"  reorder: --job UUID and one of --front, --back, --before UUID, --after UUID\n" +
+	"  priority: --job UUID --priority INTEGER\n" +
 	"  jobs: --page-size N, --page-token TOKEN (newest first)\n" +
 	"Controls never prompt. Cancel and force-start execute immediately.\n"
 
@@ -37,7 +38,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, clientVer
 	}
 	command := args[0]
 	switch command {
-	case "status", "queue", "jobs", "job", "pause", "resume", "reorder", "cancel", "force-start":
+	case "status", "queue", "jobs", "job", "pause", "resume", "reorder", "priority", "cancel", "force-start":
 	default:
 		return 0, false
 	}
@@ -54,9 +55,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, clientVer
 	timeout := fs.Duration("timeout", 5*time.Second, "total RPC deadline")
 	var job, before, after, reason, token string
 	var front, back bool
+	var priority int32
+	var prioritySet bool
 	var pageSize uint
 	switch command {
-	case "job", "cancel", "force-start", "reorder":
+	case "job", "cancel", "force-start", "reorder", "priority":
 		fs.StringVar(&job, "job", "", "job UUID")
 	}
 	if command == "cancel" {
@@ -67,6 +70,16 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, clientVer
 		fs.BoolVar(&back, "back", false, "move to back")
 		fs.StringVar(&before, "before", "", "move before job")
 		fs.StringVar(&after, "after", "", "move after job")
+	}
+	if command == "priority" {
+		fs.Func("priority", "queue admission priority", func(value string) error {
+			n, err := strconv.ParseInt(value, 10, 32)
+			if err != nil {
+				return fmt.Errorf("priority must be a signed 32-bit integer")
+			}
+			priority, prioritySet = int32(n), true
+			return nil
+		})
 	}
 	if command == "jobs" {
 		fs.UintVar(&pageSize, "page-size", 50, "page size")
@@ -84,8 +97,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, clientVer
 	if fs.NArg() != 0 || *port < 1 || *port > 65535 || *timeout <= 0 || pageSize > 500 {
 		return fail(64, fmt.Errorf("invalid arguments; use tuna %s --help", command))
 	}
-	if (command == "job" || command == "cancel" || command == "force-start" || command == "reorder") && job == "" {
+	if (command == "job" || command == "cancel" || command == "force-start" || command == "reorder" || command == "priority") && job == "" {
 		return fail(64, fmt.Errorf("--job is required"))
+	}
+	if command == "priority" && !prioritySet {
+		return fail(64, fmt.Errorf("--priority is required"))
 	}
 	if command == "reorder" {
 		targets := 0
@@ -137,6 +153,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, clientVer
 		result, err = client.CancelJob(ctx, req)
 	case "force-start":
 		result, err = client.ForceStartJob(ctx, &pb.ForceStartJobRequest{JobId: job})
+	case "priority":
+		result, err = client.SetJobPriority(ctx, &pb.SetJobPriorityRequest{JobId: job, Priority: &priority})
 	case "reorder":
 		req := &pb.MoveJobRequest{JobId: job}
 		switch {
@@ -182,8 +200,8 @@ func printJob(w io.Writer, job *pb.Job) error {
 	if job.Forced {
 		forced = " FORCED"
 	}
-	_, err := fmt.Fprintf(w, "%s %s weight=%d%s command=%q blocked=%s\n", job.JobId,
-		strings.TrimPrefix(job.State.String(), "JOB_STATE_"), job.Weight, forced, job.Command,
+	_, err := fmt.Fprintf(w, "%s %s weight=%d priority=%d%s command=%q blocked=%s\n", job.JobId,
+		strings.TrimPrefix(job.State.String(), "JOB_STATE_"), job.Weight, job.Priority, forced, job.Command,
 		strings.TrimPrefix(job.BlockedReason.String(), "BLOCKED_REASON_"))
 	return err
 }

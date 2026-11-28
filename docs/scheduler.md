@@ -14,6 +14,11 @@ and grace rules of [section 4](design.md#4-runner-and-service-lifecycle).
 K, readiness, pause, occupied weight, the durable queue order and a lazy
 sharing check:
 
+- Queue order is `(priority, queue_seq)`, ascending. Priority is a signed
+  32-bit queue-admission value, default 1337; it does not change OS priority
+  or preempt a reservation. Sequence preserves FIFO within a priority level.
+  There is no aging, so higher numbers can starve under sustained lower
+  priorities. Priority change, reorder and force-start are manual remedies.
 - The **effective head** is the first queued job whose weight fits the
   configured capacity. Oversized jobs (left above capacity by a restart with
   a lower capacity) are skipped, never become the head, keep their place
@@ -31,7 +36,7 @@ sharing check:
 - Free capacity is `max(0, capacity - occupied)`; occupied includes forced
   and unreconciled reservations and may exceed capacity.
 - Only a capacity-blocked, registered head is bypassed, at most K times
-  (default 1; 0 is strict FIFO). The earliest registered, non-oversized
+  (default 1; 0 disables backfill). The earliest registered, non-oversized
   follower that fits is chosen; unregistered followers are skipped and keep
   their place. If that follower fails sharing, no later follower is tried.
   The head's durable bypass count increments in the reserving transaction;
@@ -71,7 +76,13 @@ the last sample and the settle clock.
   admission.
   Running and reserved work is unaffected.
 - **Reorder** (`MoveBefore`, `MoveToFront`, `MoveBefore(id, "")` for the
-  back) applies only to queued jobs and then runs admission.
+  back) applies only to queued jobs and then runs admission. It clamps the
+  moved job's priority to the closest neighbour when its old value would
+  contradict the requested position; it renumbers queue sequences in that
+  order without resetting bypass counts.
+- **Set priority** changes a queued job's priority while keeping its queue
+  sequence and bypass count; the same value is a no-op. It then runs
+  admission and cannot affect a reserved or running job.
 - **Force-start** requires readiness and a queued job whose submitting
   incarnation's stream is registered. It bypasses pause, capacity
   (including oversized weight) and sharing; it counts its full weight, is
@@ -109,9 +120,9 @@ unknown.
 checks existing records first (an equivalent duplicate returns the existing
 job to its own incarnation, a rejected key stays busy for any payload, a
 deleted key or mode change is an error), then rejects a fresh weight above
-capacity, then evaluates the candidate as if appended to the queue as a
-registered job. It reserves the candidate only when it is the next normal
-choice, including as the bounded backfill follower; otherwise it commits a
+capacity, then evaluates the candidate as a registered job inserted after
+the existing jobs of equal priority. It reserves the candidate only when it is
+the next normal choice, including as the bounded backfill follower; otherwise it commits a
 key-only rejection and returns `ErrAdmissionBusy`. A stream found closed
 once the decision is made aborts the transaction without any record. Recovery, validation and storage or
 commit failures are errors, never busy. `ContractError` maps scheduler and

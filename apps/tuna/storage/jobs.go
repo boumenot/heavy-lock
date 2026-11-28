@@ -208,12 +208,12 @@ func (tx *Tx) Submit(req *pb.SubmitJobRequest, options Submission) (SubmissionRe
 	err = tx.exec(`INSERT INTO jobs (id,idempotency_key,request_sha256,command,cwd,weight,state,
 		queued_at_ns,service_version,retry_of_job_id,attempt,client_name,client_version,client_os,
 		client_os_version,client_architecture,repository,branch,worklog,agent_session,purpose,commit_sha,
-		build_target,build_configuration,metadata_json)
-		VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		build_target,build_configuration,metadata_json,priority)
+		VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, req.IdempotencyKey, hash[:], req.Command, req.Cwd, req.Weight, tx.at,
 		options.ServiceVersion, req.RetryOfJobId, attempt, client.Name, client.Version,
 		optionalEnum(client.Os.String(), "CLIENT_OS_"), client.OsVersion, optionalEnum(client.Architecture.String(), "CLIENT_ARCHITECTURE_"),
-		a.Repository, a.Branch, a.Worklog, a.AgentSession, a.Purpose, a.CommitSha, a.BuildTarget, a.BuildConfiguration, string(metadata))
+		a.Repository, a.Branch, a.Worklog, a.AgentSession, a.Purpose, a.CommitSha, a.BuildTarget, a.BuildConfiguration, string(metadata), contract.SubmitPriority(req))
 	if err != nil {
 		return result, err
 	}
@@ -302,7 +302,7 @@ func (r *Reader) Job(id string) (*pb.Job, error) {
 		admitted_by_backfill,backfill_bypass_count,retry_of_job_id,attempt,
 		client_name,client_version,client_os,client_os_version,client_architecture,
 		repository,branch,worklog,agent_session,purpose,commit_sha,build_target,build_configuration,metadata_json,
-		coalesce(outcome_kind,''),exit_code,signal_number,signal_name,outcome_detail FROM jobs WHERE id=?`,
+		coalesce(outcome_kind,''),exit_code,signal_number,signal_name,outcome_detail,priority FROM jobs WHERE id=?`,
 		[]any{id}, &j.JobId, &j.IdempotencyKey, &state, &j.Command, &j.Cwd, &j.Weight, &j.Forced,
 		&j.ServiceVersion, &queued, &admitted, &started, &finished,
 		&cancelled, &j.CancelReason, &acknowledged, &j.CancelFailureDetail,
@@ -311,7 +311,7 @@ func (r *Reader) Job(id string) (*pb.Job, error) {
 		&j.Client.Name, &j.Client.Version, &osName, &j.Client.OsVersion, &archName,
 		&j.Attribution.Repository, &j.Attribution.Branch, &j.Attribution.Worklog, &j.Attribution.AgentSession,
 		&j.Attribution.Purpose, &j.Attribution.CommitSha, &j.Attribution.BuildTarget, &j.Attribution.BuildConfiguration, &metadata,
-		&outcome, &o.ExitCode, &o.SignalNumber, &o.SignalName, &o.Detail)
+		&outcome, &o.ExitCode, &o.SignalNumber, &o.SignalName, &o.Detail, &j.Priority)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -342,8 +342,9 @@ func (r *Reader) Job(id string) (*pb.Job, error) {
 	}
 	if j.State == pb.JobState_JOB_STATE_QUEUED {
 		var pos uint32
-		err := r.scan(`SELECT (SELECT count(*) FROM queue_entries p WHERE p.queue_seq<q.queue_seq),
-			runner_connected FROM queue_entries q WHERE job_id=?`, []any{id}, &pos, &j.RunnerConnected)
+		err := r.scan(`SELECT (SELECT count(*) FROM queue_entries p JOIN jobs pj ON pj.id=p.job_id
+			WHERE pj.priority < j.priority OR (pj.priority = j.priority AND p.queue_seq < q.queue_seq)),
+			q.runner_connected FROM queue_entries q JOIN jobs j ON j.id=q.job_id WHERE q.job_id=?`, []any{id}, &pos, &j.RunnerConnected)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
@@ -419,7 +420,7 @@ func (r *Reader) ids(statement string, args ...any) ([]string, error) {
 }
 
 func (r *Reader) Queue() (*pb.Queue, error) {
-	ids, err := r.ids("SELECT job_id FROM queue_entries ORDER BY queue_seq")
+	ids, err := r.ids("SELECT q.job_id FROM queue_entries q JOIN jobs j ON j.id=q.job_id ORDER BY j.priority, q.queue_seq")
 	if err != nil {
 		return nil, err
 	}

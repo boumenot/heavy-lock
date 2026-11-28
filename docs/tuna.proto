@@ -47,7 +47,7 @@ service RunnerService {
   // for it, and the attempt limit is not exceeded;
   // otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
   // retry was submitted and inserting/enqueueing it are one transaction.
-  // The retry joins the back of the queue and never reuses the earlier grant
+  // The retry joins the back of its priority level and never reuses the earlier grant
   // or claim. Only the runner retries; the broker never resubmits or
   // relaunches work. Deleting a job's history retains a permanent key-only
   // tombstone: a later submission with that key, with any payload, fails with
@@ -64,8 +64,8 @@ service RunnerService {
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
 
   // --no-wait: register this stream and make exactly one immediate normal
-  // admission decision, as if appended to the current queue. A successful
-  // decision atomically commits the job, reservation and any backfill count,
+  // admission decision, as if queued after existing jobs of equal priority.
+  // A successful decision atomically commits the job, reservation and any backfill count,
   // without a durable queue entry, before the first snapshot and grant.
   // A connected earlier eligible job has priority; all normal pause,
   // readiness, capacity, resource and bounded-backfill checks apply.
@@ -225,9 +225,15 @@ service ControlService {
   // of the same job is a no-op success.
   rpc CancelJob(CancelJobRequest) returns (Job);
 
-  // Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+  // Reorder a waiting job, clamping its priority to its new neighbours if
+  // necessary to preserve the requested position.
+  // FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
   // The monitor does not require confirmation for reordering.
   rpc MoveJob(MoveJobRequest) returns (Queue);
+
+  // Change a waiting job's queue admission priority without changing its
+  // sequence. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+  rpc SetJobPriority(SetJobPriorityRequest) returns (Job);
 
   // Admit a waiting job immediately, bypassing queue order, backfill limits
   // and resource checks, including a weight above current capacity. Its
@@ -529,6 +535,8 @@ message Job {
   // Oversized takes precedence here even if paused or disconnected; clients
   // display those independent conditions from status and runner_connected.
   BlockedReason blocked_reason = 32;
+  // Queue admission priority, not OS process priority; lower numbers go first.
+  int32 priority = 33;
 }
 
 message BrokerTermination {
@@ -556,6 +564,8 @@ message SubmitJobRequest {
   // Set only for an opt-in retry of a still-retained, failed, released
   // earlier attempt. The predecessor may be deleted after this job commits.
   optional string retry_of_job_id = 8;
+  // Queue admission priority. When absent, the broker uses 1337.
+  optional int32 priority = 9;
 }
 
 message SubmitJobResponse {
@@ -708,7 +718,7 @@ message BrokerStatus {
   // Held reservations not yet reconciled since the last broker restart.
   // They count toward occupied but do not block unrelated admissions.
   uint32 unreconciled_reservations = 12;
-  uint32 backfill_limit = 13;      // per-head bypass limit; 0 is strict FIFO
+  uint32 backfill_limit = 13;      // per-head bypass limit; 0 disables backfill
   QueueMode queue_mode = 14;       // since API 2.1
   QueueState queue_state = 15;     // since API 2.1
 }
@@ -719,7 +729,7 @@ message GetQueueRequest {}
 // queue_changed and status_changed event is projected when it commits, so a
 // client keeps the values from whichever of the two it received last.
 message Queue {
-  repeated Job jobs = 1;           // queue order; head first
+  repeated Job jobs = 1;           // priority ascending, then queue sequence; head first
   BlockedReason head_blocked_reason = 2;
   QueueState queue_state = 3;      // since API 2.1
 }
@@ -764,6 +774,11 @@ message MoveJobRequest {
     string before_job_id = 4;
     string after_job_id = 5;
   }
+}
+
+message SetJobPriorityRequest {
+  string job_id = 1;
+  optional int32 priority = 2;
 }
 
 message ForceStartJobRequest {

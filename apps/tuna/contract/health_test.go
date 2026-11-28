@@ -14,7 +14,7 @@ func TestCheckServiceIdentityAndVersion(t *testing.T) {
 		live, want           bool
 	}{
 		{"matching dev", ServiceVersion, ServiceVersion, 0, ServiceIdentity, true, true},
-		{"different dev", ServiceVersion, "3.0.0-dev.2", 0, ServiceIdentity, true, false},
+		{"different dev", ServiceVersion, "3.0.0-dev.1", 0, ServiceIdentity, true, false},
 		{"unnumbered dev", ServiceVersion, "3.0.0-dev", 0, ServiceIdentity, true, false},
 		{"dev to stable", ServiceVersion, "3.0.0", 0, ServiceIdentity, true, false},
 		{"stable to dev", "3.0.0", ServiceVersion, 0, ServiceIdentity, true, false},

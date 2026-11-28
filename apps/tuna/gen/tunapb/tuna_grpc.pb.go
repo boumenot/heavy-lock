@@ -77,7 +77,7 @@ type RunnerServiceClient interface {
 	// for it, and the attempt limit is not exceeded;
 	// otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
 	// retry was submitted and inserting/enqueueing it are one transaction.
-	// The retry joins the back of the queue and never reuses the earlier grant
+	// The retry joins the back of its priority level and never reuses the earlier grant
 	// or claim. Only the runner retries; the broker never resubmits or
 	// relaunches work. Deleting a job's history retains a permanent key-only
 	// tombstone: a later submission with that key, with any payload, fails with
@@ -93,8 +93,8 @@ type RunnerServiceClient interface {
 	// registers. A retransmitted SubmitJob does not reset grace.
 	SubmitJob(ctx context.Context, in *SubmitJobRequest, opts ...grpc.CallOption) (*SubmitJobResponse, error)
 	// --no-wait: register this stream and make exactly one immediate normal
-	// admission decision, as if appended to the current queue. A successful
-	// decision atomically commits the job, reservation and any backfill count,
+	// admission decision, as if queued after existing jobs of equal priority.
+	// A successful decision atomically commits the job, reservation and any backfill count,
 	// without a durable queue entry, before the first snapshot and grant.
 	// A connected earlier eligible job has priority; all normal pause,
 	// readiness, capacity, resource and bounded-backfill checks apply.
@@ -344,7 +344,7 @@ type RunnerServiceServer interface {
 	// for it, and the attempt limit is not exceeded;
 	// otherwise FAILED_PRECONDITION / RETRY_NOT_ELIGIBLE. Recording that a
 	// retry was submitted and inserting/enqueueing it are one transaction.
-	// The retry joins the back of the queue and never reuses the earlier grant
+	// The retry joins the back of its priority level and never reuses the earlier grant
 	// or claim. Only the runner retries; the broker never resubmits or
 	// relaunches work. Deleting a job's history retains a permanent key-only
 	// tombstone: a later submission with that key, with any payload, fails with
@@ -360,8 +360,8 @@ type RunnerServiceServer interface {
 	// registers. A retransmitted SubmitJob does not reset grace.
 	SubmitJob(context.Context, *SubmitJobRequest) (*SubmitJobResponse, error)
 	// --no-wait: register this stream and make exactly one immediate normal
-	// admission decision, as if appended to the current queue. A successful
-	// decision atomically commits the job, reservation and any backfill count,
+	// admission decision, as if queued after existing jobs of equal priority.
+	// A successful decision atomically commits the job, reservation and any backfill count,
 	// without a durable queue entry, before the first snapshot and grant.
 	// A connected earlier eligible job has priority; all normal pause,
 	// readiness, capacity, resource and bounded-backfill checks apply.
@@ -751,20 +751,21 @@ var RunnerService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	ControlService_GetHealth_FullMethodName     = "/tuna.ControlService/GetHealth"
-	ControlService_GetStatus_FullMethodName     = "/tuna.ControlService/GetStatus"
-	ControlService_GetQueue_FullMethodName      = "/tuna.ControlService/GetQueue"
-	ControlService_ListJobs_FullMethodName      = "/tuna.ControlService/ListJobs"
-	ControlService_GetJob_FullMethodName        = "/tuna.ControlService/GetJob"
-	ControlService_GetSubmission_FullMethodName = "/tuna.ControlService/GetSubmission"
-	ControlService_CancelJob_FullMethodName     = "/tuna.ControlService/CancelJob"
-	ControlService_MoveJob_FullMethodName       = "/tuna.ControlService/MoveJob"
-	ControlService_ForceStartJob_FullMethodName = "/tuna.ControlService/ForceStartJob"
-	ControlService_PauseQueue_FullMethodName    = "/tuna.ControlService/PauseQueue"
-	ControlService_ResumeQueue_FullMethodName   = "/tuna.ControlService/ResumeQueue"
-	ControlService_DeleteJob_FullMethodName     = "/tuna.ControlService/DeleteJob"
-	ControlService_DeleteHistory_FullMethodName = "/tuna.ControlService/DeleteHistory"
-	ControlService_WatchEvents_FullMethodName   = "/tuna.ControlService/WatchEvents"
+	ControlService_GetHealth_FullMethodName      = "/tuna.ControlService/GetHealth"
+	ControlService_GetStatus_FullMethodName      = "/tuna.ControlService/GetStatus"
+	ControlService_GetQueue_FullMethodName       = "/tuna.ControlService/GetQueue"
+	ControlService_ListJobs_FullMethodName       = "/tuna.ControlService/ListJobs"
+	ControlService_GetJob_FullMethodName         = "/tuna.ControlService/GetJob"
+	ControlService_GetSubmission_FullMethodName  = "/tuna.ControlService/GetSubmission"
+	ControlService_CancelJob_FullMethodName      = "/tuna.ControlService/CancelJob"
+	ControlService_MoveJob_FullMethodName        = "/tuna.ControlService/MoveJob"
+	ControlService_SetJobPriority_FullMethodName = "/tuna.ControlService/SetJobPriority"
+	ControlService_ForceStartJob_FullMethodName  = "/tuna.ControlService/ForceStartJob"
+	ControlService_PauseQueue_FullMethodName     = "/tuna.ControlService/PauseQueue"
+	ControlService_ResumeQueue_FullMethodName    = "/tuna.ControlService/ResumeQueue"
+	ControlService_DeleteJob_FullMethodName      = "/tuna.ControlService/DeleteJob"
+	ControlService_DeleteHistory_FullMethodName  = "/tuna.ControlService/DeleteHistory"
+	ControlService_WatchEvents_FullMethodName    = "/tuna.ControlService/WatchEvents"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -835,9 +836,14 @@ type ControlServiceClient interface {
 	// Terminal jobs: FAILED_PRECONDITION / JOB_TERMINAL. Repeated cancellation
 	// of the same job is a no-op success.
 	CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*Job, error)
-	// Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+	// Reorder a waiting job, clamping its priority to its new neighbours if
+	// necessary to preserve the requested position.
+	// FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
 	// The monitor does not require confirmation for reordering.
 	MoveJob(ctx context.Context, in *MoveJobRequest, opts ...grpc.CallOption) (*Queue, error)
+	// Change a waiting job's queue admission priority without changing its
+	// sequence. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+	SetJobPriority(ctx context.Context, in *SetJobPriorityRequest, opts ...grpc.CallOption) (*Job, error)
 	// Admit a waiting job immediately, bypassing queue order, backfill limits
 	// and resource checks, including a weight above current capacity. Its
 	// weight counts toward occupied capacity, so occupancy may
@@ -951,6 +957,16 @@ func (c *controlServiceClient) MoveJob(ctx context.Context, in *MoveJobRequest, 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Queue)
 	err := c.cc.Invoke(ctx, ControlService_MoveJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlServiceClient) SetJobPriority(ctx context.Context, in *SetJobPriorityRequest, opts ...grpc.CallOption) (*Job, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Job)
+	err := c.cc.Invoke(ctx, ControlService_SetJobPriority_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1094,9 +1110,14 @@ type ControlServiceServer interface {
 	// Terminal jobs: FAILED_PRECONDITION / JOB_TERMINAL. Repeated cancellation
 	// of the same job is a no-op success.
 	CancelJob(context.Context, *CancelJobRequest) (*Job, error)
-	// Reorder a waiting job. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+	// Reorder a waiting job, clamping its priority to its new neighbours if
+	// necessary to preserve the requested position.
+	// FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
 	// The monitor does not require confirmation for reordering.
 	MoveJob(context.Context, *MoveJobRequest) (*Queue, error)
+	// Change a waiting job's queue admission priority without changing its
+	// sequence. FAILED_PRECONDITION / JOB_NOT_WAITING otherwise.
+	SetJobPriority(context.Context, *SetJobPriorityRequest) (*Job, error)
 	// Admit a waiting job immediately, bypassing queue order, backfill limits
 	// and resource checks, including a weight above current capacity. Its
 	// weight counts toward occupied capacity, so occupancy may
@@ -1159,6 +1180,9 @@ func (UnimplementedControlServiceServer) CancelJob(context.Context, *CancelJobRe
 }
 func (UnimplementedControlServiceServer) MoveJob(context.Context, *MoveJobRequest) (*Queue, error) {
 	return nil, status.Error(codes.Unimplemented, "method MoveJob not implemented")
+}
+func (UnimplementedControlServiceServer) SetJobPriority(context.Context, *SetJobPriorityRequest) (*Job, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetJobPriority not implemented")
 }
 func (UnimplementedControlServiceServer) ForceStartJob(context.Context, *ForceStartJobRequest) (*Job, error) {
 	return nil, status.Error(codes.Unimplemented, "method ForceStartJob not implemented")
@@ -1343,6 +1367,24 @@ func _ControlService_MoveJob_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_SetJobPriority_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetJobPriorityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).SetJobPriority(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_SetJobPriority_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).SetJobPriority(ctx, req.(*SetJobPriorityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ControlService_ForceStartJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ForceStartJobRequest)
 	if err := dec(in); err != nil {
@@ -1482,6 +1524,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MoveJob",
 			Handler:    _ControlService_MoveJob_Handler,
+		},
+		{
+			MethodName: "SetJobPriority",
+			Handler:    _ControlService_SetJobPriority_Handler,
 		},
 		{
 			MethodName: "ForceStartJob",

@@ -43,6 +43,7 @@ const (
 		"Runner options:\n" +
 		"  --port <port>          broker port on 127.0.0.1 (required)\n" +
 		"  --weight <weight>      heavy (default), light, or a positive integer\n" +
+		"  --priority <integer>   queue admission priority (default 1337; lower first)\n" +
 		"  --repository <repo>    attribute the job to [HOST/]OWNER/NAME instead of\n" +
 		"                         the working directory's git remote\n" +
 		"  --worklog <issue>      attribute the job to worklog N or [HOST/]OWNER/NAME#N;\n" +
@@ -154,6 +155,15 @@ func dispatch(args []string, stdout, stderr io.Writer, l launcher) int {
 			if o.Weight, valid = runner.ParseWeight(value); !valid {
 				err = fmt.Errorf("--weight must be heavy, light or a positive integer")
 			}
+		case "--priority":
+			var n int64
+			n, err = strconv.ParseInt(value, 10, 32)
+			if err != nil {
+				err = fmt.Errorf("--priority must be a signed 32-bit integer")
+			} else {
+				priority := int32(n)
+				o.Priority = &priority
+			}
 		case "--repository":
 			var r attribution.Repository
 			if r, err = attribution.ParseRepository(value); err == nil {
@@ -241,7 +251,7 @@ func dispatchService(args []string, stdout, stderr io.Writer, l launcher) int {
 	})
 }
 
-var valued = map[string]bool{"--port": true, "--weight": true, "--worklog": true, "--repository": true, "--retries": true}
+var valued = map[string]bool{"--port": true, "--weight": true, "--priority": true, "--worklog": true, "--repository": true, "--retries": true}
 
 // option reads a valued option written as "--name value" or "--name=value".
 // Each option may be given once.

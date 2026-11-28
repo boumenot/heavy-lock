@@ -1,4 +1,4 @@
--- Tuna SQLite schema (schema version 3).
+-- Tuna SQLite schema (schema version 4).
 --
 -- A new database is created at the current version and records every
 -- migration version it includes. Older databases are migrated in place by
@@ -15,7 +15,7 @@
 --   * IDs are lowercase canonical UUIDv4 TEXT.
 --   * Booleans are INTEGER 0/1 with CHECK constraints.
 --   * NULL means unknown or not applicable; it is never a synonym for 0.
---   * Queue order comes from queue_entries.queue_seq, never from timestamps.
+--   * Queue order is jobs.priority then queue_entries.queue_seq, never timestamps.
 --
 -- Database-level settings applied once, before any table is created:
 PRAGMA page_size = 4096;
@@ -63,8 +63,8 @@ CREATE TABLE service_runs (
   clean_shutdown   INTEGER NOT NULL DEFAULT 0 CHECK (clean_shutdown IN (0, 1))
 ) STRICT;
 
--- client_os_version (schema v3, e.g. '26.1', explicitly reported only)
--- follows outcome_detail exactly as ALTER TABLE ... ADD COLUMN writes it,
+-- client_os_version (schema v3) and priority (schema v4) follow outcome_detail
+-- exactly as ALTER TABLE ... ADD COLUMN writes them,
 -- because migrated databases must match this text.
 CREATE TABLE jobs (
   -- Identity -------------------------------------------------------------
@@ -179,7 +179,7 @@ CREATE TABLE jobs (
                       -- native code; POSIX e.g. 1, Windows e.g. 3221225477 (0xC0000005)
   signal_number       INTEGER CHECK (signal_number >= 1),  -- POSIX only, e.g. 9
   signal_name         TEXT,     -- POSIX only, e.g. 'SIGKILL'
-  outcome_detail      TEXT, client_os_version TEXT,     -- e.g. 'process tree not found during recovery'
+  outcome_detail      TEXT, client_os_version TEXT, priority INTEGER NOT NULL DEFAULT 1337 CHECK (priority BETWEEN -2147483648 AND 2147483647),     -- e.g. 'process tree not found during recovery'
 
   -- State consistency (presence only; wall-clock values are not compared) --
   CHECK (started_at_ns IS NULL OR admitted_at_ns IS NOT NULL),
@@ -335,7 +335,7 @@ CREATE INDEX jobs_client_name ON jobs (client_name, queued_at_ns DESC, id)
 CREATE INDEX jobs_finished ON jobs (finished_at_ns)
   WHERE state = 'finished';
 
--- Waiting jobs only. Explicit order; reorder rewrites queue_seq. Because
+-- Waiting jobs only. Equal priorities use queue_seq; reorder rewrites it. Because
 -- UNIQUE is checked per row, a renumbering UPDATE must avoid transient
 -- collisions (for example, move rows to negative values first).
 CREATE TABLE queue_entries (
@@ -459,7 +459,8 @@ INSERT INTO schema_migrations (version, applied_at_ns, description)
          description
   FROM (SELECT 1 AS version, 'initial schema' AS description
         UNION ALL SELECT 2, 'explicit queue mode'
-        UNION ALL SELECT 3, 'client OS version');
-PRAGMA user_version = 3;
+        UNION ALL SELECT 3, 'client OS version'
+        UNION ALL SELECT 4, 'queue priority');
+PRAGMA user_version = 4;
 
 COMMIT;

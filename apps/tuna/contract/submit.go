@@ -19,7 +19,16 @@ type AdmissionMode uint8
 const (
 	AdmissionQueued AdmissionMode = 1
 	AdmissionNoWait AdmissionMode = 2
+	DefaultPriority int32         = 1337
 )
+
+// SubmitPriority returns the queue admission priority, including the default.
+func SubmitPriority(request *tunapb.SubmitJobRequest) int32 {
+	if request == nil || request.Priority == nil {
+		return DefaultPriority
+	}
+	return request.GetPriority()
+}
 
 func CanonicalSubmitHash(request *tunapb.SubmitJobRequest, mode AdmissionMode) ([32]byte, error) {
 	if request == nil {
@@ -101,6 +110,10 @@ func CanonicalSubmitHash(request *tunapb.SubmitJobRequest, mode AdmissionMode) (
 		encoded = appendString(encoded, "client.os_version")
 		encoded = appendString(encoded, *client.OsVersion)
 	}
+	if priority := SubmitPriority(request); priority != DefaultPriority {
+		encoded = appendString(encoded, "priority")
+		encoded = binary.BigEndian.AppendUint32(encoded, uint32(priority))
+	}
 	return sha256.Sum256(encoded), nil
 }
 
@@ -150,7 +163,7 @@ func hasUnknownFields(message protoreflect.Message) bool {
 	var lastSupported protoreflect.FieldNumber
 	switch message.Descriptor().FullName() {
 	case "tuna.SubmitJobRequest":
-		lastSupported = 8
+		lastSupported = 9
 	case "tuna.ClientInfo":
 		lastSupported = 5
 	case "tuna.Attribution":
