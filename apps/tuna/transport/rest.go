@@ -2,6 +2,8 @@ package transport
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -29,10 +31,14 @@ const maxRESTBodyBytes = 1 << 20
 type endpoint struct {
 	allowQuery bool
 	call       func(*http.Request) (proto.Message, error)
+	stream     func(http.ResponseWriter, *http.Request)
 }
 
 func newRESTHandler(broker Broker) http.Handler {
 	mux := http.NewServeMux()
+	var incarnation [16]byte
+	_, incarnationErr := rand.Read(incarnation[:])
+	incarnationID := hex.EncodeToString(incarnation[:])
 	register := func(path string, methods map[string]endpoint) {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			allow := make([]string, 0, len(methods)+1)
@@ -61,6 +67,10 @@ func newRESTHandler(broker Broker) http.Handler {
 					return
 				}
 			}
+			if handler.stream != nil {
+				handler.stream(w, r)
+				return
+			}
 			result, err := handler.call(r)
 			if err != nil {
 				writeRESTError(w, err, 0)
@@ -87,6 +97,9 @@ func newRESTHandler(broker Broker) http.Handler {
 
 	register("/health", map[string]endpoint{http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
 		return broker.GetHealth(r.Context(), &tunapb.GetHealthRequest{})
+	}}})
+	register("/events", map[string]endpoint{http.MethodGet: {allowQuery: true, stream: func(w http.ResponseWriter, r *http.Request) {
+		serveEvents(w, r, broker, incarnationID, incarnationErr)
 	}}})
 	register("/status", map[string]endpoint{http.MethodGet: {call: func(r *http.Request) (proto.Message, error) {
 		return broker.GetStatus(r.Context(), &tunapb.GetStatusRequest{})

@@ -2176,7 +2176,7 @@ extension Tuna_ControlService {
     /// > and other clients. Every functional REST endpoint maps to exactly one RPC
     /// > here; transport-level CORS preflights do not map to RPCs.
     /// > All unary ControlService queries and controls also have REST endpoints.
-    /// > WatchEvents is gRPC-only; REST clients poll the query endpoints.
+    /// > WatchEvents is also exposed as the REST SSE /events endpoint.
     public protocol ClientProtocol: Sendable {
         /// Call the "GetHealth" method.
         ///
@@ -2586,7 +2586,7 @@ extension Tuna_ControlService {
     /// > and other clients. Every functional REST endpoint maps to exactly one RPC
     /// > here; transport-level CORS preflights do not map to RPCs.
     /// > All unary ControlService queries and controls also have REST endpoints.
-    /// > WatchEvents is gRPC-only; REST clients poll the query endpoints.
+    /// > WatchEvents is also exposed as the REST SSE /events endpoint.
     public struct Client<Transport>: ClientProtocol where Transport: GRPCCore.ClientTransport {
         private let client: GRPCCore.GRPCClient<Transport>
 

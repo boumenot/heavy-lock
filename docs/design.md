@@ -59,7 +59,7 @@ choices are explicit user decisions.
 | Predecessor switch | Stop using the predecessor and switch to Tuna; no mixed admission or nesting, migration plan, or legacy compatibility requirement |
 | Runner CLI | Retain the predecessor's command separator, weight and worklog options *(delegated)*, plus the already-decided `--no-wait`; an explicit broker port is still required |
 | CLI queue controls | Built-in queue/job inspection and queue controls *(delegated)*; the monitor and REST API remain available |
-| APIs | gRPC for runner, Swift monitor and other clients; REST queries and controls for `curl`, with polling rather than REST streaming |
+| APIs | gRPC for runner, Swift monitor and other clients; REST queries and controls plus an SSE event feed for `curl` |
 | Runner updates | Push over `WatchJob`, with a current-state snapshot on reconnect |
 | Monitor event replay | Configurable bounded replay; initial limits are 24 hours and 100,000 events |
 | Transport | Both APIs share a configurable loopback TCP port, broker default 49783; runner takes an explicit port argument |
@@ -1544,15 +1544,10 @@ Full REST control adds exposure to unsafe HTTP/browser requests; the
 all-origins choice below does not restrict cross-origin access, and host
 checks do not authenticate local clients.
 
-**User decision: REST event delivery.** REST has no live event stream; REST
-clients poll the query endpoints instead. The monitor continues to receive
-resumable live events through gRPC `WatchEvents`.
-
-The assistant recommended exposing server-sent events (SSE) so `curl -N`
-could follow the same event feed without polling. That would add a streaming
-endpoint and reconnection, retention and error handling. Polling is simpler
-for REST clients and the server, but can miss transient changes between
-requests; callers needing the event stream use gRPC.
+**Revised decision: REST event delivery.** Worklog #51 supersedes the
+polling-only choice: `GET /events` exposes the existing `WatchEvents` feed
+as SSE for `curl -N`, with the cursor and failure contract below. The native
+monitor continues to use gRPC.
 
 **User decision: bounded monitor event replay.** Retain events for at most
 an initial configurable 24 hours and the newest 100,000 events, pruning
@@ -1974,7 +1969,7 @@ delegated starting defaults, not user-selected values.
 | `ClientInfo` | Name, version, OS and architecture; explicitly reported only |
 | Idempotency | Client-generated UUIDv4 per logical submission; reuse with a different payload is rejected while the job is retained. After history deletion a key-only tombstone rejects every reuse *(delegated)*; see [section 11.3](#113-sqlite-schema). |
 | Outcome | Native `int64` exit code, optional POSIX signal number and name, and `outcome_kind` |
-| API parity | Every functional REST endpoint maps to a `ControlService` RPC; all unary `ControlService` queries and controls also have REST endpoints. REST clients poll rather than stream; CORS preflights are transport handling |
+| API parity | Every functional REST endpoint maps to a `ControlService` RPC; all unary queries and controls have REST endpoints, and `/events` streams `WatchEvents`; CORS preflights are transport handling |
 | Runner updates | `WatchJob` push stream with a current-state snapshot on reconnect |
 | Monitor updates | gRPC controls and resumable live event streaming |
 | SQLite journal | WAL with `synchronous = FULL` on all platforms and `fullfsync` on macOS; measure commit latency |
@@ -2338,7 +2333,7 @@ service RunnerService {
 // and other clients. Every functional REST endpoint maps to exactly one RPC
 // here; transport-level CORS preflights do not map to RPCs.
 // All unary ControlService queries and controls also have REST endpoints.
-// WatchEvents is gRPC-only; REST clients poll the query endpoints.
+// WatchEvents is also exposed as the REST SSE /events endpoint.
 service ControlService {
   rpc GetHealth(GetHealthRequest) returns (Health);
   // While durable storage is unavailable, GetStatus still answers with
@@ -3019,8 +3014,8 @@ to exactly one `ControlService` RPC and calls the same broker domain logic,
 and all unary `ControlService` queries and controls have REST endpoints, as
 the user chose. CORS preflight is transport handling, not a separate RPC.
 Runner lifecycle RPCs have no REST endpoints. The paths, JSON encoding and
-error mapping below are the delegated contract. REST clients poll;
-live event streaming is available through gRPC only.
+error mapping below are the delegated contract. `/events` is the streaming
+exception to the unary JSON responses.
 
 Request and response bodies are the RPC messages encoded with
 [protojson](https://protobuf.dev/programming-guides/json/):
@@ -3046,6 +3041,7 @@ lexically first such key is reported.
 | Method | Path | `ControlService` RPC | Notes |
 |---|---|---|---|
 | `GET` | `/health` | `GetHealth` | Liveness, readiness, versions, recovery detail |
+| `GET` | `/events` | `WatchEvents` | SSE snapshot, replay, changes and heartbeats; see below |
 | `GET` | `/status` | `GetStatus` | Capacity, occupancy (may exceed capacity after force-start), pause, blocked-head reason, live readings |
 | `GET` | `/queue` | `GetQueue` | Waiting jobs in queue order, head first |
 | `GET` | `/jobs` | `ListJobs` | Query: `states` (repeatable), `repository`, `clientName`, `queuedAfter`, `queuedBefore`, `pageSize`, `pageToken` |
@@ -3081,14 +3077,75 @@ transport-specific reasons. Unstructured broker errors become `INTERNAL`
 with `INTERNAL_ERROR`; context cancellation/deadline and unimplemented
 operations receive explicit corresponding reasons.
 
-**REST event delivery.** Poll the status, queue and job query endpoints.
-The user chose not to expose the gRPC `WatchEvents` stream through REST.
+#### REST event delivery
+
+`GET /events` is a read-only `text/event-stream` response on the same
+loopback listener, subject to the same Host and CORS policy. Each flushed SSE
+frame has an `event`, an `id`, and one `data` line containing the complete
+`BrokerEvent` as protobuf JSON. Event names are `snapshot`, `job_changed`,
+`queue_changed`, `status_changed`, `job_deleted` and `heartbeat`. The two
+components of the opaque ID represent a random listener incarnation and
+the broker event sequence; treat the entire ID as an opaque string. Snapshot
+and heartbeat IDs reuse the last committed sequence, so IDs can repeat.
+Heartbeats are emitted at the broker's configured interval (normally five
+seconds) and flushed immediately, as are all other events. The response has
+`Cache-Control: no-store`.
+
+With no cursor, the first event is an atomic snapshot and cursor, followed
+by ordered events. Resume by sending the last **fully processed** ID in the
+`Last-Event-ID` header or the `afterEventId` query parameter. The header,
+when present, takes precedence over the query, as needed by an automatically
+reconnecting EventSource. An empty query cursor is invalid; omit it for a
+snapshot. No other query parameters are accepted. Use, for
+example:
+
+```bash
+curl -N http://127.0.0.1:49783/events
+curl -N -H 'Last-Event-ID: ID_FROM_PREVIOUS_STREAM' http://127.0.0.1:49783/events
+```
+
+Existing CORS preflights allow `Accept` and `Content-Type`, not a manually
+set `Last-Event-ID`; cross-origin scripts can use the query parameter instead.
+When replay is empty, the first frame can be the next heartbeat rather than
+an immediate response.
+
+Before any durable event exists, a snapshot can have sequence zero.
+Resuming its ID requests another snapshot rather than replay, because zero
+is the underlying stream's snapshot sentinel.
+
+Replayed events are historical, not proof the broker is live or caught up.
+A heartbeat shows that the initial replay query has ended, but newer live
+events may still be buffered or in flight; it does not prove the client is
+at the broker's head. Check `/health` for readiness and storage health
+separately. A disconnect,
+`stream_error`, or missing heartbeats makes cached state stale. Clients must
+implement their own heartbeat timeout; no instantaneous failure detection
+is guaranteed. A valid ID from an earlier listener incarnation, an expired
+or future cursor, or a gap yields `EVENTS_EXPIRED`: discard the ID and
+reconnect without a cursor for a fresh snapshot. Restart deliberately
+invalidates IDs even when the same database is retained. Malformed IDs
+produce `INVALID_ARGUMENT_FIELD`.
+
+Before any frame, errors use the regular HTTP status and `google.rpc.Status`
+JSON body. After streaming starts, a terminal `stream_error` event has a
+`google.rpc.Status` JSON `data` field and no `id`, then the connection closes.
+For `EVENTS_EXPIRED`, start a fresh snapshot; for other errors, inspect the
+status and `/health` before retrying. A broken or stalled connection can
+prevent delivery of the terminal event, so EOF and heartbeat timeout are
+also failures. Browser EventSource clients must close and create a new
+EventSource without its old ID to resynchronize; automatic retries with an
+expired ID cannot recover. The broker bounds the subscriber queue, cancels
+it on disconnect, and limits each write/flush to ten seconds; an overflowing
+or slow client cannot block scheduling or another subscriber.
+EventSource automatically remembers IDs on delivery, not after asynchronous
+application processing; applications requiring processed-event recovery
+must track acknowledgments themselves.
 
 The tradeoffs discussed:
 - Parity reduces policy drift between clients, but it expands the
   contract, tests and versioning surface.
-- JSON and Protobuf differ in field presence and error conventions; REST
-  clients poll and may miss transient changes between responses.
+- JSON and Protobuf differ in field presence and error conventions; polling
+  clients can miss transient changes between responses.
 - Neither API authenticates. Every REST and gRPC control is available to
   any local process that can connect.
 

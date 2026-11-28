@@ -1,15 +1,20 @@
 package broker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -241,6 +246,157 @@ func TestSnapshotReplayPruningRequiresRefresh(t *testing.T) {
 	if err != nil || newSnapshot.GetSnapshot() == nil || newSnapshot.GetSnapshot().Status.QueueMode == pb.QueueMode_QUEUE_MODE_PAUSED {
 		t.Fatalf("refresh=%v %v", newSnapshot, err)
 	}
+}
+
+func TestSSECurlSnapshotReplayAndRestart(t *testing.T) {
+	c, s, client, port := controlServer(t, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := s.MarkReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitUnsubscribed := func(h *Hub) {
+		t.Helper()
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			h.mu.Lock()
+			remaining := len(h.subs)
+			h.mu.Unlock()
+			if remaining == 0 {
+				return
+			}
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				t.Fatalf("disconnected curl left %d subscriptions", remaining)
+			}
+		}
+	}
+	startCurl := func(port int, cursor string) (*bufio.Reader, func()) {
+		t.Helper()
+		args := []string{"-sS", "-N", "--max-time", "10"}
+		if cursor != "" {
+			args = append(args, "-H", "Last-Event-ID: "+cursor)
+		}
+		args = append(args, fmt.Sprintf("http://127.0.0.1:%d/events", port))
+		cmd := exec.Command("curl", args...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		var once sync.Once
+		stop := func() {
+			once.Do(func() {
+				if err := cmd.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
+					t.Errorf("interrupt curl: %v", err)
+				}
+				_ = cmd.Wait()
+			})
+		}
+		t.Cleanup(stop)
+		return bufio.NewReader(stdout), stop
+	}
+	readFrame := func(reader *bufio.Reader) (name, id string, event pb.BrokerEvent) {
+		t.Helper()
+		var data string
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatalf("read curl stream: %v", err)
+			}
+			line = strings.TrimSuffix(line, "\n")
+			if line == "" {
+				break
+			}
+			if value, ok := strings.CutPrefix(line, "event: "); ok {
+				name = value
+			}
+			if value, ok := strings.CutPrefix(line, "id: "); ok {
+				id = value
+			}
+			if value, ok := strings.CutPrefix(line, "data: "); ok {
+				data = value
+			}
+		}
+		if err := protojson.Unmarshal([]byte(data), &event); err != nil {
+			t.Fatalf("decode SSE %q: %v", data, err)
+		}
+		return
+	}
+	first, stop := startCurl(port, "")
+	name, snapshotID, snapshot := readFrame(first)
+	if name != "snapshot" || snapshot.GetSnapshot() == nil || snapshotID == "" {
+		t.Fatalf("initial frame = %s/%s/%v", name, snapshotID, &snapshot)
+	}
+	if _, err := client.PauseQueue(ctx, &pb.PauseQueueRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	name, _, live := readFrame(first)
+	if name != "status_changed" || live.GetStatusChanged().GetQueueMode() != pb.QueueMode_QUEUE_MODE_PAUSED ||
+		live.EventSeq != snapshot.EventSeq+1 {
+		t.Fatalf("live frame = %s/%v", name, &live)
+	}
+	stop()
+	waitUnsubscribed(c.opts.Hub)
+	resumed, stopResume := startCurl(port, snapshotID)
+	name, _, replay := readFrame(resumed)
+	if name != "status_changed" || replay.EventSeq != snapshot.EventSeq+1 ||
+		replay.GetStatusChanged().GetQueueMode() != pb.QueueMode_QUEUE_MODE_PAUSED {
+		t.Fatalf("replayed frame = %s/%v", name, &replay)
+	}
+	stopResume()
+	waitUnsubscribed(c.opts.Hub)
+	if _, err := client.ResumeQueue(ctx, &pb.ResumeQueueRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Maintain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	expired, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/events", port), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired.Header.Set("Last-Event-ID", snapshotID)
+	response, err := http.DefaultClient.Do(expired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != 400 || !strings.Contains(string(data), "EVENTS_EXPIRED") {
+		t.Fatalf("expired replay = %s, %s, %v", response.Status, data, err)
+	}
+
+	_, restarted, _, restartedPort := controlServer(t, 1)
+	if _, err := restarted.MarkReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/events", restartedPort), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Last-Event-ID", snapshotID)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != 400 || !strings.Contains(string(data), "EVENTS_EXPIRED") {
+		t.Fatalf("restart replay = %s, %s, %v", response.Status, data, err)
+	}
+	fresh, stopFresh := startCurl(restartedPort, "")
+	name, _, refreshed := readFrame(fresh)
+	if name != "snapshot" || refreshed.GetSnapshot() == nil {
+		t.Fatalf("restart snapshot = %s/%v", name, &refreshed)
+	}
+	stopFresh()
 }
 
 func TestForceStartPausedAndControlErrorParity(t *testing.T) {
