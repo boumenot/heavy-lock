@@ -192,6 +192,10 @@ void main() {
             'MonitorEmptyFirst',
             'MonitorReplayReached',
             'MonitorGapReached',
+            'SSEReplaySafety',
+            'SSEReplayFair',
+            'SSEReplayOldEpoch',
+            'SSEReplayReached',
             '--timeout',
           ]),
         );

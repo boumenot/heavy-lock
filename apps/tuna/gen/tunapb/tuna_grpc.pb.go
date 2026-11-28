@@ -776,7 +776,7 @@ const (
 // and other clients. Every functional REST endpoint maps to exactly one RPC
 // here; transport-level CORS preflights do not map to RPCs.
 // All unary ControlService queries and controls also have REST endpoints.
-// WatchEvents is gRPC-only; REST clients poll the query endpoints.
+// WatchEvents is also exposed as the REST SSE /events endpoint.
 type ControlServiceClient interface {
 	GetHealth(ctx context.Context, in *GetHealthRequest, opts ...grpc.CallOption) (*Health, error)
 	// While durable storage is unavailable, GetStatus still answers with
@@ -1050,7 +1050,7 @@ type ControlService_WatchEventsClient = grpc.ServerStreamingClient[BrokerEvent]
 // and other clients. Every functional REST endpoint maps to exactly one RPC
 // here; transport-level CORS preflights do not map to RPCs.
 // All unary ControlService queries and controls also have REST endpoints.
-// WatchEvents is gRPC-only; REST clients poll the query endpoints.
+// WatchEvents is also exposed as the REST SSE /events endpoint.
 type ControlServiceServer interface {
 	GetHealth(context.Context, *GetHealthRequest) (*Health, error)
 	// While durable storage is unavailable, GetStatus still answers with

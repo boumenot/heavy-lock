@@ -7,6 +7,8 @@ storage layouts.
 
 The separate [monitor freshness model](MonitorFreshness.md) covers the
 broker-to-monitor stream, observed health, replay and stale presentation.
+The [SSE replay model](SSEReplay.md) covers listener-incarnation fencing,
+reconnect, retention gaps and delivery of the HTTP event feed.
 
 ## Queue priority model
 

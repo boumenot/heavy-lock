@@ -303,7 +303,29 @@ offsets as `%2B`. Responses use protobuf JSON: timestamps are RFC 3339 strings,
 durations are strings such as `"1.234s"`, scalar defaults are emitted and
 unknown optionals are absent. Errors use
 `google.rpc.Status` JSON with the same code/message/details as gRPC.
-REST is unary/polling only, not an event or runner-lifecycle endpoint.
+To follow broker events without polling:
+
+```bash
+curl -N http://127.0.0.1:49783/events
+```
+
+The first `snapshot` contains current status, queue and active jobs; subsequent
+named events contain protobuf JSON. Copy the last fully processed `id` to
+resume retained events, for example:
+
+```bash
+curl -N -H 'Last-Event-ID: ID_FROM_PREVIOUS_STREAM' http://127.0.0.1:49783/events
+```
+
+Alternatively use `?afterEventId=ID_FROM_PREVIOUS_STREAM`. A reconnect after a
+broker restart, expired retention or history deletion requires a fresh
+snapshot: discard the ID and reconnect without it. Replay is historical, not
+proof of current health; a heartbeat shows the initial replay has ended, but
+newer events may still be in flight. A `stream_error`, disconnect or missed
+heartbeats means the feed is no longer current. See the
+[SSE contract](docs/design.md#rest-event-delivery)
+for framing, errors, timeouts and resynchronization. Runner-lifecycle calls
+remain gRPC-only.
 
 Health reports a SemVer service version. Stable clients require the same
 major and the minimum minor they need; prerelease clients and brokers require

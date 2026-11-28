@@ -108,6 +108,10 @@ CASES = {
     "QueuePriorityHeld": "NeverLowerWaitsBehindHeld",
     "QueuePriorityClamp": "NeverClamp",
     "QueuePriorityRestart": "NeverOvertakeAfterRestart",
+    "SSEReplaySafety": None,
+    "SSEReplayFair": None,
+    "SSEReplayOldEpoch": "EpochFenced",
+    "SSEReplayReached": "NeverResume",
 }
 
 
@@ -129,7 +133,7 @@ def main():
                     "tlc", "-workers", "1", "-fpmem", "0.05",
                     "-noGenerateSpecTE", "-metadir", tmp,
                 ]
-                if case.startswith(("Monitor", "RunnerExit", "QueuePriority")):
+                if case.startswith(("Monitor", "RunnerExit", "QueuePriority", "SSEReplay")):
                     command.extend(["-coverage", "1"])
                 command.extend([
                     "-config", f"{case}.cfg",
@@ -139,6 +143,7 @@ def main():
                         else "RunnerExit.tla" if case.startswith("RunnerExit")
                         else "MonitorFreshness.tla" if case.startswith("Monitor")
                         else "QueuePriority.tla" if case.startswith("QueuePriority")
+                        else "SSEReplay.tla" if case.startswith("SSEReplay")
                         else "BrokerRunner.tla"
                     ),
                 ])
