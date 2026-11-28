@@ -40,6 +40,9 @@ restart. `QueuePriorityQuick` and the mutation/witness profiles run in the
 regular Tuna test target. These are bounded design checks, not proof of the
 implementation, real timing or larger workloads.
 
+The remaining sections describe the separate `BrokerRunner.tla` model,
+which abstracts priority and uses sequence-only queue order.
+
 ## Tooling and reproduction
 
 The pinned Nix shell includes `pkgs.tlaplus18` (TLA+ 1.8.0, TLC 2.18) and

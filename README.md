@@ -166,8 +166,9 @@ The runner:
 
 The queue uses strict priority without aging, so a stream of lower-numbered
 jobs can starve higher-numbered ones. Use
-`tuna priority --job UUID --priority N` to change a queued job's priority, or `tuna reorder` to place
-it explicitly; reorder clamps the job's priority to its new neighbours when
+`tuna priority --job UUID --priority N` to change a queued job's priority,
+or `tuna reorder` to place it explicitly; reorder clamps the job's priority
+to its new neighbours when
 needed. Bounded backfill can admit an eligible follower past a capacity-blocked
 head. Force-start remains an explicit exception to normal admission.
 
@@ -293,7 +294,8 @@ remain the monitor's responsibility.
 Unary REST routes are `/health`, `/status`, `/queue`, `/jobs`,
 `/jobs/{job_id}` and `/submissions/{idempotency_key}` for inspection;
 POST `/queue/pause`, `/queue/resume`,
-`/jobs/{job_id}/move`, `/cancel` and `/force-start` invoke controls.
+`/jobs/{job_id}/move`, `/priority`, `/cancel` and `/force-start` invoke controls;
+priority accepts `{"priority": N}`.
 DELETE `/jobs/{job_id}` and `/history?finishedBefore=...`
 delete safe terminal history. Time query parameters such as `queuedAfter`,
 `queuedBefore` and `finishedBefore` accept RFC 3339 timestamps; encode `+` in
